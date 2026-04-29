@@ -128,6 +128,15 @@ void begin() {
     }
 }
 
+void end() {
+    if (!_started) return;
+    Serial.println("[ETH] tearing down EMAC + netif");
+    ETH.end();
+    _started = false;
+    strncpy(_ip_str, "---", sizeof(_ip_str));
+    _mac_str[0] = '\0';
+}
+
 void loop() {
     if (!_started) return;
     // ETH.h drives its own event task; we just refresh our cached
@@ -166,6 +175,7 @@ const char* getMACString() {
 
 namespace EthernetManager {
 void        begin()        {}
+void        end()          {}
 void        loop()         {}
 bool        isLinkUp()     { return false; }
 bool        hasIP()        { return false; }

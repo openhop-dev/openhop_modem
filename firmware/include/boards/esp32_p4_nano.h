@@ -91,16 +91,15 @@ inline const BoardConfig BOARD = {
 
     .has_lora_radio = true,         // E22-P868M30S wired
 
-    // Wi-Fi off on this board, permanently. Confirmed 2026-04-29: with
-    // E22 attached via jumper wires the SX1262's RF + power transients
-    // couple into the SDIO bridge between ESP32-P4 and the on-board
-    // ESP32-C6 (esp_hosted firmware), and the C6 falls off the bus
-    // every ~25 s — RTC/INT watchdog reboots the whole SoC. Ethernet
-    // (native EMAC + IP101GRI PHY) carries network traffic just fine
-    // and is unaffected, so we route around the conflict instead of
-    // hardening the SDIO link. Re-enable only if/when the C6 bridge
-    // can be shielded from radio noise.
-    .has_wifi = false,
+    // Both Wi-Fi and Ethernet are *capability* flags. main.cpp does
+    // runtime selection in setup(): Ethernet is tried first, and if a
+    // cable is plugged in (link up within ~5 s) Wi-Fi is skipped. With
+    // no Ethernet link, EMAC is torn down and Wi-Fi takes over. This
+    // sidesteps a hardware conflict on this carrier — running C6 SDIO
+    // (Wi-Fi) + RMII EMAC + radio simultaneously couples enough noise
+    // into the SDIO clock to crash the bridge every ~25 s. With only
+    // one of the two networks live, the chip is stable.
+    .has_wifi = true,
 
     .ethernet = {
         .enabled          = true,

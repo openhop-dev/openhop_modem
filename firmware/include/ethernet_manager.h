@@ -18,6 +18,13 @@ namespace EthernetManager {
 // link to come up and DHCP to lease an address. Watchdog-friendly.
 void begin();
 
+// Tear down the EMAC + netif. After this call, isLinkUp() / hasIP()
+// return false and the RMII GPIOs are released so another driver
+// (e.g. Wi-Fi via the C6 SDIO bridge on ESP32-P4) can run without
+// fighting EMAC's outputs. Used by main.cpp's "Ethernet preferred,
+// Wi-Fi fallback" logic when no cable is plugged at boot.
+void end();
+
 // Service Ethernet event polling. Currently a no-op (ETH.h dispatches
 // link/IP events from its own task); kept for symmetry with WifiManager
 // in case we add periodic status logging later.

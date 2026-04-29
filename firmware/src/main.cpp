@@ -820,24 +820,36 @@ void setup() {
         radioReady = false;
     }
 
-    // Wi-Fi must come up before we know our MAC-derived hostname.
-    // Boards without Wi-Fi hardware (e.g. ESP32-P4-Nano whose C6 hasn't
-    // been provisioned with esp_hosted) skip the manager — calling
-    // WiFi.* on a non-responding SDIO bridge crashes the SoC.
-    if (BOARD.has_wifi) {
+    // ─── Network bring-up: Ethernet preferred, Wi-Fi fallback ──
+    // On boards with both interfaces present (ESP32-P4-Nano), bringing
+    // up Wi-Fi *and* Ethernet *and* the radio at the same time crashes
+    // the C6 SDIO bridge from cumulative noise (see lesson_p4_nano_*).
+    // Strategy: try Ethernet first; if a cable is plugged we keep ETH
+    // and skip Wi-Fi; if no link we tear EMAC back down (so the RMII
+    // GPIOs are released) and fall back to Wi-Fi. Boards without
+    // Ethernet (`ethernet.enabled = false`) skip straight to Wi-Fi.
+    bool useEthernet = false;
+    if (BOARD.ethernet.enabled) {
+        EthernetManager::begin();   // waits up to 5 s for link + DHCP
+        if (EthernetManager::isLinkUp()) {
+            useEthernet = true;
+            Serial.println("[NET] Ethernet link up — Wi-Fi will be skipped");
+        } else {
+            Serial.println("[NET] no Ethernet link — falling back to Wi-Fi");
+            EthernetManager::end();   // free RMII pins so Wi-Fi can run cleanly
+        }
+    }
+
+    if (!useEthernet && BOARD.has_wifi) {
         WifiManager::begin();
         WiFi.setHostname(buildHostname().c_str());
     } else {
-        // Wi-Fi disabled but TCP server still needs the saved port/token.
+        // Either Ethernet won, or Wi-Fi is compile-time disabled. We
+        // still need the saved tcpPort/tcpToken loaded from NVS for
+        // the TCP server config below.
         WifiManager::loadConfigOnly();
     }
     deviceHostname = buildHostname();
-
-    // Optional on-board Ethernet (currently only ESP32-P4-Nano). Runs
-    // alongside Wi-Fi; whichever interface acquires an IP first will
-    // serve the TCP control plane. WiFiServer binds to INADDR_ANY so
-    // a single server accepts connections via either interface.
-    EthernetManager::begin();
 
     bool netUp = WifiManager::isSTAConnected() || EthernetManager::hasIP();
     if (netUp) {

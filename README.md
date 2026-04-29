@@ -13,7 +13,7 @@ Wi-Fi/TCP, or (on boards with native Ethernet) wired LAN.
 | **Ikoka Stick** ([ndoo/ikoka-stick-meshtastic-device](https://github.com/ndoo/ikoka-stick-meshtastic-device))| XIAO ESP32-S3  | Ebyte E22-P868M30S, +30 dBm  | Wi-Fi         |
 | **LilyGO T-LoRa T3-S3** v1.2/v1.3                                                                           | ESP32-S3       | bare SX1262                  | Wi-Fi         |
 | **RAK3112 WisMesh**                                                                                         | ESP32-S3 (module) | SX1262 in-module          | Wi-Fi         |
-| **WaveShare ESP32-P4-Nano**                                                                                 | ESP32-P4 (RISC-V) + ESP32-C6 | E22 (off-board, optional) | **Ethernet** (RMII + IP101GRI PHY); Wi-Fi via C6 SDIO bridge but **disabled when E22 is wired** — see [P4-Nano notes](#porting-to-another-esp32-p4-board) |
+| **WaveShare ESP32-P4-Nano**                                                                                 | ESP32-P4 (RISC-V) + ESP32-C6 | E22 (off-board, optional) | **Ethernet *or* Wi-Fi** — runtime auto-select: cable plugged → Ethernet wins, no link → fall back to Wi-Fi via C6 SDIO bridge. Both at once is unstable with the radio attached, see [P4-Nano notes](#porting-to-another-esp32-p4-board) |
 
 Drop-in replacement for `SX1262Radio` in pymc_core — all MeshCore logic
 (routing, encryption, retransmission) runs on the RPi. The modem handles
@@ -118,7 +118,7 @@ existing headers and edit pins / RF-switch policy.
 | User button (PRG) | GPIO 0 | GPIO 1 | GPIO 0 | GPIO 0 | none ([conflict](#porting-to-another-esp32-p4-board)) |
 | Max TX power | 22 dBm | **30 dBm** | 22 dBm | 22 dBm | **30 dBm** |
 | RF switch policy | DIO2 → SX1262 internal | EN held HIGH + DIO2 → external TXEN | DIO2 internal | DIO2 internal | EN held HIGH + DIO2 internal |
-| Network | Wi-Fi | Wi-Fi | Wi-Fi | Wi-Fi | **Ethernet** (Wi-Fi disabled — see notes) |
+| Network | Wi-Fi | Wi-Fi | Wi-Fi | Wi-Fi | **Ethernet or Wi-Fi** (runtime auto-select; never both) |
 | mDNS hostname | `heltec-<MAC3>.local` | `ikoka-<MAC3>.local` | `lilygo-t3s3-<MAC3>.local` | `rak3112-<MAC3>.local` | `p4nano-<MAC3>.local` |
 
 The full pin numbers (incl. SCK/MISO/MOSI, OLED RST, VEXT enable, EN
@@ -181,14 +181,18 @@ against the schematic of your specific carrier:
   fall in that range, but they Just Work on the WaveShare reference;
   if you're seeing PHY init fail on a different carrier, look there.
 
-- **Wi-Fi runs through the on-board ESP32-C6** via SDIO (esp_hosted
-  firmware on the C6). On the Nano with an external E22 attached over
-  jumper wires this combination is unstable: the PA's RF + ground-bounce
-  transients couple into the SDIO clock and the C6 falls off the bus
-  every ~25 s, triggering an SoC-wide RTC watchdog. Set `has_wifi =
-  false` and rely on Ethernet whenever an off-board E22 is in the
-  picture. Boards that solder the SX1262 onto a shared RF-clean PCB
-  may be OK with `has_wifi = true` — re-test on your hardware.
+- **Wi-Fi (via the on-board ESP32-C6 over SDIO) and Ethernet cannot
+  both run while the radio is active.** The combination is unstable
+  on this carrier — the C6 esp_hosted bridge falls off the SDIO bus
+  every ~25 s and the SoC's RTC watchdog reboots the whole chip. The
+  fix is **runtime auto-selection in `setup()`**: with both
+  `has_wifi = true` and `ethernet.enabled = true` the firmware brings
+  Ethernet up first; if a cable is plugged (link inside ~5 s) it keeps
+  EMAC and skips Wi-Fi, otherwise it tears EMAC back down (releases
+  the RMII GPIOs) and falls back to Wi-Fi. Either single network works
+  fine with the radio; both together don't. Boards that solder the
+  SX1262 onto a shared RF-clean PCB may be able to run both — re-test
+  on your hardware before relying on it.
 
 - **Ethernet** is plumbed through `BoardConfig::EthernetConfig`. For
   the IP101GRI on the Nano: `pin_mdc = 31`, `pin_mdio = 52`,
