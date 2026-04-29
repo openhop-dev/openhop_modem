@@ -76,9 +76,9 @@ Per-board highlights (full pin numbers in the headers):
 - **RAK3112 WisMesh** — SX1262 inside the RAK3112 module, no OLED, `rak3112-<mac3>.local`.
 - **WaveShare ESP32-P4-Nano** — RISC-V P4 + C6 + IP101GRI Ethernet PHY + off-board E22, runtime ETH-or-Wi-Fi (never both, see below), `p4nano-<mac3>.local`.
 
-### E22-P RF switch (Ikoka, P4-Nano + E22)
+### E22-P RF switch (Ikoka, P4-Nano + E22P)
 
-E22 truth table from the datasheet: `EN=1, T/R CTRL=1` → TX,
+E22P truth table from the datasheet: `EN=1, T/R CTRL=1` → TX,
 `EN=1, T/R CTRL=0` → RX, `EN=0` → off. Firmware drives `EN` LOW for
 5 s at boot (LDO/PA settle), then HIGH for life. `T/R CTRL` is not
 wired to the MCU — the carrier ties it to SX1262 DIO2, and firmware
