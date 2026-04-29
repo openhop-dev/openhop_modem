@@ -215,6 +215,44 @@ against the schematic of your specific carrier:
   `show*()` call returns immediately, the firmware runs as a headless
   bridge.
 
+## Network exposure: LAN-only by design
+
+Both TCP-facing services on the modem — the binary protocol on port
+5055 and the OTA HTTP listener on port 80 — refuse connections whose
+remote source address is outside the **private RFC1918 / link-local /
+loopback** ranges. The check happens at `accept()` time (TCP) and on
+the first HTTP handler call (OTA), before any frame parsing or
+authentication.
+
+Accepted ranges (IPv4):
+
+```
+10.0.0.0/8        Class A private
+172.16.0.0/12     Class B private
+192.168.0.0/16    Class C private
+169.254.0.0/16    link-local (APIPA / IPv4LL)
+127.0.0.0/8       loopback
+```
+
+A NAT port-forward from a public address, or any tunnel that exposes
+the modem to the public Internet with a public source IP, is rejected
+before the protocol server sees the bytes. The OTA endpoint returns
+HTTP 403; the protocol port simply drops the socket. Both events are
+logged to UART (`[TCP] rejecting non-LAN client …` / `[OTA] reject
+non-LAN client …`) for diagnostics.
+
+This is a **hard policy of the firmware** — the modem is intended for
+local pymc_repeater control and is not designed to bridge LoRa traffic
+across the public Internet. The check lives in
+`firmware/include/net_filter.h`; lifting it requires editing that file
+and re-flashing.
+
+For remote access where it's actually appropriate (the operator's own
+LAN-segment over a VPN they control, etc.) put the VPN tunnel on the
+modem's network and let the LAN address show up as the source — the
+WireGuard / Tailscale / Zerotier address you'll see is RFC1918 already
+and passes the filter.
+
 ## Wire protocol v0.5.11
 
 *(Full command list in `firmware/include/protocol.h`; the section below is

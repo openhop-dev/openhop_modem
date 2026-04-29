@@ -5,6 +5,7 @@
 #include "tcp_server.h"
 #include "protocol.h"
 #include "frame_parser.h"
+#include "net_filter.h"
 
 #include <WiFi.h>
 
@@ -21,6 +22,8 @@ static bool        authenticated  = false;
 static FrameParser parser;
 
 static bool requiresAuth() { return requiredToken.length() > 0; }
+
+// isLanAddress() lives in net_filter.h — shared with the OTA server.
 
 static void buildFrame(uint8_t* buf, uint16_t& outLen,
                        uint8_t cmd, const uint8_t* payload, uint16_t len) {
@@ -121,6 +124,18 @@ void loop() {
         if (client) disconnectClient();
         WiFiClient incoming = server->available();
         if (incoming) {
+            // Hard LAN-only policy: drop public-IP clients before
+            // touching the parser. No log spam beyond the rejection
+            // notice; this is a normal firewall behaviour.
+            IPAddress addr = incoming.remoteIP();
+            if (!isLanAddress(addr)) {
+                Serial.printf(
+                    "[TCP] rejecting non-LAN client %u.%u.%u.%u "
+                    "(firmware accepts only RFC1918 / link-local / loopback)\n",
+                    addr[0], addr[1], addr[2], addr[3]);
+                incoming.stop();
+                return;
+            }
             client = incoming;
             client.setNoDelay(true);
             parser.reset();

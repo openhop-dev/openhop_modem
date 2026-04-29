@@ -3,6 +3,7 @@
 // dual-bank rollback guarded by a sanity watchdog.
 // =============================================================
 #include "ota_manager.h"
+#include "net_filter.h"
 
 #include <ArduinoOTA.h>
 #include <ESPmDNS.h>
@@ -56,6 +57,19 @@ static void attemptMarkValid() {
 
 // ─── HTTP POST /update handler ──────────────────────────────
 static bool checkAuth() {
+    // LAN-only policy first: drop any client whose source IP is
+    // outside RFC1918 / link-local / loopback. Same rule as the
+    // TCP protocol server (see net_filter.h). NAT-forwarded /
+    // tunneled requests with a public source IP get a 403 and
+    // never reach the auth check or the upload handler.
+    IPAddress addr = httpServer->client().remoteIP();
+    if (!isLanAddress(addr)) {
+        Serial.printf("[OTA] reject non-LAN client %u.%u.%u.%u\n",
+                      addr[0], addr[1], addr[2], addr[3]);
+        httpServer->send(403, "text/plain",
+                         "Forbidden: pymc_usb modem accepts LAN clients only.\n");
+        return false;
+    }
     if (token.length() == 0) return true;  // open — matches TCP "no-auth" mode
     if (!httpServer->authenticate("heltec", token.c_str())) {
         httpServer->requestAuthentication(BASIC_AUTH, "Heltec LoRa Modem");
