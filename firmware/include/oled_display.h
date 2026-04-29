@@ -12,6 +12,11 @@
 class OledDisplay {
 public:
     void begin();
+    // Boot splash: pyMC logo centered on the panel (64x64 bitmap on a
+    // 128x64 display, so it lands offset-32 horizontally, 0 vertically).
+    // Called immediately after begin(); the rest of setup() (Wi-Fi
+    // connect, Ethernet bring-up, radio init) runs while it's visible.
+    void showSplash();
     void showBoot(const char* version);
     // state is a short tag (e.g. "AP", "WiFi", "RX") shown top-right.
     // version is shown in the header so the currently-running firmware is

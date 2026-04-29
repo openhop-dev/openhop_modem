@@ -6,10 +6,18 @@
 // =============================================================
 #include "oled_display.h"
 #include "board_config.h"
+#include "splash_logo.h"
 
 #define DISPLAY_ADDRESS 0x3C
 
 void OledDisplay::begin() {
+    // Boards without an OLED (e.g. ESP32-P4-Nano) declare pin_i2c_sda/scl
+    // as -1. Skip Wire.begin() and SSD1306 init entirely; _ready stays
+    // false so every show*() / turn*() call returns immediately.
+    if (BOARD.pin_i2c_sda < 0 || BOARD.pin_i2c_scl < 0) {
+        return;
+    }
+
     // 1. Enable VEXT power rail when the board has one (Heltec V3 ⇒
     //    GPIO 36 LOW gates the 3V3 OLED rail). Skipped on boards that
     //    feed the OLED directly from 3V3.
@@ -50,6 +58,18 @@ void OledDisplay::begin() {
         _display->cp437(true);
         _display->display();
     }
+}
+
+void OledDisplay::showSplash() {
+    if (!_ready) return;
+    _display->clearDisplay();
+    // Centered horizontally on a 128px-wide panel: (128 - 64) / 2 = 32.
+    // Vertically the 64x64 bitmap fills the full 64px height.
+    int16_t x = (128 - SPLASH_LOGO_W) / 2;
+    int16_t y = 0;
+    _display->drawBitmap(x, y, SPLASH_LOGO,
+                         SPLASH_LOGO_W, SPLASH_LOGO_H, SSD1306_WHITE);
+    _display->display();
 }
 
 void OledDisplay::showBoot(const char* version) {

@@ -1,13 +1,19 @@
 # pymc_usb — USB/TCP LoRa Modem for pymc_core
 
-Firmware + Python driver that turns an ESP32-S3 board with an SX1262
-front end into a "dumb" LoRa modem controlled from a Raspberry Pi over
-USB-CDC or Wi-Fi/TCP.
+Firmware + Python driver that turns an ESP32 board with an SX1262 front
+end into a "dumb" LoRa modem controlled from a Raspberry Pi over USB-CDC,
+Wi-Fi/TCP, or (on boards with native Ethernet) wired LAN.
 
-**Supported boards** (one source tree, picked at compile time):
+**Supported boards** (one source tree, picked at compile time via
+`-DBOARD_<name>` in `platformio.ini`):
 
-- **Heltec WiFi LoRa 32 V3** — ESP32-S3 + bare SX1262, integrated OLED
-- **Ikoka Stick** ([ndoo/ikoka-stick-meshtastic-device](https://github.com/ndoo/ikoka-stick-meshtastic-device)) — XIAO ESP32-S3 + Ebyte E22-P868M30S (SX1262 + PA + LNA, 30 dBm) + external SSD1306
+| Board                                                                                                       | MCU            | Front end                    | Networks      |
+|-------------------------------------------------------------------------------------------------------------|----------------|------------------------------|---------------|
+| **Heltec WiFi LoRa 32 V3**                                                                                  | ESP32-S3       | bare SX1262                  | Wi-Fi         |
+| **Ikoka Stick** ([ndoo/ikoka-stick-meshtastic-device](https://github.com/ndoo/ikoka-stick-meshtastic-device))| XIAO ESP32-S3  | Ebyte E22-P868M30S, +30 dBm  | Wi-Fi         |
+| **LilyGO T-LoRa T3-S3** v1.2/v1.3                                                                           | ESP32-S3       | bare SX1262                  | Wi-Fi         |
+| **RAK3112 WisMesh**                                                                                         | ESP32-S3 (module) | SX1262 in-module          | Wi-Fi         |
+| **WaveShare ESP32-P4-Nano**                                                                                 | ESP32-P4 (RISC-V) + ESP32-C6 | E22 (off-board, optional) | **Ethernet** (RMII + IP101GRI PHY); Wi-Fi via C6 SDIO bridge but **disabled when E22 is wired** — see [P4-Nano notes](#porting-to-another-esp32-p4-board) |
 
 Drop-in replacement for `SX1262Radio` in pymc_core — all MeshCore logic
 (routing, encryption, retransmission) runs on the RPi. The modem handles
@@ -38,24 +44,24 @@ Raspberry Pi                                  Heltec V3
 ```
 pymc_usb/
 ├── firmware/                      # Shared firmware tree (PlatformIO)
-│   ├── platformio.ini             # two envs: heltec_v3 + ikoka_stick
+│   ├── platformio.ini             # five envs: heltec_v3, ikoka_stick,
+│   │                              # lilygo_t3s3, rak3112_wismesh,
+│   │                              # esp32_p4_nano (pioarduino fork)
 │   ├── build_release.sh           # builds every env + copies binaries below
-│   ├── heltec_v3/                 # prebuilt for Heltec V3
-│   │   ├── bootloader.bin         #   offset 0x0
-│   │   ├── partitions.bin         #   offset 0x8000
-│   │   └── firmware.bin           #   offset 0x10000
-│   ├── ikoka_stick/               # prebuilt for Ikoka Stick (XIAO + E22-P)
-│   │   ├── bootloader.bin
-│   │   ├── partitions.bin
-│   │   └── firmware.bin
+│   ├── <env>/                     # prebuilt: bootloader/partitions/firmware.bin
 │   ├── include/
 │   │   ├── protocol.h             # Binary protocol (shared FW ↔ Python)
-│   │   ├── board_config.h         # BoardConfig + RfSwitchPolicy types
+│   │   ├── board_config.h         # BoardConfig + RfSwitchPolicy + EthernetConfig
 │   │   ├── boards/
-│   │   │   ├── heltec_v3.h        # Pin map + RF switch policy per board
-│   │   │   └── ikoka_stick.h
+│   │   │   ├── heltec_v3.h
+│   │   │   ├── ikoka_stick.h
+│   │   │   ├── lilygo_t3s3.h
+│   │   │   ├── rak3112_wismesh.h
+│   │   │   └── esp32_p4_nano.h    # pin map + Ethernet PHY config per board
 │   │   ├── oled_display.h
+│   │   ├── splash_logo.h          # 64×64 pyMC boot bitmap (PROGMEM)
 │   │   ├── wifi_manager.h
+│   │   ├── ethernet_manager.h     # RMII Ethernet (no-op on chips without EMAC)
 │   │   ├── tcp_server.h
 │   │   ├── config_portal.h
 │   │   ├── frame_parser.h
@@ -103,17 +109,20 @@ All board-specific GPIOs live in `firmware/include/boards/<name>.h`.
 Adding a new SX1262 carrier board is a one-file job — copy one of the
 existing headers and edit pins / RF-switch policy.
 
-| | Heltec V3 | Ikoka Stick |
-|--|--|--|
-| MCU | ESP32-S3 (built-in) | XIAO ESP32-S3 (socketed) |
-| LoRa front end | bare SX1262 | Ebyte E22-P868M30S (SX1262 + PA + LNA) |
-| LoRa SPI NSS / RST / BUSY / DIO1 | 8 / 12 / 13 / 14 | 5 / 3 / 4 / 2 |
-| OLED I2C SDA / SCL / RST | 17 / 18 / 21 | 43 / 44 / — |
-| OLED VEXT enable (active-LOW) | 36 | — (powered from 3V3) |
-| User button (PRG) | GPIO 0 | GPIO 1 (D0) |
-| Max TX power | 22 dBm | **30 dBm** (firmware ceiling) |
-| RF switch policy | DIO2 → SX1262 internal | EN held HIGH + DIO2 → external TXEN trace |
-| mDNS hostname | `heltec-<MAC3>.local` | `ikoka-<MAC3>.local` |
+| | Heltec V3 | Ikoka Stick | LilyGO T3-S3 | RAK3112 WisMesh | ESP32-P4-Nano |
+|--|--|--|--|--|--|
+| MCU | ESP32-S3 | XIAO ESP32-S3 | ESP32-S3 | ESP32-S3 (RAK3112 module) | ESP32-P4 (RISC-V) + C6 |
+| LoRa front end | bare SX1262 | Ebyte E22-P868M30S | bare SX1262 | SX1262 in-module | E22-P868M30S (off-board) |
+| LoRa SPI NSS / RST / BUSY / DIO1 | 8 / 12 / 13 / 14 | 5 / 3 / 4 / 2 | 7 / 8 / 34 / 33 | 24 / 25 / 21 / 20 | 45 / 20 / 23 / 22 |
+| OLED | onboard 0.96″ SSD1306 | external SSD1306 | none | none | external SSD1306 |
+| User button (PRG) | GPIO 0 | GPIO 1 | GPIO 0 | GPIO 0 | none ([conflict](#porting-to-another-esp32-p4-board)) |
+| Max TX power | 22 dBm | **30 dBm** | 22 dBm | 22 dBm | **30 dBm** |
+| RF switch policy | DIO2 → SX1262 internal | EN held HIGH + DIO2 → external TXEN | DIO2 internal | DIO2 internal | EN held HIGH + DIO2 internal |
+| Network | Wi-Fi | Wi-Fi | Wi-Fi | Wi-Fi | **Ethernet** (Wi-Fi disabled — see notes) |
+| mDNS hostname | `heltec-<MAC3>.local` | `ikoka-<MAC3>.local` | `lilygo-t3s3-<MAC3>.local` | `rak3112-<MAC3>.local` | `p4nano-<MAC3>.local` |
+
+The full pin numbers (incl. SCK/MISO/MOSI, OLED RST, VEXT enable, EN
+hold, etc.) are in each `boards/*.h` — the table above is a digest.
 
 ### E22-P RF switch handling (Ikoka & future Ebyte boards)
 
@@ -141,7 +150,68 @@ The full policy is captured per-board in `RfSwitchPolicy`
 separate MCU-driven enable lines just sets `rx_pin` / `tx_pin` and
 RadioLib's `setRfSwitchPins` takes care of toggling.
 
-## Wire protocol v0.5.9
+## Porting to another ESP32-P4 board
+
+The WaveShare ESP32-P4-Nano is the reference; its profile lives at
+`firmware/include/boards/esp32_p4_nano.h`. Most non-Nano P4 boards use
+the same architecture (RISC-V P4 + ESP32-C6 over SDIO + RMII Ethernet
+PHY), so adding one is mostly a matter of copying that header and
+adjusting pins. The PlatformIO env in `platformio.ini` pins the
+[pioarduino fork](https://github.com/pioarduino/platform-espressif32)
+because vanilla `platformio/espressif32` doesn't ship ESP32-P4 support
+yet — keep that line when you copy the env block.
+
+A few quirks differ from the ESP32-S3 family and are worth checking
+against the schematic of your specific carrier:
+
+- **Boot strap is GPIO35**, not GPIO0 (which is just a regular GPIO on
+  P4). On many P4 boards the BOOT button is wired to GPIO35 — but
+  GPIO35 is also one of the RMII data lines (TXD1) used by the EMAC.
+  When `ethernet.enabled = true`, the chip drives GPIO35 as a 25 MHz
+  RMII output and the button is unusable as an input (`digitalRead`
+  sees the TX bitstream). Either set `pin_user_button = -1` and live
+  without the screen-cycle button (the firmware then auto-cycles every
+  4 s), or wire your own button to a free GPIO (P1/P2 headers expose
+  20-23, 45-48, 54).
+
+- **GPIOs 49 and above sit on a separate LDO domain** that can be
+  flaky if the carrier doesn't bring it up the way the framework
+  expects. The Arduino-ESP32 `pins_arduino.h` for `esp32p4` even
+  carries a comment to that effect. RMII TX_EN (49) and RMII_CLK (50)
+  fall in that range, but they Just Work on the WaveShare reference;
+  if you're seeing PHY init fail on a different carrier, look there.
+
+- **Wi-Fi runs through the on-board ESP32-C6** via SDIO (esp_hosted
+  firmware on the C6). On the Nano with an external E22 attached over
+  jumper wires this combination is unstable: the PA's RF + ground-bounce
+  transients couple into the SDIO clock and the C6 falls off the bus
+  every ~25 s, triggering an SoC-wide RTC watchdog. Set `has_wifi =
+  false` and rely on Ethernet whenever an off-board E22 is in the
+  picture. Boards that solder the SX1262 onto a shared RF-clean PCB
+  may be OK with `has_wifi = true` — re-test on your hardware.
+
+- **Ethernet** is plumbed through `BoardConfig::EthernetConfig`. For
+  the IP101GRI on the Nano: `pin_mdc = 31`, `pin_mdio = 52`,
+  `pin_phy_reset = 51`, `phy_addr = 1`, `rmii_clock_input = true`
+  (50 MHz reference comes from the PHY). Other RMII PHYs (LAN8720,
+  RTL8201, KSZ8081) just need a new `EthernetPhy` enum value plus the
+  matching `eth_phy_type_t` mapping in `ethernet_manager.cpp`.
+  Static IP fields are optional — leave `use_static_ip = false` and
+  the firmware does DHCP.
+
+- **Debug serial:** ESP32-P4's native USB-CDC (USB-Serial-JTAG) on the
+  USB-C port works for esptool flashing but the Arduino `Serial`
+  routed through it produces corrupted bytes on the
+  pioarduino release we pin. Keep `ARDUINO_USB_CDC_ON_BOOT=0` and use
+  the second USB-C port (CH343P → UART0) for `Serial.printf` debug.
+  TCP via Ethernet is the practical observability channel.
+
+- **OLED** is optional. Set `pin_i2c_sda = -1, pin_i2c_scl = -1` and
+  `oled_display.cpp` short-circuits — `Wire.begin()` is skipped, every
+  `show*()` call returns immediately, the firmware runs as a headless
+  bridge.
+
+## Wire protocol v0.5.11
 
 *(Full command list in `firmware/include/protocol.h`; the section below is
 summarised.)*
@@ -173,6 +243,7 @@ CRC-16/CCITT (poly 0x1021, init 0xFFFF) over CMD+LEN+PAYLOAD.
 | 0x60 | WIFI_RESET        | —                                     |
 | 0x61 | GET_WIFI          | —                                     |
 | 0x70 | GET_VERSION       | —                                     |
+| 0x72 | GET_DEBUG         | — (reset reason / heap / max-loop time)|
 | 0xFF | PING              | —                                     |
 
 ### Modem → Host
@@ -191,7 +262,8 @@ CRC-16/CCITT (poly 0x1021, init 0xFFFF) over CMD+LEN+PAYLOAD.
 | 0x51 | AUTH_OK           | —                                     |
 | 0x62 | WIFI_STATUS       | mode + ip + port + ssid + hostname    |
 | 0x71 | VERSION_RESP      | ASCII version string                  |
-| 0xFE | ERROR             | error code (1 B)                      |
+| 0x73 | DEBUG_RESP        | reset(1) + uptime_ms(4) + heap(4) + min_heap(4) + max_loop_us(4) |
+| 0xFE | ERROR             | error code (1 B; `0x0B` = `ERR_NO_RADIO` for boards without LoRa hardware) |
 | 0xFF | PONG              | —                                     |
 
 ## Default radio parameters
@@ -215,12 +287,23 @@ overrides these via `CMD_SET_CONFIG` at `begin()`:
 
 ## OLED screens
 
-Short PRG tap cycles through:
+Boot sequence:
 
-1. **SLEEP** (display off after 30 s of idle)
-2. **STATUS** — RX/TX counters, SSID, IP, firmware version
+1. **Splash** — pyMC logo (64×64 bitmap from `firmware/include/splash_logo.h`),
+   held for ≥5 s while the rest of `setup()` (Wi-Fi connect, Ethernet bring-up,
+   radio init) runs in parallel.
+2. **STATUS** — RX/TX counters, SSID *or* `ethernet`, IP, state tag
+   (`WiFi` / `AP` / `ETH` / `ETHL` / `…`), firmware version
 3. **RADIO** — current radio config (freq, SF, BW, CR, power, preamble, sync)
 4. **DIAGNOSTICS** — uptime, TCP client IP, USB idle time, RX/TX/CRC counters
 
+On boards with a working PRG/BOOT button, short tap cycles between the
+three runtime screens and a short idle goes back to **SLEEP** (panel off
+after 30 s). On boards where the button is unavailable
+(e.g. ESP32-P4-Nano — see [P4-Nano notes](#porting-to-another-esp32-p4-board))
+the firmware **auto-cycles** STATUS → RADIO → DIAGNOSTICS every 4 s and
+keeps the panel awake.
+
 Long PRG hold (≥3 s at boot) = factory reset: wipes Wi-Fi NVS and reboots into
-AP configuration mode.
+AP configuration mode. Boards without a usable button: use `CMD_WIFI_RESET`
+over the protocol or erase NVS via `esptool erase_flash`.

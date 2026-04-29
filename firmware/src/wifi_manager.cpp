@@ -103,8 +103,9 @@ void factoryReset() {
 }
 
 void checkResetButton() {
-    const int  pin    = BOARD.pin_user_button;
-    const int  active = BOARD.user_button_active_low ? LOW : HIGH;
+    const int pin = BOARD.pin_user_button;
+    if (pin < 0) return;   // boards without a usable user button skip the reset hold
+    const int active = BOARD.user_button_active_low ? LOW : HIGH;
     pinMode(pin, INPUT_PULLUP);
     if (digitalRead(pin) != active) return;
 
@@ -176,6 +177,13 @@ static bool attemptSTA() {
     Serial.printf("[WiFi] STA connected ip=%s rssi=%d\n",
                   ipStr.c_str(), WiFi.RSSI());
     return true;
+}
+
+void loadConfigOnly() {
+    // Just load Wi-Fi/TCP config from NVS — do not touch the radio.
+    // Used on Wi-Fi-disabled boards so the saved tcpPort/tcpToken
+    // are still available to the TCP server.
+    loadConfig();
 }
 
 void begin() {

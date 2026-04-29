@@ -24,6 +24,7 @@
 #define CMD_WIFI_RESET      0x60    // Wipe Wi-Fi config from NVS and reboot into AP mode
 #define CMD_GET_WIFI        0x61    // v0.5 — Query Wi-Fi/OTA status (mode, IP, SSID, hostname)
 #define CMD_GET_VERSION     0x70    // v0.5.3 — Query firmware version string
+#define CMD_GET_DEBUG       0x72    // v0.5.11 — Query last reset reason + heap + uptime (debug)
 #define CMD_PING            0xFF    // Heartbeat ping
 
 // ─── Command bytes: Modem (Heltec) → Host (RPi) ─────────────
@@ -39,6 +40,10 @@
 #define CMD_AUTH_OK         0x51    // Auth accepted
 #define CMD_WIFI_STATUS     0x62    // v0.5 — Wi-Fi/OTA status response
 #define CMD_VERSION_RESP    0x71    // v0.5.3 — Firmware version (ASCII, no NUL)
+#define CMD_DEBUG_RESP      0x73    // v0.5.11 — Debug snapshot:
+                                    //   reset_reason(1B) | uptime_ms(4B LE)
+                                    //   | free_heap(4B LE) | min_free_heap(4B LE)
+                                    //   | last_loop_us(4B LE)
 #define CMD_ERROR           0xFE    // Error
 #define CMD_PONG            0xFF    // Heartbeat pong
 
@@ -53,6 +58,8 @@
 #define ERR_RADIO_INIT      0x08
 #define ERR_UNAUTHORIZED    0x09    // TCP client did not authenticate
 #define ERR_INVALID_WIFI    0x0A    // SET_WIFI payload malformed
+#define ERR_NO_RADIO        0x0B    // board has no LoRa radio attached
+                                    // (e.g. ESP32-P4-Nano without E22)
 
 // Max payload sizes
 #define MAX_LORA_PAYLOAD    255

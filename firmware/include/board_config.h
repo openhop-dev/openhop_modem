@@ -59,13 +59,17 @@ struct BoardConfig {
     const char* mdns_prefix;     // mDNS hostname stem; final form is
                                  // "<prefix>-<mac3>.local"
 
-    // SX1262 SPI + control pins. SCK/MISO/MOSI come from the board's
-    // default SPI bus (Arduino SPI.begin() picks them up); we only
-    // need the chip-specific ones explicitly.
+    // SX1262 SPI + control pins. SCK/MISO/MOSI fall back to the
+    // board variant's default SPI bus when set to -1; otherwise the
+    // firmware calls SPI.begin(sck, miso, mosi, nss) explicitly so
+    // boards that remap the bus (LilyGO T3-S3 etc.) just work.
     int8_t pin_lora_nss;
     int8_t pin_lora_rst;
     int8_t pin_lora_busy;
     int8_t pin_lora_dio1;        // DIO1 → MCU (IRQ line)
+    int8_t pin_lora_sck;         // -1 = use board default SPI
+    int8_t pin_lora_miso;
+    int8_t pin_lora_mosi;
 
     RfSwitchPolicy rf_switch;
 
@@ -92,6 +96,53 @@ struct BoardConfig {
     // 32 MHz TCXO powered by SX1262 DIO3 at 1.8 V.
     bool  use_dio3_tcxo;
     float tcxo_voltage;
+
+    // Some carriers (ESP32-P4-Nano) ship without an SX1262 — the
+    // module is added later. When false, main.cpp / wifi_manager skip
+    // every radio code path: no SX1262 init, no SET_CONFIG, no CAD,
+    // no RX worker. CMD_GET_CONFIG / CMD_STATUS still answer with
+    // current cached state so pymc_repeater can probe the modem.
+    bool has_lora_radio;
+
+    // ESP32-P4 has no native Wi-Fi/BT — it relies on an ESP32-C6
+    // co-processor running esp_hosted firmware over SDIO. If the C6
+    // hasn't been provisioned, calling WiFi.mode()/softAP() panics
+    // the chip. Set has_wifi = false to skip WifiManager::begin()
+    // entirely (Ethernet still comes up). Flip back to true once
+    // esp_hosted is flashed on the C6.
+    bool has_wifi;
+
+    // ─── On-board Ethernet (RMII PHY) ───────────────────────
+    // Set ethernet.enabled = true on boards with an internal EMAC +
+    // external PHY (currently only ESP32-P4-Nano with IP101GRI). The
+    // RMII data lines are bound to the EMAC peripheral by the
+    // chip's GPIO matrix; we only need to configure the management
+    // interface (MDC/MDIO), the PHY reset pin, and the PHY address.
+    enum class EthernetPhy : uint8_t {
+        NONE = 0,
+        IP101 = 1,
+        // Add LAN8720, RTL8201, KSZ8081, DM9051 etc. as needed.
+    };
+    struct EthernetConfig {
+        bool        enabled;
+        EthernetPhy phy_type;
+        int8_t      pin_mdc;
+        int8_t      pin_mdio;
+        int8_t      pin_phy_reset;     // -1 if not wired
+        int8_t      phy_addr;          // RMII address (set by AD0/AD3 strap pins)
+        bool        rmii_clock_input;  // true: 50 MHz clock comes FROM the PHY
+        // Static IP (optional). When use_static_ip = true the
+        // EthernetManager calls ETH.config() before ETH.begin() so
+        // the interface comes up with the configured address instead
+        // of waiting for DHCP. All fields are stored as 4-byte octet
+        // arrays so the config remains aggregate-initialised.
+        bool        use_static_ip;
+        uint8_t     static_ip[4];
+        uint8_t     gateway[4];
+        uint8_t     subnet[4];
+        uint8_t     dns[4];
+    };
+    EthernetConfig ethernet;
 };
 
 extern const BoardConfig BOARD;
@@ -101,6 +152,12 @@ extern const BoardConfig BOARD;
 #  include "boards/heltec_v3.h"
 #elif defined(BOARD_IKOKA_STICK)
 #  include "boards/ikoka_stick.h"
+#elif defined(BOARD_LILYGO_T3S3)
+#  include "boards/lilygo_t3s3.h"
+#elif defined(BOARD_RAK3112_WISMESH)
+#  include "boards/rak3112_wismesh.h"
+#elif defined(BOARD_ESP32_P4_NANO)
+#  include "boards/esp32_p4_nano.h"
 #else
-#  error "No board selected — add -DBOARD_HELTEC_V3 or -DBOARD_IKOKA_STICK to platformio.ini build_flags"
+#  error "No board selected — add one of -DBOARD_HELTEC_V3 / -DBOARD_IKOKA_STICK / -DBOARD_LILYGO_T3S3 / -DBOARD_RAK3112_WISMESH / -DBOARD_ESP32_P4_NANO to platformio.ini build_flags"
 #endif

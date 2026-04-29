@@ -31,6 +31,11 @@ struct Config {
 // Poll PRG button at boot; if held >= 3s, wipe NVS and reboot. Call from setup().
 void checkResetButton();
 
+// Load NVS config without bringing the radio up. Useful on boards where
+// has_wifi = false (e.g. ESP32-P4-Nano in diagnostic mode) so the rest of
+// the firmware can still read the saved tcpPort/tcpToken.
+void loadConfigOnly();
+
 // Load NVS config, try STA connect; on failure or empty config, start AP mode with
 // on-device configuration web UI. Blocks up to ~30s during STA attempt.
 void begin();

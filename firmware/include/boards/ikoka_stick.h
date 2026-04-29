@@ -24,11 +24,14 @@ inline const BoardConfig BOARD = {
     .mdns_prefix = "ikoka",
 
     // SX1262 control pins (XIAO default SPI: SCK=D8/GPIO7, MISO=D9/GPIO8,
-    // MOSI=D10/GPIO9 — all match the Ikoka schematic)
+    // MOSI=D10/GPIO9 — all match the Ikoka schematic; leave -1 to inherit)
     .pin_lora_nss  = 5,    // D4
     .pin_lora_rst  = 3,    // D2
     .pin_lora_busy = 4,    // D3
     .pin_lora_dio1 = 2,    // D1
+    .pin_lora_sck  = -1,
+    .pin_lora_miso = -1,
+    .pin_lora_mosi = -1,
 
     .rf_switch = {
         .en_pin            = 6,     // RXEN, GPIO6 / D5 — see header note
@@ -54,4 +57,8 @@ inline const BoardConfig BOARD = {
 
     .use_dio3_tcxo = true,
     .tcxo_voltage  = 1.8f,
+
+    .has_lora_radio = true,
+    .has_wifi       = true,
+    .ethernet = { .enabled = false },
 };

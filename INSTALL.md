@@ -4,13 +4,22 @@ All commands assume you are in the repository root `pymc_usb/`.
 
 ## 1. Flash the firmware
 
-The same source tree builds two binaries; pick the env that matches
+The same source tree builds five binaries; pick the env that matches
 your board:
 
-| Board | PlatformIO env | mDNS name |
-|---|---|---|
-| Heltec WiFi LoRa 32 V3 | `heltec_v3` | `heltec-<mac3>.local` |
-| Ikoka Stick (XIAO ESP32-S3 + E22-P868M30S) | `ikoka_stick` | `ikoka-<mac3>.local` |
+| Board | PlatformIO env | mDNS name | Network |
+|---|---|---|---|
+| Heltec WiFi LoRa 32 V3 | `heltec_v3` | `heltec-<mac3>.local` | Wi-Fi |
+| Ikoka Stick (XIAO ESP32-S3 + E22-P868M30S) | `ikoka_stick` | `ikoka-<mac3>.local` | Wi-Fi |
+| LilyGO T-LoRa T3-S3 v1.2/v1.3 | `lilygo_t3s3` | `lilygo-t3s3-<mac3>.local` | Wi-Fi |
+| RAK3112 WisMesh | `rak3112_wismesh` | `rak3112-<mac3>.local` | Wi-Fi |
+| WaveShare ESP32-P4-Nano (+ off-board E22) | `esp32_p4_nano` | `p4nano-<mac3>.local` | **Ethernet** (Wi-Fi off when E22 is wired — see README "Porting to another ESP32-P4 board") |
+
+The `esp32_p4_nano` env uses the
+[pioarduino fork](https://github.com/pioarduino/platform-espressif32)
+(pinned in `platformio.ini`) because vanilla `platformio/espressif32`
+doesn't ship ESP32-P4 support yet; first build will fetch the platform
+package once.
 
 ### 1a. Prebuilt binaries (no PlatformIO)
 
@@ -23,26 +32,35 @@ artefacts each:
 | `firmware/<env>/partitions.bin`   | `0x8000`  | 3 kB   |
 | `firmware/<env>/firmware.bin`     | `0x10000` | ~830 kB|
 
-`<env>` is one of:
-
-- `heltec_v3` — Heltec WiFi LoRa 32 V3
-- `ikoka_stick` — XIAO ESP32-S3 + Ebyte E22-P868M30S
+`<env>` is one of: `heltec_v3`, `ikoka_stick`, `lilygo_t3s3`,
+`rak3112_wismesh`, `esp32_p4_nano`.
 
 ```bash
 pip install esptool
 
-# Full flash (fresh board, first install) — replace heltec_v3 with
-# ikoka_stick when flashing an Ikoka:
-ENV=heltec_v3
-esptool.py --chip esp32s3 --port /dev/ttyUSB0 --baud 921600 write_flash \
+# Full flash (fresh board, first install) — replace the ENV/CHIP pair
+# with the row that matches your board:
+ENV=heltec_v3      ; CHIP=esp32s3   # also for ikoka_stick / lilygo_t3s3 / rak3112_wismesh
+# ENV=esp32_p4_nano ; CHIP=esp32p4
+
+esptool.py --chip $CHIP --port /dev/ttyUSB0 --baud 921600 write_flash \
     0x0     firmware/$ENV/bootloader.bin \
     0x8000  firmware/$ENV/partitions.bin \
     0x10000 firmware/$ENV/firmware.bin
 
 # App-only update (board that already has a matching bootloader):
-esptool.py --chip esp32s3 --port /dev/ttyUSB0 --baud 921600 write_flash \
+esptool.py --chip $CHIP --port /dev/ttyUSB0 --baud 921600 write_flash \
     0x10000 firmware/$ENV/firmware.bin
 ```
+
+> **ESP32-P4-Nano flash port:** the WaveShare board exposes the chip's
+> native USB-Serial-JTAG on one of its USB-C ports (`/dev/cu.usbmodem*`
+> on macOS, `/dev/ttyACM*` on Linux); use that one for esptool. The
+> other USB-C port (CH343P → UART0) shows up as
+> `/dev/cu.wchusbserial*` / `/dev/ttyUSB*` and is for `Serial.printf`
+> debug only — not for flashing. If esptool can't auto-enter download
+> mode, hold **BOOT (Key1)**, briefly press **RESET (Key2)**, release
+> RESET, release BOOT, then re-run.
 
 On macOS the port is usually `/dev/cu.usbmodem*` for the Ikoka (native
 USB-CDC) or `/dev/cu.usbserial-*` for the Heltec (CP2102). If the board
@@ -55,13 +73,14 @@ USB and release it once `esptool.py` starts. After flashing press
 ```bash
 cd firmware
 
-# Heltec V3
-pio run -e heltec_v3 -t upload
+# Pick the env matching your board:
+pio run -e heltec_v3       -t upload
+pio run -e ikoka_stick     -t upload
+pio run -e lilygo_t3s3     -t upload
+pio run -e rak3112_wismesh -t upload
+pio run -e esp32_p4_nano   -t upload   # uses the pioarduino platform fork
 
-# Ikoka Stick (XIAO ESP32-S3 + E22-P868M30S)
-pio run -e ikoka_stick -t upload
-
-# Refresh the prebuilt binaries under firmware/<env>/ for both envs:
+# Refresh the prebuilt binaries under firmware/<env>/ for every env:
 ./build_release.sh
 ```
 
@@ -69,19 +88,26 @@ The XIAO board enters bootloader mode automatically when PlatformIO
 issues the reset; if not, double-tap RESET on the XIAO to enter the
 Adafruit/SAM-DA bootloader, or hold BOOT while plugging USB.
 
-### 1c. OTA update over Wi-Fi (after the first flash — no cable)
+### 1c. OTA update over the network (after the first flash — no cable)
 
-Once the board is provisioned and visible via mDNS:
+Once the board is provisioned and reachable (Wi-Fi STA or Ethernet)
+via mDNS:
 
 ```bash
-# From firmware/ — Heltec
-pio run -e heltec_v3 -t upload --upload-port heltec-abcdef.local
-# Or plain HTTP:
-curl -F firmware=@.pio/build/heltec_v3/firmware.bin http://heltec-abcdef.local/update
+# From firmware/, generic form — substitute your env + hostname:
+pio run -e <env> -t upload --upload-port <env-mdns>-<mac3>.local
+curl -F firmware=@.pio/build/<env>/firmware.bin \
+     http://<env-mdns>-<mac3>.local/update
+```
 
-# Ikoka
-pio run -e ikoka_stick -t upload --upload-port ikoka-abcdef.local
-curl -F firmware=@.pio/build/ikoka_stick/firmware.bin http://ikoka-abcdef.local/update
+Examples:
+
+```bash
+pio run -e heltec_v3       -t upload --upload-port heltec-abcdef.local
+pio run -e ikoka_stick     -t upload --upload-port ikoka-abcdef.local
+pio run -e lilygo_t3s3     -t upload --upload-port lilygo-t3s3-abcdef.local
+pio run -e rak3112_wismesh -t upload --upload-port rak3112-abcdef.local
+pio run -e esp32_p4_nano   -t upload --upload-port p4nano-abcdef.local
 ```
 
 The board reboots automatically after upload. The old firmware is **not**
@@ -91,10 +117,23 @@ as a fallback for recovery.
 ### Adding a new board
 
 Drop a new file under `firmware/include/boards/<my_board>.h` modelled on
-`heltec_v3.h`, add `-DBOARD_MY_BOARD` to a new env in `platformio.ini`,
-and a matching `#elif defined(BOARD_MY_BOARD)` arm in `board_config.h`.
-The rest of the firmware reads everything through `BOARD.*` and doesn't
-need to change.
+the closest existing header, add `-DBOARD_MY_BOARD` to a new env in
+`platformio.ini`, and a matching `#elif defined(BOARD_MY_BOARD)` arm in
+`board_config.h`. The rest of the firmware reads everything through
+`BOARD.*` and doesn't need to change.
+
+For a different ESP32-S3 board with a soldered SX1262, copy
+`heltec_v3.h` (no PA, internal RF switch) or `lilygo_t3s3.h`. For an
+E22-P / Ebyte module on a fresh carrier, copy `ikoka_stick.h`. For
+another **ESP32-P4** carrier (RISC-V P4 + C6 SDIO bridge + RMII PHY),
+start from `esp32_p4_nano.h` and read the
+"[Porting to another ESP32-P4 board](README.md#porting-to-another-esp32-p4-board)"
+section in the README — it covers the GPIO35 boot/RMII collision, the
+LDO power domain on high-numbered GPIOs, the C6/esp_hosted RF
+sensitivity (`has_wifi`), the Ethernet PHY config block, and the
+`ARDUINO_USB_CDC_ON_BOOT=0` quirk. Each one was found the hard way on
+the WaveShare reference; the workarounds are baked into the existing
+header.
 
 ## 2. USB connection (`pymc_usb` radio type)
 
@@ -342,9 +381,10 @@ Retransmitted packet (X bytes, Yms airtime)   ← mesh forwarding is live
 
 ## 7. Verification checklist
 
-- **Firmware version:** OLED boot splash shows `v0.5.9`. Or programmatically:
+- **Firmware version:** the STATUS screen shows it after the boot
+  splash. Or programmatically:
   ```python
-  await radio.get_version()   # "v0.5.9"
+  await radio.get_version()   # e.g. "v0.5.11-heltec" / "-esp32p4"
   ```
 - **OLED screen cycle** (short PRG taps): SLEEP → STATUS → RADIO → DIAGNOSTICS.
   The RADIO screen shows the live chip configuration (freq, SF, BW, CR,

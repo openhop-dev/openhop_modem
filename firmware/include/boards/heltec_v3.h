@@ -12,11 +12,15 @@ inline const BoardConfig BOARD = {
     .fw_suffix   = "heltec",
     .mdns_prefix = "heltec",
 
-    // SX1262 control pins (default ESP32-S3 SPI bus is used implicitly)
+    // SX1262 control pins (board variant remaps default SPI to match the
+    // SX1262 wiring — leave SCK/MISO/MOSI at -1 to inherit those defaults)
     .pin_lora_nss  = 8,
     .pin_lora_rst  = 12,
     .pin_lora_busy = 13,
     .pin_lora_dio1 = 14,
+    .pin_lora_sck  = -1,
+    .pin_lora_miso = -1,
+    .pin_lora_mosi = -1,
 
     .rf_switch = {
         .en_pin            = -1,    // no external switch — SX1262 internal only
@@ -39,4 +43,8 @@ inline const BoardConfig BOARD = {
 
     .use_dio3_tcxo = true,
     .tcxo_voltage  = 1.8f,
+
+    .has_lora_radio = true,
+    .has_wifi       = true,
+    .ethernet = { .enabled = false },
 };

@@ -13,9 +13,12 @@
 // =============================================================
 
 #include <Arduino.h>
+#include <SPI.h>
 #include <RadioLib.h>
 #include <WiFi.h>
 #include <esp_task_wdt.h>
+#include <esp_system.h>
+#include <esp_mac.h>
 #include "protocol.h"
 #include "board_config.h"
 #include "oled_display.h"
@@ -23,11 +26,12 @@
 #include "tcp_server.h"
 #include "frame_parser.h"
 #include "ota_manager.h"
+#include "ethernet_manager.h"
 
 // ─── Version ─────────────────────────────────────────────────
 // Base version is shared by every board; the board's fw_suffix
 // distinguishes one binary from another (e.g. "v0.5.10-ikoka").
-#define FW_VERSION_BASE "v0.5.10"
+#define FW_VERSION_BASE "v0.5.11"
 static String fwVersion;   // populated in setup()
 
 // ─── Task watchdog — self-heal on loop() hang ───────────────
@@ -94,8 +98,23 @@ enum class Screen : uint8_t { SLEEP = 0, STATUS = 1, RADIO = 2, DIAGNOSTICS = 3 
 static Screen   currentScreen  = Screen::SLEEP;
 static constexpr uint32_t OLED_WAKE_DURATION_MS = 30000;
 static constexpr uint32_t PRG_DEBOUNCE_MS       = 200;
-static uint32_t oledWakeUntil = 0;
-static uint32_t prgIgnoreUntil = 0;
+// pyMC splash holds for at least SPLASH_HOLD_MS while setup() runs Wi-Fi /
+// Ethernet / radio init in parallel. End-of-setup waits out any remainder.
+static constexpr uint32_t SPLASH_HOLD_MS        = 5000;
+// Boards without a usable PRG/BOOT button (pin_user_button < 0) cycle
+// STATUS→RADIO→DIAGNOSTICS→STATUS automatically every SCREEN_AUTO_CYCLE_MS.
+// Boards with a working button keep the manual short-tap cycle and ignore this.
+static constexpr uint32_t SCREEN_AUTO_CYCLE_MS  = 4000;
+static uint32_t oledWakeUntil    = 0;
+static uint32_t prgIgnoreUntil   = 0;
+static uint32_t splashStartedMs  = 0;
+static uint32_t lastAutoCycleMs  = 0;
+
+// Worst-case loop() iteration time observed since boot. Reported via
+// CMD_GET_DEBUG so we can spot watchdog-bait blocking calls without
+// a serial cable. Reset on overflow doesn't matter — value is rolling
+// max in microseconds.
+static uint32_t maxLoopUs = 0;
 
 // Host-link health for the DIAGNOSTICS screen: millis() of the last USB
 // frame that parsed cleanly. 0 = no frame yet since boot.
@@ -114,8 +133,13 @@ void onDio1Rise() {
 // device — host resolves it via mDNS: e.g. `heltec-ab12cd.local`
 // or `ikoka-ab12cd.local` depending on the board.
 static String buildHostname() {
-    uint8_t mac[6];
-    WiFi.macAddress(mac);
+    // Read directly from eFuse so this works even on boards where the
+    // Wi-Fi stack hasn't been initialised (ESP32-P4 with the C6 SDIO
+    // bridge unprovisioned). esp_efuse_mac_get_default() returns the
+    // base MAC; WiFi STA MAC == base MAC, so the value is the same as
+    // the previous WiFi.macAddress() call.
+    uint8_t mac[6] = {0};
+    esp_efuse_mac_get_default(mac);
     char buf[40];
     snprintf(buf, sizeof(buf), "%s-%02x%02x%02x",
              BOARD.mdns_prefix, mac[3], mac[4], mac[5]);
@@ -132,6 +156,11 @@ static String buildHostname() {
 static uint32_t enLowStartedMs = 0;
 
 static void rfSwitchEnLowAtBoot() {
+    // Boards without a LoRa front end (e.g. ESP32-P4-Nano on day one)
+    // list pin numbers for documentation but the module is not actually
+    // wired — skip every RF-switch action so we don't drive a pin into
+    // an unused circuit and don't pay the multi-second settle delay.
+    if (!BOARD.has_lora_radio) return;
     if (BOARD.rf_switch.en_pin < 0) return;
     pinMode(BOARD.rf_switch.en_pin, OUTPUT);
     digitalWrite(BOARD.rf_switch.en_pin, LOW);
@@ -139,6 +168,7 @@ static void rfSwitchEnLowAtBoot() {
 }
 
 static void rfSwitchEnHighAfterSettle() {
+    if (!BOARD.has_lora_radio) return;
     if (BOARD.rf_switch.en_pin < 0) return;
     uint32_t elapsed = millis() - enLowStartedMs;
     if (elapsed < BOARD.rf_switch.en_low_hold_ms) {
@@ -375,6 +405,22 @@ void processHostCommand(uint8_t cmd, const uint8_t* payload, uint16_t len,
                         TransportSource src) {
     // Any successfully-processed host frame counts toward OTA sanity.
     OTAManager::notifyValidFrame();
+
+    // Boards without a LoRa radio (ESP32-P4-Nano on day one) ack the
+    // non-radio commands (PING, GET_VERSION, GET_WIFI, AUTH, …) but
+    // refuse anything that would touch the SX1262. The host can still
+    // probe the modem and configure Wi-Fi via the existing flow.
+    if (!BOARD.has_lora_radio) {
+        switch (cmd) {
+        case CMD_TX_REQUEST:  case CMD_SET_CONFIG:  case CMD_GET_CONFIG:
+        case CMD_STATUS_REQ:  case CMD_NOISE_REQ:   case CMD_CAD_REQUEST:
+        case CMD_RX_START:    case CMD_SET_CAD_PARAMS:
+            sendError(ERR_NO_RADIO, src);
+            return;
+        default:
+            break;  // PING / GET_VERSION / WiFi / AUTH stay live
+        }
+    }
 
     switch (cmd) {
 
@@ -613,6 +659,23 @@ void processHostCommand(uint8_t cmd, const uint8_t* payload, uint16_t len,
         break;
     }
 
+    case CMD_GET_DEBUG: {
+        // Snapshot for crash-loop diagnosis without a serial cable.
+        // Layout: reset_reason(1B) | uptime_ms(4B LE) | free_heap(4B)
+        //         | min_free_heap(4B) | last_loop_us(4B)
+        uint8_t buf[17];
+        buf[0] = (uint8_t)esp_reset_reason();
+        uint32_t up_ms     = millis();
+        uint32_t freeHeap  = (uint32_t)ESP.getFreeHeap();
+        uint32_t minHeap   = (uint32_t)ESP.getMinFreeHeap();
+        memcpy(&buf[1],  &up_ms,    4);
+        memcpy(&buf[5],  &freeHeap, 4);
+        memcpy(&buf[9],  &minHeap,  4);
+        memcpy(&buf[13], &maxLoopUs, 4);
+        sendFrame(CMD_DEBUG_RESP, buf, sizeof(buf), src);
+        break;
+    }
+
     case CMD_PING: {
         sendFrame(CMD_PONG, nullptr, 0, src);
         break;
@@ -658,12 +721,46 @@ void setup() {
     rfSwitchEnLowAtBoot();
 
     Serial.begin(921600);
-    delay(500);
+    // On boards with native USB-CDC (Ikoka, LilyGO T3-S3) the first
+    // Serial output races against the host opening the CDC endpoint —
+    // anything printed before the host attaches is silently dropped.
+    // Wait up to 3 s for `Serial` to report itself as connected so the
+    // [BOOT] reset_reason banner reliably reaches the operator. Boards
+    // with a UART bridge fall through immediately — Serial is always
+    // truthy on hardware UART.
+    {
+        uint32_t t0_serial = millis();
+        while (!Serial && (millis() - t0_serial) < 3000) delay(10);
+    }
+    delay(200);
 
     fwVersion = String(FW_VERSION_BASE) + "-" + BOARD.fw_suffix;
 
+    // Print the reason this boot started so we can tell brownouts,
+    // panics, watchdog timeouts and clean reboots apart even on boards
+    // without UART0 (Ikoka — native USB-CDC only, ROM banner doesn't
+    // reach the host). esp_reset_reason() values:
+    //   1 POWERON, 2 EXT, 3 SW, 4 PANIC, 5 INT_WDT, 6 TASK_WDT,
+    //   7 WDT, 8 DEEPSLEEP, 9 BROWNOUT, 10 SDIO, 11 USB.
+    {
+        const char* labels[] = {
+            "?", "POWERON", "EXT", "SW", "PANIC",
+            "INT_WDT", "TASK_WDT", "WDT", "DEEPSLEEP",
+            "BROWNOUT", "SDIO", "USB"
+        };
+        int rr = (int)esp_reset_reason();
+        const char* lbl = (rr >= 0 && (size_t)rr < sizeof(labels)/sizeof(labels[0]))
+                              ? labels[rr] : "OTHER";
+        Serial.printf("[BOOT] reset_reason=%d (%s)\n", rr, lbl);
+    }
+
+    // Boot splash: show pyMC logo for at least SPLASH_HOLD_MS while the
+    // rest of setup() (Wi-Fi connect, Ethernet bring-up, radio init)
+    // proceeds in the background. We just record when it went up;
+    // the wait-until-elapsed happens at the end of setup().
     oled.begin();
-    oled.showBoot(fwVersion.c_str());
+    oled.showSplash();
+    splashStartedMs = millis();
 
     // Wait out the remaining EN-LOW hold (5 s on Ikoka; 0 on Heltec)
     // and raise EN HIGH for the rest of the device's lifetime. After
@@ -671,57 +768,125 @@ void setup() {
     // rx_pin / tx_pin GPIOs) will drive the actual TX/RX selection.
     rfSwitchEnHighAfterSettle();
 
-    int state = radio.begin();
-    if (state != RADIOLIB_ERR_NONE) {
-        oled.showError("SX1262 init fail!");
-        while (Serial.availableForWrite() == 0) delay(10);
-        sendError(ERR_RADIO_INIT, TransportSource::USB);
-        // Do not enter OTA loop without a working radio — this firmware
-        // would be rolled back automatically by the bootloader on reset.
-        while (true) delay(1000);
+    // ─── SX1262 init (skipped when board has no LoRa hardware) ──
+    // ESP32-P4-NANO ships without a LoRa front end on day one — the
+    // module is added later. Until then BOARD.has_lora_radio == false
+    // and the firmware runs as a plain pymc_repeater bridge over
+    // Wi-Fi / Ethernet, returning ERR_NO_RADIO for radio commands so
+    // the host can still probe the modem.
+    if (BOARD.has_lora_radio) {
+        // Bring up the SPI bus for the SX1262 BEFORE radio.begin(). When
+        // BOARD.pin_lora_sck/miso/mosi are -1 the board variant's default
+        // SPI pins already match the LoRa wiring (Heltec V3, XIAO ESP32-S3
+        // for Ikoka) and we leave the bus alone. When they're set the
+        // board has remapped SPI (LilyGO T3-S3 etc.) and we must call
+        // SPI.begin() with the explicit pins or RadioLib's first SPI
+        // transfer fails.
+        if (BOARD.pin_lora_sck >= 0 || BOARD.pin_lora_miso >= 0 || BOARD.pin_lora_mosi >= 0) {
+            SPI.begin(BOARD.pin_lora_sck, BOARD.pin_lora_miso,
+                      BOARD.pin_lora_mosi, BOARD.pin_lora_nss);
+        }
+
+        int state = radio.begin();
+        if (state != RADIOLIB_ERR_NONE) {
+            oled.showError("SX1262 init fail!");
+            while (Serial.availableForWrite() == 0) delay(10);
+            sendError(ERR_RADIO_INIT, TransportSource::USB);
+            // Do not enter OTA loop without a working radio — this
+            // firmware would be rolled back automatically by the
+            // bootloader on reset.
+            while (true) delay(1000);
+        }
+
+        if (BOARD.use_dio3_tcxo) radio.setTCXO(BOARD.tcxo_voltage);
+        rfSwitchConfigureRadio();
+
+        if (!applyConfig(currentConfig)) {
+            oled.showError("Config fail!");
+            sendError(ERR_INVALID_CONFIG, TransportSource::USB);
+            while (true) delay(1000);
+        }
+
+        radio.setDio1Action(onDio1Rise);
+
+        if (!startReceive()) {
+            oled.showError("RX start fail!");
+            while (true) delay(1000);
+        }
+
+        radioReady = true;
+    } else {
+        Serial.println("[BOOT] no LoRa radio on this board — running as Wi-Fi/Ethernet bridge only");
+        radioReady = false;
     }
-
-    if (BOARD.use_dio3_tcxo) radio.setTCXO(BOARD.tcxo_voltage);
-    rfSwitchConfigureRadio();
-
-    if (!applyConfig(currentConfig)) {
-        oled.showError("Config fail!");
-        sendError(ERR_INVALID_CONFIG, TransportSource::USB);
-        while (true) delay(1000);
-    }
-
-    radio.setDio1Action(onDio1Rise);
-
-    if (!startReceive()) {
-        oled.showError("RX start fail!");
-        while (true) delay(1000);
-    }
-
-    radioReady = true;
-    oled.showStatus(0, 0, "---", "---", "BOOT", fwVersion.c_str());
-    currentScreen = Screen::STATUS;
-    oledWakeUntil = millis() + OLED_WAKE_DURATION_MS;
 
     // Wi-Fi must come up before we know our MAC-derived hostname.
-    WifiManager::begin();
+    // Boards without Wi-Fi hardware (e.g. ESP32-P4-Nano whose C6 hasn't
+    // been provisioned with esp_hosted) skip the manager — calling
+    // WiFi.* on a non-responding SDIO bridge crashes the SoC.
+    if (BOARD.has_wifi) {
+        WifiManager::begin();
+        WiFi.setHostname(buildHostname().c_str());
+    } else {
+        // Wi-Fi disabled but TCP server still needs the saved port/token.
+        WifiManager::loadConfigOnly();
+    }
     deviceHostname = buildHostname();
-    WiFi.setHostname(deviceHostname.c_str());
 
-    if (WifiManager::isSTAConnected()) {
+    // Optional on-board Ethernet (currently only ESP32-P4-Nano). Runs
+    // alongside Wi-Fi; whichever interface acquires an IP first will
+    // serve the TCP control plane. WiFiServer binds to INADDR_ANY so
+    // a single server accepts connections via either interface.
+    EthernetManager::begin();
+
+    bool netUp = WifiManager::isSTAConnected() || EthernetManager::hasIP();
+    if (netUp) {
         const auto& wcfg = WifiManager::getConfig();
-        TCPServer::begin(wcfg.tcpPort, wcfg.tcpToken);
+        // Diagnostic mode (has_wifi == false): ignore the saved token
+        // so we can probe the TCP server without re-authenticating.
+        // Restore normal auth once Wi-Fi comes back.
+        String token = BOARD.has_wifi ? wcfg.tcpToken : String();
+        uint16_t port = wcfg.tcpPort ? wcfg.tcpPort : 5055;
+        TCPServer::begin(port, token);
         tcpStarted = true;
 
-        OTAManager::begin(deviceHostname, wcfg.tcpToken);
+        OTAManager::begin(deviceHostname, token);
         otaStarted = true;
     }
+
+    // Hold the splash for the rest of SPLASH_HOLD_MS if init finished
+    // earlier than that. Wi-Fi STA connect already burns several seconds
+    // so on most boards this loop is a no-op, but on the P4-Nano (no
+    // radio init, no Wi-Fi delay when offline) we still want the logo
+    // up for a clean visible second.
+    while (millis() - splashStartedMs < SPLASH_HOLD_MS) {
+        delay(50);
+    }
+
+    oled.showStatus(0, 0,
+                    BOARD.has_wifi ? WifiManager::getSSID() : "---",
+                    EthernetManager::hasIP() ? EthernetManager::getIPString()
+                                             : (BOARD.has_wifi ? WifiManager::getIPString() : "---"),
+                    "BOOT", fwVersion.c_str());
+    currentScreen = Screen::STATUS;
+    oledWakeUntil = millis() + OLED_WAKE_DURATION_MS;
+    lastAutoCycleMs = millis();   // first auto-cycle fires SCREEN_AUTO_CYCLE_MS after splash
 
     // Arm the task watchdog LAST — everything above may legitimately take
     // many seconds (WiFi STA connect up to 30 s). From now on, any loop()
     // iteration that doesn't complete within LOOP_WDT_TIMEOUT_S triggers a
     // panic reboot. If the bootloader is OTA-aware, the rolled-back slot
     // would take over; on stock Arduino bootloader, the same image reboots.
-    esp_task_wdt_init(LOOP_WDT_TIMEOUT_S, true);
+    // ESP-IDF 5.x autostarts the task WDT on the IDLE tasks; we just
+    // adjust the timeout + enable panic so a stuck loop() reboots.
+    {
+        esp_task_wdt_config_t wdt_cfg = {
+            .timeout_ms     = LOOP_WDT_TIMEOUT_S * 1000U,
+            .idle_core_mask = 0,
+            .trigger_panic  = true,
+        };
+        esp_task_wdt_reconfigure(&wdt_cfg);
+    }
     esp_task_wdt_add(NULL);
 
     Serial.printf("[BOOT] firmware %s on %s ready (loop WDT %us)\n",
@@ -754,6 +919,15 @@ void sampleNoiseFloor() {
 
 // ─── Main loop ───────────────────────────────────────────────
 void loop() {
+    // Track per-iteration time for watchdog-bait detection. Stored as
+    // rolling max in microseconds; queryable via CMD_GET_DEBUG.
+    static uint32_t loopStartUs = 0;
+    if (loopStartUs != 0) {
+        uint32_t dt = (uint32_t)micros() - loopStartUs;
+        if (dt > maxLoopUs) maxLoopUs = dt;
+    }
+    loopStartUs = (uint32_t)micros();
+
     esp_task_wdt_reset();   // feed the loop watchdog every pass
 
     // DIO1 during TX is consumed by the TX handler's own wait loop; in
@@ -773,23 +947,33 @@ void loop() {
     if (otaStarted) OTAManager::loop();
 
     sampleNoiseFloor();
-    WifiManager::loop();
+    if (BOARD.has_wifi) WifiManager::loop();
+    EthernetManager::loop();
 
-    // Lazy TCP + OTA start if STA came up after boot
-    if (!tcpStarted && WifiManager::isSTAConnected()) {
+    // Lazy TCP + OTA start if STA or Ethernet came up after boot.
+    bool netUp = WifiManager::isSTAConnected() || EthernetManager::hasIP();
+    if (!tcpStarted && netUp) {
         const auto& wcfg = WifiManager::getConfig();
-        TCPServer::begin(wcfg.tcpPort, wcfg.tcpToken);
+        String token = BOARD.has_wifi ? wcfg.tcpToken : String();
+        uint16_t port = wcfg.tcpPort ? wcfg.tcpPort : 5055;
+        TCPServer::begin(port, token);
         tcpStarted = true;
     }
-    if (!otaStarted && WifiManager::isSTAConnected()) {
+    if (!otaStarted && netUp) {
         const auto& wcfg = WifiManager::getConfig();
-        OTAManager::begin(deviceHostname, wcfg.tcpToken);
+        String token = BOARD.has_wifi ? wcfg.tcpToken : String();
+        OTAManager::begin(deviceHostname, token);
         otaStarted = true;
     }
 
     // PRG short-tap: cycle SLEEP → STATUS → RADIO → DIAGNOSTICS → STATUS → …
     // (Factory reset on 3 s hold-at-boot is handled in setup()/checkResetButton.)
-    bool btn = (digitalRead(BOARD.pin_user_button) == (BOARD.user_button_active_low ? LOW : HIGH));
+    // Boards with pin_user_button < 0 (e.g. ESP32-P4-Nano where the BOOT
+    // button shares a pin with RMII Ethernet TXD1) skip polling entirely.
+    bool btn = false;
+    if (BOARD.pin_user_button >= 0) {
+        btn = (digitalRead(BOARD.pin_user_button) == (BOARD.user_button_active_low ? LOW : HIGH));
+    }
     if (btn && millis() > prgIgnoreUntil) {
         prgIgnoreUntil = millis() + PRG_DEBOUNCE_MS;
         oledWakeUntil  = millis() + OLED_WAKE_DURATION_MS;
@@ -811,6 +995,24 @@ void loop() {
         lastOledUpdate = 0;  // force immediate refresh on next render pass
     }
 
+    // Auto-cycle for boards without a working user button. Keeps the
+    // panel awake (continually pushes oledWakeUntil forward) and steps
+    // through STATUS → RADIO → DIAGNOSTICS every SCREEN_AUTO_CYCLE_MS.
+    if (BOARD.pin_user_button < 0) {
+        oledWakeUntil = millis() + OLED_WAKE_DURATION_MS;
+        if (currentScreen != Screen::SLEEP &&
+            millis() - lastAutoCycleMs >= SCREEN_AUTO_CYCLE_MS) {
+            lastAutoCycleMs = millis();
+            switch (currentScreen) {
+                case Screen::STATUS:      currentScreen = Screen::RADIO; break;
+                case Screen::RADIO:       currentScreen = Screen::DIAGNOSTICS; break;
+                case Screen::DIAGNOSTICS: currentScreen = Screen::STATUS; break;
+                default:                  currentScreen = Screen::STATUS; break;
+            }
+            lastOledUpdate = 0;  // force immediate redraw on next render pass
+        }
+    }
+
     if (currentScreen != Screen::SLEEP) {
         if ((int32_t)(millis() - oledWakeUntil) >= 0) {
             oled.turnOff();
@@ -818,14 +1020,36 @@ void loop() {
         } else if (millis() - lastOledUpdate > 2000) {
             lastOledUpdate = millis();
             if (currentScreen == Screen::STATUS) {
+                // Prefer the interface that actually has an IP. When
+                // Wi-Fi is disabled at compile time (P4-Nano diag mode)
+                // the IP comes from Ethernet — show ETH status + IP +
+                // link-up tag so the panel reflects reality.
                 const char* stateTag;
-                if (WifiManager::isAPActive())          stateTag = "AP";
-                else if (WifiManager::isSTAConnected()) stateTag = "WiFi";
-                else                                    stateTag = "...";
+                const char* ssid;
+                const char* ip;
+                if (BOARD.has_wifi && WifiManager::isAPActive()) {
+                    stateTag = "AP";
+                    ssid     = WifiManager::getSSID();
+                    ip       = WifiManager::getIPString();
+                } else if (BOARD.has_wifi && WifiManager::isSTAConnected()) {
+                    stateTag = "WiFi";
+                    ssid     = WifiManager::getSSID();
+                    ip       = WifiManager::getIPString();
+                } else if (EthernetManager::hasIP()) {
+                    stateTag = "ETH";
+                    ssid     = "ethernet";
+                    ip       = EthernetManager::getIPString();
+                } else if (EthernetManager::isLinkUp()) {
+                    stateTag = "ETHL";   // link up but no IP yet (DHCP pending / static fail)
+                    ssid     = "ethernet";
+                    ip       = "no-ip";
+                } else {
+                    stateTag = "...";
+                    ssid     = BOARD.has_wifi ? WifiManager::getSSID()    : "---";
+                    ip       = BOARD.has_wifi ? WifiManager::getIPString(): "---";
+                }
                 oled.showStatus(status.rx_count, status.tx_count,
-                                WifiManager::getSSID(),
-                                WifiManager::getIPString(),
-                                stateTag, fwVersion.c_str());
+                                ssid, ip, stateTag, fwVersion.c_str());
             } else if (currentScreen == Screen::RADIO) {
                 oled.showRadioConfig(currentConfig.freq_hz,
                                      currentConfig.bandwidth_hz,

@@ -1,12 +1,17 @@
 #!/bin/bash
 # =============================================================
-# install.sh — Install Heltec LoRa Modem support into pymc_core
-# + pymc_repeater.
+# install.sh — Install pymc_usb / pymc_tcp LoRa modem support
+# into pymc_core + pymc_repeater.
 #
 # Copies USBLoRaRadio + TCPLoRaRadio drivers into the installed
 # pymc_core, then patches pymc_repeater/config.py to understand
 # the `pymc_usb` and `pymc_tcp` radio_type values (the legacy
 # `usb_heltec` / `tcp_heltec` names are still accepted as aliases).
+#
+# Works with every supported modem board (Heltec V3, Ikoka Stick,
+# LilyGO T3-S3, RAK3112 WisMesh, ESP32-P4-Nano) — board choice is
+# made when you flash the firmware; the Python drivers and the
+# repeater plumbing installed here are board-agnostic.
 #
 # Idempotent — safe to re-run after every pymc_core / pymc_repeater
 # upgrade. Existing radio_type branches are detected by guard strings;
@@ -24,7 +29,7 @@ YELLOW='\033[1;33m'
 NC='\033[0m'
 
 echo "═══════════════════════════════════════════"
-echo "  Heltec USB LoRa Modem — Installer"
+echo "  pymc_usb / pymc_tcp LoRa Modem — Installer"
 echo "═══════════════════════════════════════════"
 
 # Check root
