@@ -46,5 +46,11 @@ inline const BoardConfig BOARD = {
 
     .has_lora_radio = true,
     .has_wifi       = true,
+    .has_network = true,
+    // Protocol on USB-CDC (Serial) — no dedicated UART for the
+    // binary protocol. Sector-mode boards override these.
+    .pin_protocol_uart_rx = -1,
+    .pin_protocol_uart_tx = -1,
+    .protocol_uart_baud   = 921600,
     .ethernet = { .enabled = false },
 };

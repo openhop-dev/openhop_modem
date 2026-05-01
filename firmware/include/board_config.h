@@ -112,6 +112,27 @@ struct BoardConfig {
     // esp_hosted is flashed on the C6.
     bool has_wifi;
 
+    // Whole-board network capability gate. ESP32-S3 / ESP32-P4 boards
+    // ship with the WifiManager + TCPServer + OTAManager + Ethernet
+    // stack (most of the firmware). The Heltec T114 is nRF52840 — it
+    // has Bluetooth and LoRa but **no WiFi or Ethernet**. The board
+    // header sets `has_network = false` so the conditional-compile
+    // arms (#ifdef ARDUINO_ARCH_ESP32 in main.cpp + the network *.cpp
+    // files) skip every IP-stack call. With `has_network = false` the
+    // protocol talks only over USB-CDC and the optional dedicated
+    // UART (`pin_protocol_uart_*`). All ESP32 boards keep this true.
+    bool has_network;
+
+    // Optional dedicated UART for the binary protocol (sector-mode
+    // wiring, T114 over UART, etc.). When pin_protocol_uart_rx >= 0
+    // and pin_protocol_uart_tx >= 0 the firmware listens for SYNC
+    // frames on a HardwareSerial(1) configured on those pins instead
+    // of Arduino `Serial`; `Serial` (USB-CDC / UART0) stays free for
+    // printf debug. Pin = -1 → protocol on `Serial` (USB-CDC default).
+    int8_t   pin_protocol_uart_rx;
+    int8_t   pin_protocol_uart_tx;
+    uint32_t protocol_uart_baud;
+
     // ─── On-board Ethernet (RMII PHY) ───────────────────────
     // Set ethernet.enabled = true on boards with an internal EMAC +
     // external PHY (currently only ESP32-P4-Nano with IP101GRI). The
@@ -158,6 +179,8 @@ extern const BoardConfig BOARD;
 #  include "boards/rak3112_wismesh.h"
 #elif defined(BOARD_ESP32_P4_NANO)
 #  include "boards/esp32_p4_nano.h"
+#elif defined(BOARD_HELTEC_T114)
+#  include "boards/heltec_t114.h"
 #else
-#  error "No board selected — add one of -DBOARD_HELTEC_V3 / -DBOARD_IKOKA_STICK / -DBOARD_LILYGO_T3S3 / -DBOARD_RAK3112_WISMESH / -DBOARD_ESP32_P4_NANO to platformio.ini build_flags"
+#  error "No board selected — add one of -DBOARD_HELTEC_V3 / -DBOARD_IKOKA_STICK / -DBOARD_LILYGO_T3S3 / -DBOARD_RAK3112_WISMESH / -DBOARD_ESP32_P4_NANO / -DBOARD_HELTEC_T114 to platformio.ini build_flags"
 #endif

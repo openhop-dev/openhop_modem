@@ -15,18 +15,107 @@
 #include <Arduino.h>
 #include <SPI.h>
 #include <RadioLib.h>
-#include <WiFi.h>
-#include <esp_task_wdt.h>
-#include <esp_system.h>
-#include <esp_mac.h>
 #include "protocol.h"
 #include "board_config.h"
-#include "oled_display.h"
-#include "wifi_manager.h"
-#include "tcp_server.h"
 #include "frame_parser.h"
-#include "ota_manager.h"
-#include "ethernet_manager.h"
+#include "compat.h"
+
+// Network / OLED / OTA stack only exists on ESP32 boards. The
+// nRF52840-based Heltec T114 build excludes those .cpp files via
+// platformio.ini's build_src_filter and these headers via the
+// #ifdef below.
+#ifdef ARDUINO_ARCH_ESP32
+#  include <WiFi.h>
+#  include <esp_task_wdt.h>
+#  include <esp_system.h>
+#  include <esp_mac.h>
+#  include "oled_display.h"
+#  include "wifi_manager.h"
+#  include "tcp_server.h"
+#  include "ota_manager.h"
+#  include "ethernet_manager.h"
+#else
+// nRF52 (Heltec T114) build: the network / OLED / OTA managers are
+// excluded from the build via platformio.ini's build_src_filter.
+// Provide drop-in stub namespaces + an empty OledDisplay class so
+// the existing call sites in main.cpp compile unchanged. All
+// methods are no-ops and isSTAConnected() / hasIP() / etc. always
+// return false, so the runtime branches that gate on network
+// state simply skip.
+#include <IPAddress.h>
+namespace WifiManager {
+    enum class Mode : uint8_t { OFFLINE = 0, STA_CONNECTING = 1,
+                                STA_CONNECTED = 2, AP_CONFIG = 3 };
+    struct Config {
+        String   ssid;
+        String   password;
+        bool     useStaticIP = false;
+        IPAddress staticIP;
+        IPAddress gateway;
+        IPAddress subnet;
+        IPAddress dns;
+        String   tcpToken;
+        uint16_t tcpPort = 0;
+    };
+    inline void  checkResetButton()  {}
+    inline void  begin()             {}
+    inline void  loop()              {}
+    inline void  loadConfigOnly()    {}
+    inline bool  isSTAConnected()    { return false; }
+    inline bool  isAPActive()        { return false; }
+    inline const char* getSSID()     { return "---"; }
+    inline const char* getIPString() { return "---"; }
+    inline Mode  getMode()           { return Mode::OFFLINE; }
+    inline const Config& getConfig() { static Config c; return c; }
+    inline void  saveConfig(const Config&) {}
+    inline void  factoryReset()      {}
+}
+namespace TCPServer {
+    inline void begin(uint16_t, const String&) {}
+    inline void loop() {}
+    inline void end()  {}
+    inline bool isClientReady() { return false; }
+    inline void write(const uint8_t*, size_t) {}
+    inline String getClientIP() { return String(); }
+}
+namespace OTAManager {
+    inline void begin(const String&, const String&) {}
+    inline void loop() {}
+    inline void notifyValidFrame() {}
+}
+namespace EthernetManager {
+    inline void begin() {}
+    inline void end()   {}
+    inline void loop()  {}
+    inline bool isLinkUp() { return false; }
+    inline bool hasIP()    { return false; }
+    inline const char* getIPString() { return "---"; }
+}
+class OledDisplay {
+public:
+    inline void begin() {}
+    inline void showSplash() {}
+    inline void showStatus(uint32_t, uint32_t, const char*, const char*,
+                           const char*, const char*) {}
+    inline void showRadioConfig(uint32_t, uint32_t, uint8_t, uint8_t,
+                                int8_t, uint16_t, uint8_t, const char*) {}
+    inline void showDiagnostics(uint32_t, const char*, uint32_t, uint32_t,
+                                uint32_t, uint32_t, const char*) {}
+    inline void showError(const char*) {}
+    inline void turnOn()  {}
+    inline void turnOff() {}
+};
+// Tiny WiFi.* stand-in — only methods main.cpp actually calls when
+// has_wifi happens to be true; the firmware branches gate them on
+// runtime state which is always false on the T114.
+struct _WiFiStub {
+    inline IPAddress localIP()    { return IPAddress(); }
+    inline IPAddress softAPIP()   { return IPAddress(); }
+    inline void setHostname(const char*) {}
+    inline void macAddress(uint8_t mac[6]) { compatGetMac(mac); }
+};
+static _WiFiStub WiFi;
+#endif
 
 // ─── Version ─────────────────────────────────────────────────
 // Base version is shared by every board; the board's fw_suffix
@@ -45,6 +134,9 @@ static constexpr uint32_t LOOP_WDT_TIMEOUT_S = 30;
 SX1262 radio = new Module(BOARD.pin_lora_nss, BOARD.pin_lora_dio1,
                           BOARD.pin_lora_rst, BOARD.pin_lora_busy);
 
+// Single instance regardless of build — on ESP32 this is the real
+// SSD1306 driver from oled_display.cpp; on nRF52 it's a no-op stub
+// defined above so call sites compile unchanged.
 OledDisplay oled;
 
 // ─── Default config: EU/UK (Narrow), Switzerland preset ──────
@@ -139,7 +231,7 @@ static String buildHostname() {
     // base MAC; WiFi STA MAC == base MAC, so the value is the same as
     // the previous WiFi.macAddress() call.
     uint8_t mac[6] = {0};
-    esp_efuse_mac_get_default(mac);
+    compatGetMac(mac);
     char buf[40];
     snprintf(buf, sizeof(buf), "%s-%02x%02x%02x",
              BOARD.mdns_prefix, mac[3], mac[4], mac[5]);
@@ -178,7 +270,7 @@ static void rfSwitchEnHighAfterSettle() {
         while (remaining > 0) {
             uint32_t step = remaining > 1000 ? 1000 : remaining;
             delay(step);
-            esp_task_wdt_reset();
+            compatWdtReset();
             remaining -= step;
         }
     }
@@ -287,6 +379,10 @@ static uint16_t buildWifiStatusPayload(uint8_t* out) {
 
 // ─── SET_WIFI payload parser ────────────────────────────────
 // Layout: ssid_len(1) ssid(N) pass_len(1) pass(M) port(2,LE) tok_len(1) tok(K)
+// Only meaningful when the firmware actually has a Wi-Fi stack;
+// the nRF52 build (Heltec T114) doesn't, so the parser is gone
+// from the binary entirely.
+#ifdef ARDUINO_ARCH_ESP32
 static bool parseSetWifi(const uint8_t* p, uint16_t len, WifiManager::Config& out) {
     out = WifiManager::getConfig();   // preserve static IP settings by default
     uint16_t i = 0;
@@ -317,6 +413,7 @@ static bool parseSetWifi(const uint8_t* p, uint16_t len, WifiManager::Config& ou
     out.useStaticIP = false;   // USB provisioning = DHCP only
     return true;
 }
+#endif
 
 // ─── Radio configuration ────────────────────────────────────
 bool applyConfig(const RadioConfig& cfg) {
@@ -454,7 +551,7 @@ void processHostCommand(uint8_t cmd, const uint8_t* payload, uint16_t len,
         const uint32_t TX_TIMEOUT_MS = 10000;
         uint32_t txStart = millis();
         while (!dio1Flag && (millis() - txStart) < TX_TIMEOUT_MS) {
-            esp_task_wdt_reset();   // keep watchdog happy while we poll
+            compatWdtReset();   // keep watchdog happy while we poll
             delay(2);
         }
 
@@ -526,7 +623,7 @@ void processHostCommand(uint8_t cmd, const uint8_t* payload, uint16_t len,
         const uint32_t CAD_TIMEOUT_MS = 500;
         uint32_t cadStart = millis();
         while (!dio1Flag && (millis() - cadStart) < CAD_TIMEOUT_MS) {
-            esp_task_wdt_reset();
+            compatWdtReset();
             delay(1);
         }
 
@@ -610,7 +707,11 @@ void processHostCommand(uint8_t cmd, const uint8_t* payload, uint16_t len,
     case CMD_STATUS_REQ: {
         status.uptime_sec = millis() / 1000;
         status.radio_state = isTxActive ? 1 : 0;
+#ifdef ARDUINO_ARCH_ESP32
         status.temp_c = (int8_t)temperatureRead();
+#else
+        status.temp_c = 0;   // nRF52 has its own temperature sensor — TODO
+#endif
         status.noise_floor_x10 = (int16_t)(noiseFloor * 10.0f);
         sendFrame(CMD_STATUS_RESP, (uint8_t*)&status, sizeof(StatusResp), src);
         break;
@@ -633,6 +734,10 @@ void processHostCommand(uint8_t cmd, const uint8_t* payload, uint16_t len,
     }
 
     case CMD_SET_WIFI: {
+#ifndef ARDUINO_ARCH_ESP32
+        sendError(ERR_INVALID_CMD, src);   // no Wi-Fi stack on this build
+        break;
+#else
         // Remote provisioning over USB — eliminates the need to physically
         // connect to the Heltec's AP portal.
         WifiManager::Config newCfg;
@@ -651,6 +756,7 @@ void processHostCommand(uint8_t cmd, const uint8_t* payload, uint16_t len,
         delay(200);
         ESP.restart();
         break;  // unreached
+#endif
     }
 
     case CMD_GET_VERSION: {
@@ -664,10 +770,10 @@ void processHostCommand(uint8_t cmd, const uint8_t* payload, uint16_t len,
         // Layout: reset_reason(1B) | uptime_ms(4B LE) | free_heap(4B)
         //         | min_free_heap(4B) | last_loop_us(4B)
         uint8_t buf[17];
-        buf[0] = (uint8_t)esp_reset_reason();
+        buf[0] = (uint8_t)compatResetReason();
         uint32_t up_ms     = millis();
-        uint32_t freeHeap  = (uint32_t)ESP.getFreeHeap();
-        uint32_t minHeap   = (uint32_t)ESP.getMinFreeHeap();
+        uint32_t freeHeap  = compatFreeHeap();
+        uint32_t minHeap   = compatMinFreeHeap();
         memcpy(&buf[1],  &up_ms,    4);
         memcpy(&buf[5],  &freeHeap, 4);
         memcpy(&buf[9],  &minHeap,  4);
@@ -739,7 +845,7 @@ void setup() {
     // Print the reason this boot started so we can tell brownouts,
     // panics, watchdog timeouts and clean reboots apart even on boards
     // without UART0 (Ikoka — native USB-CDC only, ROM banner doesn't
-    // reach the host). esp_reset_reason() values:
+    // reach the host). compatResetReason() values:
     //   1 POWERON, 2 EXT, 3 SW, 4 PANIC, 5 INT_WDT, 6 TASK_WDT,
     //   7 WDT, 8 DEEPSLEEP, 9 BROWNOUT, 10 SDIO, 11 USB.
     {
@@ -748,7 +854,7 @@ void setup() {
             "INT_WDT", "TASK_WDT", "WDT", "DEEPSLEEP",
             "BROWNOUT", "SDIO", "USB"
         };
-        int rr = (int)esp_reset_reason();
+        int rr = compatResetReason();
         const char* lbl = (rr >= 0 && (size_t)rr < sizeof(labels)/sizeof(labels[0]))
                               ? labels[rr] : "OTHER";
         Serial.printf("[BOOT] reset_reason=%d (%s)\n", rr, lbl);
@@ -783,8 +889,16 @@ void setup() {
         // SPI.begin() with the explicit pins or RadioLib's first SPI
         // transfer fails.
         if (BOARD.pin_lora_sck >= 0 || BOARD.pin_lora_miso >= 0 || BOARD.pin_lora_mosi >= 0) {
+#ifdef ARDUINO_ARCH_ESP32
+            // ESP32-S3/P4 GPIO matrix: rebind SPI to specific pins
             SPI.begin(BOARD.pin_lora_sck, BOARD.pin_lora_miso,
                       BOARD.pin_lora_mosi, BOARD.pin_lora_nss);
+#else
+            // nRF52 BSP: SPI peripheral has fixed pins on its
+            // selected instance. The Heltec T114 variant.h ships
+            // with the SX1262's pins already mapped to SPIM2.
+            SPI.begin();
+#endif
         }
 
         int state = radio.begin();
@@ -891,6 +1005,10 @@ void setup() {
     // would take over; on stock Arduino bootloader, the same image reboots.
     // ESP-IDF 5.x autostarts the task WDT on the IDLE tasks; we just
     // adjust the timeout + enable panic so a stuck loop() reboots.
+    // nRF52 build — task WDT not armed in iter 1 (compatWdtReset()
+    // is a no-op). The nRF52 watchdog peripheral can be added later
+    // via NRF_WDT_NS direct register writes.
+#ifdef ARDUINO_ARCH_ESP32
     {
         esp_task_wdt_config_t wdt_cfg = {
             .timeout_ms     = LOOP_WDT_TIMEOUT_S * 1000U,
@@ -900,6 +1018,7 @@ void setup() {
         esp_task_wdt_reconfigure(&wdt_cfg);
     }
     esp_task_wdt_add(NULL);
+#endif
 
     Serial.printf("[BOOT] firmware %s on %s ready (loop WDT %us)\n",
                   fwVersion.c_str(), BOARD.name, (unsigned)LOOP_WDT_TIMEOUT_S);
@@ -940,7 +1059,7 @@ void loop() {
     }
     loopStartUs = (uint32_t)micros();
 
-    esp_task_wdt_reset();   // feed the loop watchdog every pass
+    compatWdtReset();   // feed the loop watchdog every pass
 
     // DIO1 during TX is consumed by the TX handler's own wait loop; in
     // loop() we only act on it when the radio is in RX mode.

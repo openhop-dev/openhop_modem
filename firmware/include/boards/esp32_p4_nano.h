@@ -100,6 +100,12 @@ inline const BoardConfig BOARD = {
     // into the SDIO clock to crash the bridge every ~25 s. With only
     // one of the two networks live, the chip is stable.
     .has_wifi = true,
+    .has_network = true,
+    // Protocol on USB-CDC (Serial) — no dedicated UART for the
+    // binary protocol. Sector-mode boards override these.
+    .pin_protocol_uart_rx = -1,
+    .pin_protocol_uart_tx = -1,
+    .protocol_uart_baud   = 921600,
 
     .ethernet = {
         .enabled          = true,
