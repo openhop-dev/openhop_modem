@@ -19,12 +19,23 @@
 #define CMD_CAD_REQUEST     0x30    // Perform CAD (Listen Before Talk)
 #define CMD_RX_START        0x31    // (Re)start RX continuous mode
 #define CMD_SET_CAD_PARAMS  0x34    // v0.5.4 — Set CAD thresholds (symbols, peak, min, exit_mode)
+#define CMD_RADIO_STANDBY   0x40    // v0.7 — put SX1262 in standby; loop won't auto-RX until RESUME
 #define CMD_SET_WIFI        0x41    // v0.5 — Provision Wi-Fi from USB (save NVS + reboot to STA)
+#define CMD_RADIO_RESUME    0x42    // v0.7 — re-apply config + startReceive after STANDBY
+#define CMD_SET_DISPLAY_NAME 0x48   // v0.7 — payload = ASCII name (≤16 B), shown big on the TFT
 #define CMD_AUTH            0x50    // Authenticate TCP client (payload = token bytes)
 #define CMD_WIFI_RESET      0x60    // Wipe Wi-Fi config from NVS and reboot into AP mode
 #define CMD_GET_WIFI        0x61    // v0.5 — Query Wi-Fi/OTA status (mode, IP, SSID, hostname)
 #define CMD_GET_VERSION     0x70    // v0.5.3 — Query firmware version string
 #define CMD_GET_DEBUG       0x72    // v0.5.11 — Query last reset reason + heap + uptime (debug)
+#define CMD_ENTER_BOOTLOADER 0x74   // v0.7 — drop into Adafruit nRF52 DFU mode
+                                    //        (noop on ESP32 boards). Modem replies
+                                    //        with PONG then NVIC_SystemReset()s.
+#define CMD_OTA_BEGIN       0x90    // v0.7 — start OTA: payload = size(4) | sha256(32)
+#define CMD_OTA_CHUNK       0x92    // v0.7 — payload = offset(4) | data(N≤200)
+#define CMD_OTA_VERIFY      0x94    // v0.7 — modem hashes received image, compares
+#define CMD_OTA_APPLY       0x96    // v0.7 — write bootloader settings, reset
+#define CMD_OTA_ABORT       0x98    // v0.7 — drop pending image, free buffer
 #define CMD_PING            0xFF    // Heartbeat ping
 
 // ─── Command bytes: Modem (Heltec) → Host (RPi) ─────────────
@@ -44,6 +55,15 @@
                                     //   reset_reason(1B) | uptime_ms(4B LE)
                                     //   | free_heap(4B LE) | min_free_heap(4B LE)
                                     //   | last_loop_us(4B LE)
+#define CMD_RADIO_STANDBY_RESP 0x44 // v0.7 — ack for CMD_RADIO_STANDBY (1B status: 0=ok, 1=fail)
+#define CMD_RADIO_RESUME_RESP  0x46 // v0.7 — ack for CMD_RADIO_RESUME  (1B status: 0=ok, 1=fail)
+#define CMD_SET_DISPLAY_NAME_RESP 0x49 // v0.7 — ack for CMD_SET_DISPLAY_NAME
+#define CMD_LOG_MSG         0x80    // v0.7 — async log line:
+                                    //   level(1B: 0=INFO, 1=WARN, 2=ERR) | text(N)
+#define CMD_OTA_BEGIN_RESP  0x91    // v0.7 — 1B status (0=ready, 1=no_space, 2=busy, 3=unsupported)
+#define CMD_OTA_CHUNK_RESP  0x93    // v0.7 — 1B status (0=ok, 1=bad_offset, 2=write_fail)
+#define CMD_OTA_VERIFY_RESP 0x95    // v0.7 — 1B status + 32B sha256 of received image
+#define CMD_OTA_APPLY_RESP  0x97    // v0.7 — 1B status (0=committed, will reboot)
 #define CMD_ERROR           0xFE    // Error
 #define CMD_PONG            0xFF    // Heartbeat pong
 
@@ -60,6 +80,8 @@
 #define ERR_INVALID_WIFI    0x0A    // SET_WIFI payload malformed
 #define ERR_NO_RADIO        0x0B    // board has no LoRa radio attached
                                     // (e.g. ESP32-P4-Nano without E22)
+#define ERR_OTA_UNSUPPORTED 0x0C    // OTA flash writer not implemented for this board
+#define ERR_OTA_NO_BUFFER   0x0D    // image too big or no PSRAM/flash space
 
 // Max payload sizes
 #define MAX_LORA_PAYLOAD    255

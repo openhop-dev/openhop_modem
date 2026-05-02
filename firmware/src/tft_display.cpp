@@ -83,7 +83,8 @@ void OledDisplay::begin() {
     // the LH114T-IF03 subwindow; setRotation(1) then rotates into
     // our preferred landscape orientation.
     tft.init(135, 240, SPI_MODE0);
-    tft.setRotation(1);                     // landscape, USB-C right
+    tft.setRotation(3);                     // landscape, 180° vs rotation=1
+                                            // (USB-C now on the LEFT)
     tft.setSPISpeed(40000000);              // 40 MHz — same as MeshCore
     tft.fillScreen(COLOUR_BG);
     tft.setTextColor(COLOUR_FG, COLOUR_BG);
@@ -91,32 +92,89 @@ void OledDisplay::begin() {
     _ready = true;
 }
 
+// ─── Layout heights ─────────────────────────────────────────
+// Landscape (240×135). The display is dominated by the sector
+// name (controller-pushed) so an operator standing in front of
+// a 4-modem rack can tell which is which from across the room.
+//
+//   y=0   ┌────────────────────────────────────────┐
+//   |     │  EAST                  v0.7-t114       │  name banner, textSize=3
+//   y=32  ├────────────────────────────────────────┤
+//   |     │  STATE: RX                             │  status line, textSize=2
+//   |     │  RX 12   TX 3                          │
+//   |     │  RSSI -78 dBm   SNR 12.3 dB            │
+//   y=135 └────────────────────────────────────────┘
+static constexpr int16_t NAME_BANNER_H = 32;
+
 // ─── Helpers ─────────────────────────────────────────────────
 
-static void drawHeaderBar(const char* state, const char* version) {
-    tft.fillRect(0, 0, TFT_W, 18, COLOUR_HEADER);
-    tft.setCursor(2, 5);
+// Banner with the controller-assigned display name (big text)
+// plus a small state badge underneath. Falls back to "?" when
+// the controller hasn't pushed a name yet.
+static void drawNameBanner(const char* fallbackName, const char* version) {
+    tft.fillRect(0, 0, TFT_W, NAME_BANNER_H, COLOUR_HEADER);
     tft.setTextColor(COLOUR_BG, COLOUR_HEADER);
-    tft.setTextSize(1);
-    tft.print(state ? state : "...");
+    tft.setTextSize(3);
+    const char* name = (fallbackName && *fallbackName) ? fallbackName : "?";
+
+    int16_t bx, by; uint16_t bw, bh;
+    tft.getTextBounds(name, 0, 0, &bx, &by, &bw, &bh);
+    int16_t name_y = (NAME_BANNER_H - (int16_t)bh) / 2 - by;
+    tft.setCursor(4, name_y);
+    tft.print(name);
+
+    // Right-aligned, much smaller version string.
     if (version) {
-        // Right-align version string to the panel's right edge.
-        int16_t x1, y1; uint16_t w, h;
-        tft.getTextBounds(version, 0, 0, &x1, &y1, &w, &h);
-        tft.setCursor(TFT_W - (int16_t)w - 2, 5);
+        tft.setTextSize(1);
+        tft.getTextBounds(version, 0, 0, &bx, &by, &bw, &bh);
+        tft.setCursor(TFT_W - (int16_t)bw - 4, NAME_BANNER_H - 10);
         tft.print(version);
     }
+    tft.setTextColor(COLOUR_FG, COLOUR_BG);
+    tft.setTextSize(1);
+}
+
+static void drawStateLine(int16_t y, const char* state) {
+    tft.setCursor(4, y);
+    tft.setTextSize(2);
+    tft.setTextColor(COLOUR_ACCENT, COLOUR_BG);
+    tft.print(state ? state : "...");
     tft.setTextColor(COLOUR_FG, COLOUR_BG);
 }
 
 static void drawLabelValue(int16_t y, const char* label, const String& value,
-                           uint16_t labelColour = COLOUR_ACCENT) {
-    tft.setCursor(2, y);
-    tft.setTextSize(1);
+                           uint16_t labelColour = COLOUR_ACCENT,
+                           uint8_t  textSize = 2) {
+    tft.setCursor(4, y);
+    tft.setTextSize(textSize);
     tft.setTextColor(labelColour, COLOUR_BG);
     tft.print(label);
     tft.setTextColor(COLOUR_FG, COLOUR_BG);
     tft.println(value);
+}
+
+void OledDisplay::setDisplayName(const char* name) {
+    if (!name) name = "";
+    snprintf(_displayName, sizeof(_displayName), "%s", name);
+    // No automatic redraw — the next showStatus/showRadio/etc.
+    // call will pick up the new name. Forcing a redraw here would
+    // require remembering the last `show*` payload.
+}
+
+void OledDisplay::setRadioInfo(uint32_t freq_hz, uint8_t sf, uint32_t bw_hz,
+                               uint8_t cr, int8_t power_dbm,
+                               int16_t last_rssi, int16_t last_snr_x10) {
+    _freq_hz       = freq_hz;
+    _sf            = sf;
+    _bw_hz         = bw_hz;
+    _cr            = cr;
+    _power_dbm     = power_dbm;
+    _last_rssi     = last_rssi;
+    _last_snr_x10  = last_snr_x10;
+}
+
+void OledDisplay::setStandby(bool on) {
+    _standby = on;
 }
 
 // ─── Splash ──────────────────────────────────────────────────
@@ -125,31 +183,35 @@ void OledDisplay::showSplash() {
     if (!_ready) return;
     tft.fillScreen(COLOUR_BG);
 
-    // Centre the 64×64 monochrome pyMC logo on the panel and
-    // double it up to 128×128 for visibility on the bigger screen.
+    // Splash uses raw 240×135 landscape canvas. Logo on the left,
+    // big "pyMC" + display name on the right.
     const int16_t logoSrc = SPLASH_LOGO_W;   // 64
-    const int16_t logoOut = logoSrc * 2;     // 128
-    const int16_t x0 = (TFT_W - logoOut) / 2;
-    const int16_t y0 = (TFT_H - logoOut) / 2 - 12;
+    const int16_t logoOut = logoSrc;         // keep at 1x for landscape
+    const int16_t x0 = 6;
+    const int16_t y0 = (TFT_H - logoOut) / 2;
     for (int16_t row = 0; row < logoSrc; row++) {
         for (int16_t col = 0; col < logoSrc; col++) {
             uint16_t byteIdx = row * (logoSrc / 8) + (col / 8);
             uint8_t bit = 7 - (col % 8);
             uint8_t b = pgm_read_byte(&SPLASH_LOGO[byteIdx]);
             if (b & (1 << bit)) {
-                tft.fillRect(x0 + col * 2, y0 + row * 2, 2, 2, COLOUR_FG);
+                tft.drawPixel(x0 + col, y0 + row, COLOUR_FG);
             }
         }
     }
 
-    tft.setCursor(0, y0 + logoOut + 12);
+    int16_t tx = x0 + logoOut + 14;
     tft.setTextColor(COLOUR_ACCENT, COLOUR_BG);
-    tft.setTextSize(2);
-    int16_t x1, y1; uint16_t w, h;
-    const char* tag = "pyMC";
-    tft.getTextBounds(tag, 0, 0, &x1, &y1, &w, &h);
-    tft.setCursor((TFT_W - (int16_t)w) / 2, y0 + logoOut + 12);
-    tft.print(tag);
+    tft.setTextSize(3);
+    tft.setCursor(tx, y0 + 14);
+    tft.print("pyMC");
+
+    if (_displayName[0]) {
+        tft.setTextSize(2);
+        tft.setTextColor(COLOUR_FG, COLOUR_BG);
+        tft.setCursor(tx, y0 + 46);
+        tft.print(_displayName);
+    }
     tft.setTextSize(1);
     tft.setTextColor(COLOUR_FG, COLOUR_BG);
 }
@@ -157,17 +219,73 @@ void OledDisplay::showSplash() {
 // ─── Status screen ───────────────────────────────────────────
 
 void OledDisplay::showStatus(uint32_t rx, uint32_t tx,
-                             const char* ssid, const char* ip,
+                             const char* /*ssid*/, const char* /*ip*/,
                              const char* state, const char* version) {
+    // T114 lives behind the sector controller via UART — we never
+    // have an IP / SSID of our own. The two unused parameters stay
+    // for ABI parity with oled_display.h on the ESP32 boards (same
+    // call site in main.cpp). Instead we paint the live LoRa state
+    // pushed in via setRadioInfo().
     if (!_ready) return;
     tft.fillScreen(COLOUR_BG);
-    drawHeaderBar(state, version);
+    drawNameBanner(_displayName, version);
 
-    int16_t y = 26;
-    drawLabelValue(y,  "RX: ", String(rx));         y += 14;
-    drawLabelValue(y,  "TX: ", String(tx));         y += 14;
-    drawLabelValue(y,  "SSID:", String(ssid ? ssid : "---")); y += 14;
-    drawLabelValue(y,  "IP:  ", String(ip ? ip : "---"));     y += 14;
+    // Hard-standby gets a dedicated, can't-miss screen. Radio is
+    // parked → RX/SNR/TX numbers are stale by definition, so we
+    // hide them and print a big red STANDBY badge instead.
+    if (_standby) {
+        int16_t y = NAME_BANNER_H + 16;
+        // Big red "STANDBY" centred horizontally.
+        tft.setTextSize(3);
+        tft.setTextColor(COLOUR_ERR, COLOUR_BG);
+        const char* tag = "STANDBY";
+        int16_t bx, by; uint16_t bw, bh;
+        tft.getTextBounds(tag, 0, 0, &bx, &by, &bw, &bh);
+        tft.setCursor((TFT_W - (int16_t)bw) / 2, y);
+        tft.print(tag);
+        // Subtitle.
+        y += bh + 12;
+        tft.setTextSize(1);
+        tft.setTextColor(COLOUR_FG, COLOUR_BG);
+        const char* sub = "radio off — awaiting RESUME";
+        tft.getTextBounds(sub, 0, 0, &bx, &by, &bw, &bh);
+        tft.setCursor((TFT_W - (int16_t)bw) / 2, y);
+        tft.print(sub);
+        return;
+    }
+
+    int16_t y = NAME_BANNER_H + 6;
+    drawStateLine(y, state ? state : "---");
+    y += 24;
+
+    // Counters — big enough to read from a meter away.
+    drawLabelValue(y, "RX ", String(rx) + "  TX " + String(tx));
+    y += 22;
+
+    // Last received packet quality. INT16_MIN sentinel = never heard.
+    if (_last_rssi == INT16_MIN) {
+        drawLabelValue(y, "", String("RSSI  --"), COLOUR_ACCENT, 1);
+    } else {
+        char buf[40];
+        snprintf(buf, sizeof(buf), "RSSI %d  SNR %.1f",
+                 (int)_last_rssi, _last_snr_x10 / 10.0);
+        drawLabelValue(y, "", String(buf), COLOUR_FG, 1);
+    }
+    y += 14;
+
+    // Live radio config — small line at the bottom so an operator
+    // can sanity-check that all sectors share the same parameters.
+    if (_freq_hz > 0) {
+        char buf[40];
+        snprintf(buf, sizeof(buf), "%.3fM SF%u BW%lu",
+                 _freq_hz / 1e6, (unsigned)_sf,
+                 (unsigned long)(_bw_hz / 1000));
+        drawLabelValue(y, "", String(buf), COLOUR_ACCENT, 1);
+        y += 12;
+        snprintf(buf, sizeof(buf), "CR 4/%u  Pwr %d dBm",
+                 (unsigned)_cr, (int)_power_dbm);
+        drawLabelValue(y, "", String(buf), COLOUR_ACCENT, 1);
+    }
 }
 
 // ─── Radio screen ────────────────────────────────────────────
@@ -178,31 +296,31 @@ void OledDisplay::showRadioConfig(uint32_t freq_hz, uint32_t bandwidth_hz,
                                   const char* version) {
     if (!_ready) return;
     tft.fillScreen(COLOUR_BG);
-    drawHeaderBar("RADIO", version);
+    drawNameBanner(_displayName, version);
 
-    int16_t y = 26;
+    int16_t y = NAME_BANNER_H + 6;
+    drawStateLine(y, "RADIO"); y += 22;
     {
         char buf[24];
         snprintf(buf, sizeof(buf), "%.3f MHz", freq_hz / 1e6);
-        drawLabelValue(y, "Freq:", String(buf));
-        y += 14;
+        drawLabelValue(y, "F ", String(buf));
+        y += 18;
     }
     {
-        char buf[16];
-        snprintf(buf, sizeof(buf), "%lu", (unsigned long)bandwidth_hz);
-        drawLabelValue(y, "BW:  ", String(buf));
-        y += 14;
+        char buf[40];
+        snprintf(buf, sizeof(buf), "BW %lu  SF %u  4/%u  %d dBm",
+                 (unsigned long)bandwidth_hz, (unsigned)sf,
+                 (unsigned)cr, (int)power_dbm);
+        // Smaller for the long line.
+        drawLabelValue(y, "", String(buf), COLOUR_FG, 1);
+        y += 12;
     }
-    drawLabelValue(y, "SF:  ", String((unsigned)sf));        y += 14;
-    drawLabelValue(y, "CR:  ", String("4/") + String((unsigned)cr)); y += 14;
-    drawLabelValue(y, "Pwr: ", String((int)power_dbm) + " dBm"); y += 14;
     {
-        char buf[8];
-        snprintf(buf, sizeof(buf), "0x%04X", (unsigned)syncword);
-        drawLabelValue(y, "Sync:", String(buf));
-        y += 14;
+        char buf[24];
+        snprintf(buf, sizeof(buf), "sync 0x%04X  pre %u",
+                 (unsigned)syncword, (unsigned)preamble_len);
+        drawLabelValue(y, "", String(buf), COLOUR_ACCENT, 1);
     }
-    drawLabelValue(y, "Pre: ", String((unsigned)preamble_len)); y += 14;
 }
 
 // ─── Diagnostics screen ──────────────────────────────────────
@@ -215,9 +333,10 @@ void OledDisplay::showDiagnostics(uint32_t uptime_sec,
                                   const char* version) {
     if (!_ready) return;
     tft.fillScreen(COLOUR_BG);
-    drawHeaderBar("DIAG", version);
+    drawNameBanner(_displayName, version);
 
-    int16_t y = 26;
+    int16_t y = NAME_BANNER_H + 6;
+    drawStateLine(y, "DIAG"); y += 22;
     {
         uint32_t h = uptime_sec / 3600;
         uint32_t m = (uptime_sec / 60) % 60;
@@ -225,23 +344,13 @@ void OledDisplay::showDiagnostics(uint32_t uptime_sec,
         char buf[24];
         snprintf(buf, sizeof(buf), "%lu:%02lu:%02lu",
                  (unsigned long)h, (unsigned long)m, (unsigned long)s);
-        drawLabelValue(y, "Up:  ", String(buf));
-        y += 14;
+        drawLabelValue(y, "Up ", String(buf));
+        y += 22;
     }
-    drawLabelValue(y, "TCP: ",
-                   String(tcp_client_ip && tcp_client_ip[0] ? tcp_client_ip : "—"));
-    y += 14;
-    if (usb_idle_sec == UINT32_MAX) {
-        drawLabelValue(y, "USB: ", String("—"));
-    } else {
-        drawLabelValue(y, "USB: ", String((unsigned long)usb_idle_sec) + "s idle");
-    }
-    y += 14;
-    drawLabelValue(y, "RX:  ", String(rx_count));   y += 14;
-    drawLabelValue(y, "TX:  ", String(tx_count));   y += 14;
-    drawLabelValue(y, "CRC: ", String(crc_errors),
-                   crc_errors ? COLOUR_WARN : COLOUR_ACCENT);
-    y += 14;
+    drawLabelValue(y, "RX ", String(rx_count) + "  TX " + String(tx_count));
+    y += 18;
+    drawLabelValue(y, "CRC ", String(crc_errors),
+                   crc_errors ? COLOUR_WARN : COLOUR_ACCENT, 1);
 }
 
 // ─── Error / power ───────────────────────────────────────────

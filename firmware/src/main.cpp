@@ -15,10 +15,14 @@
 #include <Arduino.h>
 #include <SPI.h>
 #include <RadioLib.h>
+#include <stdarg.h>
 #include "protocol.h"
 #include "board_config.h"
 #include "frame_parser.h"
 #include "compat.h"
+#if defined(BOARD_HELTEC_T114)
+#  include "node_state.h"
+#endif
 
 // Network / OLED / OTA stack only exists on ESP32 boards. The
 // nRF52840-based Heltec T114 build excludes those .cpp files via
@@ -142,6 +146,12 @@ static RadioConfig currentConfig = {
 };
 
 static StatusResp  status        = {};
+// Hard-standby flag set by CMD_RADIO_STANDBY. While true, loop()
+// will NOT call startReceive() after a TX/CAD/RX completion, and
+// the radio sits in idle. Cleared by CMD_RADIO_RESUME (which
+// re-applies the config and re-enters RX).
+static bool radioStandby = false;
+
 // Single DIO1 ISR flag — interpreted as RX_DONE when !isTxActive, otherwise as TX_DONE.
 // A single flag avoids the race where an IRQ that fires at the tail of a TX
 // could leak into the next RX handler or vice-versa.
@@ -351,6 +361,57 @@ void broadcastFrame(uint8_t cmd, const uint8_t* payload, uint16_t len) {
                /*toUart=*/uartEnabled);
 }
 
+// ─── Remote log → host (CMD_LOG_MSG) ─────────────────────────
+// Sends the formatted line up the UART (when enabled) so the P4
+// controller can aggregate sector logs in its central LogBuf.
+// Always also lands on local Serial (USB-CDC) — operator at the
+// console doesn't lose anything when logRemote is used.
+//
+// Levels: 0=INFO, 1=WARN, 2=ERR (matches LogBuf::Level on P4).
+//
+// Payload format on the wire (CMD_LOG_MSG = 0x80):
+//   level(1) | text(N≤200, no NUL terminator)
+static void logRemote(uint8_t level, const char* fmt, ...) {
+    char text[200];
+    va_list ap;
+    va_start(ap, fmt);
+    int n = vsnprintf(text, sizeof(text), fmt, ap);
+    va_end(ap);
+    if (n < 0) return;
+    if (n >= (int)sizeof(text)) n = sizeof(text) - 1;
+
+    // Local USB-CDC mirror, prefixed so dual-port debugging matches
+    // the dashboard's source labels.
+    const char* tag = (level == 2) ? "ERR " : (level == 1) ? "WARN" : "INFO";
+    Serial.printf("[%s] %s\n", tag, text);
+
+    if (!uartEnabled) return;
+    uint8_t frame[1 + (int)sizeof(text)];
+    frame[0] = level;
+    memcpy(frame + 1, text, (size_t)n);
+    // Send only over UART — P4 is the consumer; USB host already
+    // got the same line via the Serial.printf above. TCP path is
+    // unused on T114 (has_network=false) so explicit .write below.
+    {
+        uint8_t buf[8 + sizeof(frame)];
+        uint16_t i = 0;
+        buf[i++] = PROTO_SYNC;
+        buf[i++] = CMD_LOG_MSG;
+        uint16_t len = (uint16_t)(1 + n);
+        buf[i++] = len & 0xFF;
+        buf[i++] = (len >> 8) & 0xFF;
+        memcpy(buf + i, frame, len); i += len;
+        uint16_t crc = crc16_ccitt(buf + 1, 3 + len);
+        buf[i++] = crc & 0xFF;
+        buf[i++] = (crc >> 8) & 0xFF;
+        PROTO_UART.write(buf, i);
+    }
+}
+
+#define LOG_R_INFO(...) logRemote(0, __VA_ARGS__)
+#define LOG_R_WARN(...) logRemote(1, __VA_ARGS__)
+#define LOG_R_ERR(...)  logRemote(2, __VA_ARGS__)
+
 // ─── WIFI_STATUS response builder ───────────────────────────
 // Payload: mode(1) ip(4,BE) port(2,LE) ssid_len(1) ssid(N) host_len(1) host(M)
 static uint16_t buildWifiStatusPayload(uint8_t* out) {
@@ -465,10 +526,19 @@ bool applyConfig(const RadioConfig& cfg) {
     // SF11/SF12 presets are modulation-incompatible with pymc_core.
     radio.autoLDRO();
 
+    // Push the live config to the TFT cache so the next status
+    // refresh shows what the radio is actually running.
+    oled.setRadioInfo(cfg.freq_hz, cfg.sf, cfg.bandwidth_hz, cfg.cr, pwr,
+                     status.last_rssi, status.last_snr);
     return true;
 }
 
 bool startReceive() {
+    // Hard standby blocks every code path that would put the
+    // radio into RX. The flag is cleared by CMD_RADIO_RESUME
+    // which re-runs applyConfig() and then calls this function
+    // again with radioStandby=false.
+    if (radioStandby) return true;
     return radio.startReceive() == RADIOLIB_ERR_NONE;
 }
 
@@ -495,6 +565,14 @@ void handleLoRaRx() {
     status.rx_count++;
     status.last_rssi = rssi;
     status.last_snr  = snr;
+
+    // TFT cache — display the freshest received-packet quality
+    // alongside the rest of the radio state on the next status
+    // refresh. Config fields stay at whatever applyConfig set.
+    oled.setRadioInfo(currentConfig.freq_hz, currentConfig.sf,
+                     currentConfig.bandwidth_hz, currentConfig.cr,
+                     currentConfig.power_dbm,
+                     rssi, snr);
 
     uint8_t rxPayload[6 + MAX_LORA_PAYLOAD];
     rxPayload[0] = rssi & 0xFF;
@@ -550,7 +628,10 @@ void processHostCommand(uint8_t cmd, const uint8_t* payload, uint16_t len,
 
         dio1Flag = false;
         int state = radio.startTransmit((uint8_t*)payload, len);
+        LOG_R_INFO("TX_REQUEST len=%u src=%u state=%d",
+                   (unsigned)len, (unsigned)src, state);
         if (state != RADIOLIB_ERR_NONE) {
+            LOG_R_ERR("startTransmit() failed, state=%d", state);
             isTxActive = false;
             radio.finishTransmit();
             sendError(ERR_TX_TIMEOUT, src);
@@ -558,10 +639,14 @@ void processHostCommand(uint8_t cmd, const uint8_t* payload, uint16_t len,
             break;
         }
 
-        // Worst-case airtime for SF12/BW7.8k at 255 B ≈ 20 s; repeater uses
-        // SF8-SF10 so 10 s is plenty. If DIO1 never fires the loop exits on
-        // the deadline and we force the radio into a known-good state below.
-        const uint32_t TX_TIMEOUT_MS = 10000;
+        // Worst-case airtime for SF12/BW7.8k at 255 B ≈ 20 s, but the
+        // sector controller upstream caps a per-sector slot at ~4 s.
+        // Aligning closely (4500 ms) so a wedged-radio LOG_R_ERR
+        // ("hard timeout") still reaches the controller right after
+        // its own TIMEOUT log — useful for distinguishing "modem is
+        // stuck waiting on DIO1" from "modem finished but TX_DONE
+        // didn't make it back through UART".
+        const uint32_t TX_TIMEOUT_MS = 4500;
         uint32_t txStart = millis();
         while (!dio1Flag && (millis() - txStart) < TX_TIMEOUT_MS) {
             compatWdtReset();   // keep watchdog happy while we poll
@@ -583,10 +668,12 @@ void processHostCommand(uint8_t cmd, const uint8_t* payload, uint16_t len,
             resp[2] = (airtime_us >> 16) & 0xFF;
             resp[3] = (airtime_us >> 24) & 0xFF;
             sendFrame(CMD_TX_DONE, resp, 4, src);
+            LOG_R_INFO("TX_DONE airtime=%lu us, sent via src=%u",
+                       (unsigned long)airtime_us, (unsigned)src);
         } else {
             // Hard TX timeout — the SX1262 is likely stuck in a bad state.
             // Rebuild from scratch: standby → re-apply full config → RX.
-            Serial.println("[TX] hard timeout — resetting radio state");
+            LOG_R_ERR("TX hard timeout (%u bytes) — resetting radio", (unsigned)len);
             radio.standby();
             delay(5);
             applyConfig(currentConfig);
@@ -644,7 +731,7 @@ void processHostCommand(uint8_t cmd, const uint8_t* payload, uint16_t len,
             // CAD_DONE never fired — treat as failure and clean up the chip
             // before the next request. Don't block the repeater's LBT
             // forever; reporting failure lets the host decide.
-            Serial.println("[CAD] IRQ timeout — resetting radio state");
+            LOG_R_WARN("CAD IRQ timeout — resetting radio");
             radio.standby();
             delay(5);
             applyConfig(currentConfig);
@@ -800,6 +887,103 @@ void processHostCommand(uint8_t cmd, const uint8_t* payload, uint16_t len,
         break;
     }
 
+    case CMD_SET_DISPLAY_NAME: {
+        // Controller pushes the per-sector display name (≤ 16 ASCII
+        // bytes). Stored in the OledDisplay instance + LittleFS so
+        // the modem keeps it across reboots.
+        char buf[24] = {0};
+        uint16_t copy = len < sizeof(buf) - 1 ? len : sizeof(buf) - 1;
+        memcpy(buf, payload, copy);
+        oled.setDisplayName(buf);
+#if defined(BOARD_HELTEC_T114)
+        NodeState::setDisplayName(buf);
+#endif
+        LOG_R_INFO("display name → '%s'", buf);
+        uint8_t status = 0;
+        sendFrame(CMD_SET_DISPLAY_NAME_RESP, &status, 1, src);
+        break;
+    }
+    case CMD_RADIO_STANDBY: {
+        radio.standby();
+        radioStandby = true;
+        oled.setStandby(true);
+#if defined(BOARD_HELTEC_T114)
+        NodeState::setStandby(true);
+#endif
+        LOG_R_INFO("radio STANDBY");
+        uint8_t status = 0;
+        sendFrame(CMD_RADIO_STANDBY_RESP, &status, 1, src);
+        break;
+    }
+    case CMD_RADIO_RESUME: {
+        radioStandby = false;
+        oled.setStandby(false);
+#if defined(BOARD_HELTEC_T114)
+        NodeState::setStandby(false);
+#endif
+        bool ok = applyConfig(currentConfig) && startReceive();
+        LOG_R_INFO("radio RESUME (ok=%d)", (int)ok);
+        uint8_t status = ok ? 0 : 1;
+        sendFrame(CMD_RADIO_RESUME_RESP, &status, 1, src);
+        break;
+    }
+    case CMD_ENTER_BOOTLOADER: {
+        // Triggers Adafruit nRF52 DFU mode without touching the
+        // reset button: write the magic value to GPREGRET (bootloader
+        // checks it on startup and enters DFU instead of jumping to
+        // the app), ack the host, then NVIC_SystemReset().
+        // After reboot the operator finalises the flash by plugging
+        // USB locally — full UART OTA is the next step (CMD_OTA_*).
+        // No-op on ESP32 (no equivalent path; CDC + esptool_py is
+        // already trivial there).
+        sendFrame(CMD_PONG, nullptr, 0, src);
+        LOG_R_INFO("ENTER_BOOTLOADER requested — resetting into DFU");
+#ifdef NRF52_SERIES
+        // 0x57 = OTA_DFU magic from Adafruit nRF52 BSP
+        // (variants/<board>/dfu/usb_desc.h notwithstanding —
+        // bootloader matches on the value, not symbolic name).
+        NRF_POWER->GPREGRET = 0x57;
+        delay(100);
+        NVIC_SystemReset();
+#else
+        sendError(ERR_INVALID_CMD, src);
+#endif
+        break;
+    }
+
+    // ─── OTA (skeleton — flash writer not yet implemented) ───
+    // Wire format and orchestration on the controller side are
+    // ready; the actual nRF52 dual-bank flash writer + bootloader
+    // settings page commit needs a sacrificial-board test pass
+    // before going live. Every handler below answers with
+    // ERR_OTA_UNSUPPORTED so an over-eager controller doesn't
+    // brick a modem trying to push bytes into nowhere.
+    case CMD_OTA_BEGIN: {
+        LOG_R_WARN("OTA_BEGIN received — flash writer not implemented");
+        uint8_t status = 3;   // unsupported
+        sendFrame(CMD_OTA_BEGIN_RESP, &status, 1, src);
+        break;
+    }
+    case CMD_OTA_CHUNK: {
+        uint8_t status = 1;   // bad_offset (no session active)
+        sendFrame(CMD_OTA_CHUNK_RESP, &status, 1, src);
+        break;
+    }
+    case CMD_OTA_VERIFY: {
+        uint8_t resp[1 + 32] = {1};   // 1 = no buffer; sha256 zeros
+        sendFrame(CMD_OTA_VERIFY_RESP, resp, sizeof(resp), src);
+        break;
+    }
+    case CMD_OTA_APPLY: {
+        uint8_t status = 1;
+        sendFrame(CMD_OTA_APPLY_RESP, &status, 1, src);
+        break;
+    }
+    case CMD_OTA_ABORT: {
+        sendFrame(CMD_PONG, nullptr, 0, src);
+        break;
+    }
+
     case CMD_WIFI_RESET: {
         sendFrame(CMD_WIFI_RESET, nullptr, 0, src);
         if (src == TransportSource::USB) Serial.flush();
@@ -823,6 +1007,8 @@ static void onSerialFrameOk(uint8_t cmd, const uint8_t* payload, uint16_t len,
 
 static void onSerialFrameErr(uint8_t err_code, TransportSource src) {
     if (err_code == ERR_CRC_MISMATCH) status.crc_errors++;
+    LOG_R_ERR("frame parse error 0x%02X (src=%u)",
+              (unsigned)err_code, (unsigned)src);
     sendError(err_code, src);
 }
 
@@ -838,6 +1024,14 @@ void setup() {
     // below makes sure the full board.en_low_hold_ms has elapsed
     // before SPI traffic begins.
     rfSwitchEnLowAtBoot();
+
+#if defined(BOARD_HELTEC_T114)
+    // Restore non-volatile T114 state BEFORE radio init so we know
+    // whether to enter standby on boot. Display name will be picked
+    // up by the OLED at the first show*() call.
+    NodeState::begin();
+    radioStandby = NodeState::getStandby();
+#endif
 
     Serial.begin(921600);
     // On boards with native USB-CDC (Ikoka, LilyGO T3-S3) the first
@@ -899,6 +1093,12 @@ void setup() {
     // proceeds in the background. We just record when it went up;
     // the wait-until-elapsed happens at the end of setup().
     oled.begin();
+#if defined(BOARD_HELTEC_T114)
+    // Push restored state onto the OLED before showSplash so the
+    // boot screen already has the right name + standby tag.
+    oled.setDisplayName(NodeState::getDisplayName());
+    oled.setStandby(radioStandby);
+#endif
     oled.showSplash();
     splashStartedMs = millis();
 
