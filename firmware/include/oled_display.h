@@ -46,6 +46,27 @@ public:
     void turnOff();
     void turnOn();
 
+    // ─── v0.7 hooks (originally added for the T114 TFT, mirrored here as
+    // no-ops / thin updates so the heltec_v3 build stays in lockstep with
+    // the shared main.cpp) ───────────────────────────────────────────────
+
+    // Cache radio config so status screens can show it. The OLED footprint
+    // doesn't have room for everything that the T114 TFT does — implementation
+    // updates internal cache and (optionally) refreshes the visible screen.
+    void setRadioInfo(uint32_t freq_hz, uint8_t sf, uint32_t bandwidth_hz,
+                      uint8_t cr, int8_t power_dbm,
+                      uint8_t preamble_len, uint16_t syncword);
+
+    // Display name cache — used by sector-array deployments where the
+    // controller may rename a modem at runtime. On Heltec V3 this is
+    // currently a no-op (no big-name screen), but kept in the API so
+    // shared main.cpp compiles unchanged.
+    void setDisplayName(const char* name);
+
+    // Standby flag — when true the modem is parked (radio off). The status
+    // screen's "state" tag will reflect this on next render.
+    void setStandby(bool standby);
+
 private:
     Adafruit_SSD1306 *_display = nullptr;
     bool _ready = false;

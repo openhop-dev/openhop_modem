@@ -1,7 +1,9 @@
 // =============================================================
-// boards/rak3112_wismesh.h — RAK3112 WisDuo module on a WisMesh carrier
+// boards/rak3112_wismesh.h — RAK3112 WisDuo module on a RAK19007 base
 //
-// Hardware ref: https://docs.rakwireless.com/Product-Categories/WisDuo/RAK3112-Module/
+// Module ref:   https://docs.rakwireless.com/Product-Categories/WisDuo/RAK3112-Module/
+// Carrier ref:  https://docs.rakwireless.com/product-categories/wisblock/rak19007/datasheet/
+//
 // LoRa: bare SX1262 (no PA, +22 dBm max), but with an external 50 Ω RF
 // switch on the carrier board. The switch's enable line is wired to
 // ESP32-S3 GPIO4 ("ANT_SW") — datasheet flags this pin as
@@ -25,11 +27,12 @@
 //   SX1262 DIO1     → GPIO47
 //   SX1262 BUSY     → GPIO48
 //
-// OLED I2C pins are NOT defined by the module itself — they live on the
-// WisMesh carrier-board. The defaults below use the I2C2 pair brought
-// out by the module (SCL=GPIO18, SDA=GPIO17) which is what most RAK
-// WisMesh tracker carriers wire the SSD1306 to. If the OLED stays
-// blank after flash, switch to I2C1 (SCL=GPIO40, SDA=GPIO9).
+// OLED on RAK19007 base (verified 2026-05-06): the OLED is wired to
+// **I2C1**, which the WisBlock sensor slots A-D and the J12 header
+// share. RAK3112 module routes I2C1 to:
+//   SDA → GPIO9    (WB pin 8 on sensor slot, WB pin 4 on J12)
+//   SCL → GPIO40   (WB pin 7 on sensor slot, WB pin 3 on J12)
+// I2C2 (GPIO17/18) is only on the CPU slot — not used for OLED.
 // =============================================================
 #pragma once
 
@@ -54,11 +57,11 @@ inline const BoardConfig BOARD = {
         .dio2_as_rf_switch = true,     // SX1262 DIO2 drives T/R CTRL internally
     },
 
-    // OLED on the WisMesh carrier — best guess pin pair, verify on board
-    .pin_i2c_sda      = 17,           // I2C2 SDA
-    .pin_i2c_scl      = 18,           // I2C2 SCL
-    .pin_i2c_oled_rst = -1,           // RAK carriers usually skip the RST line
-    .pin_vext_enable_low = -1,        // OLED powered straight from 3V3 rail
+    // OLED on RAK19007 base — wired to I2C1 (sensor slots / J12 header)
+    .pin_i2c_sda      = 9,            // I2C1 SDA — WB pin 8 (sensor) / pin 4 (J12)
+    .pin_i2c_scl      = 40,           // I2C1 SCL — WB pin 7 (sensor) / pin 3 (J12)
+    .pin_i2c_oled_rst = -1,           // RAK OLED modules tie RST to 3V3
+    .pin_vext_enable_low = -1,        // 3V3 rail is always-on on RAK19007
 
     .pin_user_button        = 0,      // BOOT button on GPIO0
     .user_button_active_low = true,

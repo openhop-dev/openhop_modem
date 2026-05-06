@@ -295,9 +295,15 @@ static void rfSwitchEnHighAfterSettle() {
 }
 
 static void rfSwitchConfigureRadio() {
+    // DIO2 + explicit RX/TX pins are independent — the Wio-SX1262 board uses
+    // both: DIO2 drives the TX path internally while RXEN (an external GPIO)
+    // gates the LNA on the RX path. Older boards (Heltec V3 / T3S3 / RAK3112)
+    // only set dio2_as_rf_switch and leave rx_pin/tx_pin == -1, so the second
+    // call becomes a no-op for them.
     if (BOARD.rf_switch.dio2_as_rf_switch) {
         radio.setDio2AsRfSwitch(true);
-    } else if (BOARD.rf_switch.rx_pin >= 0 || BOARD.rf_switch.tx_pin >= 0) {
+    }
+    if (BOARD.rf_switch.rx_pin >= 0 || BOARD.rf_switch.tx_pin >= 0) {
         uint32_t rx = BOARD.rf_switch.rx_pin >= 0
                           ? (uint32_t)BOARD.rf_switch.rx_pin
                           : RADIOLIB_NC;
@@ -633,7 +639,12 @@ void processHostCommand(uint8_t cmd, const uint8_t* payload, uint16_t len,
         // ERR_CHANNEL_BUSY instead of trampling a neighbour.
         // Local decision (lowest latency vs P4-managed equivalent).
         if (autoCadEnabled) {
-            constexpr uint8_t  CAD_AUTO_RETRIES   = 3;
+            // 2 retries (3 scans total) + tightened jitter caps
+            // worst-case main-loop blocking around ~450 ms (was ~1 s
+            // before). Important because the loop also drains the
+            // UART RX ring — at 921600 baud the controller can push
+            // ~46 KB/s and our SERIAL_BUFFER_SIZE is 512 B.
+            constexpr uint8_t  CAD_AUTO_RETRIES   = 2;
             constexpr uint32_t CAD_TIMEOUT_MS     = 200;   // worst-case SF12 ≈ 100 ms
             bool channel_clear = false;
             for (uint8_t attempt = 0; attempt < CAD_AUTO_RETRIES; attempt++) {
@@ -657,7 +668,7 @@ void processHostCommand(uint8_t cmd, const uint8_t* payload, uint16_t len,
                 if (!busy) { channel_clear = true; break; }
                 // Random backoff 50-200 ms to prevent step-locking
                 // with another sector that retried at the same time.
-                delay(50 + (millis() & 0x7F));
+                delay(20 + (millis() & 0x1F));
             }
             if (!channel_clear) {
                 LOG_R_WARN("auto-CAD: channel busy after retries, abort TX");

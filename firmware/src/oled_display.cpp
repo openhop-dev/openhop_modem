@@ -312,3 +312,23 @@ void OledDisplay::turnOn() {
     if (!_ready) return;
     _display->ssd1306_command(SSD1306_DISPLAYON);
 }
+
+// ─── v0.7 cache hooks (originally for T114 TFT) ─────────────────────────
+// On Heltec V3 the OLED is too small for a dedicated radio-info / display-name
+// screen, so these are stubs. showStatus / showRadioConfig already take the
+// radio params they need directly via arguments.
+
+void OledDisplay::setRadioInfo(uint32_t /*freq_hz*/, uint8_t /*sf*/,
+                                uint32_t /*bandwidth_hz*/, uint8_t /*cr*/,
+                                int8_t /*power_dbm*/, uint8_t /*preamble_len*/,
+                                uint16_t /*syncword*/) {
+    // no-op: showRadioConfig() takes the same params directly when needed
+}
+
+void OledDisplay::setDisplayName(const char* /*name*/) {
+    // no-op: Heltec V3 doesn't have the big-name screen the T114 TFT does
+}
+
+void OledDisplay::setStandby(bool /*standby*/) {
+    // no-op: showStatus's "state" tag handles the standby indicator
+}
