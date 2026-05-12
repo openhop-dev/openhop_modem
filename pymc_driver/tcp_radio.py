@@ -1,8 +1,8 @@
 """
 TCP LoRa Radio Driver for pymc_core
 
-Implements the LoRaRadio interface using a Heltec V3/V4 running the
-heltec-lora-modem firmware in Wi-Fi/TCP mode. Same binary protocol as
+Implements the LoRaRadio interface using common LoRa boards running
+custom-firmware in Wi-Fi/TCP mode. Same binary protocol as
 USBLoRaRadio — only the transport differs.
 
 Drop-in replacement for SX1262Radio in pymc_core's hardware layer.

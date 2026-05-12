@@ -79,7 +79,8 @@ def create_radio(radio_type: str = "waveshare", serial_port: str = "/dev/ttyUSB0
 
             tcp_config = {
                 "host": (os.environ.get("PYMC_TCP_HOST")
-                         or os.environ.get("HELTEC_HOST", "ikoka-abcdef.local")),
+                         or os.environ.get("HELTEC_HOST")
+                         or ""),
                 "port": int(os.environ.get("PYMC_TCP_PORT")
                             or os.environ.get("HELTEC_PORT", 5055)),
                 "token": (os.environ.get("PYMC_TCP_TOKEN")

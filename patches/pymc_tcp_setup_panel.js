@@ -53,13 +53,13 @@
             '<strong style="display:block;margin-bottom:6px;color:#2e7d57;">' +
             'pymc_tcp — connection details</strong>' +
             '<div style="font-size:12px;opacity:.75;margin-bottom:10px;">' +
-            'Provision the Heltec on Wi-Fi first (AP portal at 192.168.4.1), ' +
+            'Provision the modem on Wi-Fi first (AP portal at 192.168.4.1), ' +
             'then enter its LAN address here. The token is optional ' +
             '— leave it empty if the modem accepts open connections.' +
             '</div>' +
             '<label style="display:block;font-weight:600;margin:8px 0 4px;">Host</label>' +
             '<input id="' + FORM_ID + '-host" type="text" autocomplete="off" ' +
-            'placeholder="heltec-abcdef.local or 192.168.1.50" ' +
+            'placeholder="pymc-abcdef.local or 192.168.1.50" ' +
             'style="width:100%;padding:8px 10px;box-sizing:border-box;' +
             'border:1px solid #bbb;border-radius:6px;font:inherit;color:inherit;background:rgba(255,255,255,.65);">' +
             '<label style="display:block;font-weight:600;margin:10px 0 4px;">Port</label>' +
