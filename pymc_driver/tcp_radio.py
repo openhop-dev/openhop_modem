@@ -41,16 +41,17 @@ from typing import Callable, Optional
 
 from .protocol_constants import (
     PROTO_SYNC,
-    CMD_TX_REQUEST, CMD_SET_CONFIG, CMD_GET_CONFIG,
+    MAX_LORA_PAYLOAD,
+    CMD_TX_REQUEST, CMD_SET_CONFIG,
     CMD_STATUS_REQ, CMD_NOISE_REQ,
     CMD_CAD_REQUEST, CMD_RX_START, CMD_SET_CAD_PARAMS,
-    CMD_AUTH, CMD_WIFI_RESET, CMD_PING,
+    CMD_AUTH, CMD_PING,
     CMD_TX_DONE, CMD_TX_FAIL, CMD_RX_PACKET,
     CMD_CONFIG_RESP, CMD_STATUS_RESP, CMD_NOISE_RESP,
     CMD_CAD_RESP, CMD_RX_STARTED, CMD_CAD_PARAMS_RESP,
     CMD_AUTH_OK, CMD_ERROR, CMD_PONG,
     ERR_UNAUTHORIZED,
-    RADIO_CONFIG_FMT, RADIO_CONFIG_SIZE,
+    RADIO_CONFIG_FMT,
     STATUS_RESP_FMT, STATUS_RESP_SIZE,
     crc16_ccitt, build_frame,
 )
@@ -117,11 +118,18 @@ class TCPLoRaRadio(_RadioBase):
 
         # State
         self._sock: Optional[socket.socket] = None
-        self._sock_lock = threading.Lock()        # guards socket writes
+        self._sock_lock = threading.Lock()  # guards socket writes
         self._initialized = False
         self._rx_thread: Optional[threading.Thread] = None
         self._stop_event = threading.Event()
         self._event_loop: Optional[asyncio.AbstractEventLoop] = None
+
+        # Custom CAD thresholds. Set lazily by set_custom_cad_thresholds()
+        # or perform_cad(det_peak=..., det_min=...); read by _reopen_socket
+        # to re-push to the firmware after a reconnect, so they must exist
+        # from construction time even when never customised.
+        self._custom_cad_peak: Optional[int] = None
+        self._custom_cad_min: Optional[int] = None
 
         # Signal metrics
         self.last_rssi: int = -99
@@ -432,25 +440,23 @@ class TCPLoRaRadio(_RadioBase):
         """
         if det_peak is not None and det_min is not None:
             new_peak = int(det_peak)
-            new_min  = int(det_min)
+            new_min = int(det_min)
             # Skip the firmware roundtrip when thresholds haven't changed
             # since the previous call. Saves ~50-80 ms per CAD during the
             # repeated-sample phase of the calibration sweep.
-            cached_peak = getattr(self, "_custom_cad_peak", None)
-            cached_min  = getattr(self, "_custom_cad_min", None)
-            if new_peak != cached_peak or new_min != cached_min:
+            if new_peak != self._custom_cad_peak or new_min != self._custom_cad_min:
                 payload = bytes([
-                    0x01,                       # symNum: CAD_ON_2_SYMB
+                    0x01,             # symNum: CAD_ON_2_SYMB
                     new_peak & 0xFF,
-                    new_min  & 0xFF,
-                    0x00,                       # exitMode: STDBY
+                    new_min & 0xFF,
+                    0x00,             # exitMode: STDBY
                 ])
                 await self._send_command(
                     CMD_SET_CAD_PARAMS, payload,
                     expect_cmd=CMD_CAD_PARAMS_RESP, timeout=2.0,
                 )
                 self._custom_cad_peak = new_peak
-                self._custom_cad_min  = new_min
+                self._custom_cad_min = new_min
 
         # Calibration engine passes 0.3s, which is tight for TCP transport
         # with the firmware's CAD-prime delay; floor it so the sweep gets
@@ -634,13 +640,16 @@ class TCPLoRaRadio(_RadioBase):
             logger.info(f"TCP re-connected to {self.host}:{self.port}")
             if self.token and not self._auth_sync(timeout=3.0):
                 logger.error("Reconnect: AUTH rejected")
-                self._close_sock(); return False
+                self._close_sock()
+                return False
             if not self._ping_sync(timeout=3.0):
                 logger.error("Reconnect: PING failed")
-                self._close_sock(); return False
+                self._close_sock()
+                return False
             if not self._apply_config_sync():
                 logger.error("Reconnect: SET_CONFIG failed")
-                self._close_sock(); return False
+                self._close_sock()
+                return False
             # Re-apply custom CAD if host had programmed any.
             if self._custom_cad_peak is not None and self._custom_cad_min is not None:
                 try:
@@ -730,6 +739,18 @@ class TCPLoRaRadio(_RadioBase):
 
                     cmd = buf[1]
                     length = buf[2] | (buf[3] << 8)
+                    # Sanity-cap the LEN field. The largest legitimate frame
+                    # is RX_PACKET (6 B header + MAX_LORA_PAYLOAD); anything
+                    # bigger means we're parsing garbage from a desync.
+                    # Drop the SYNC byte we just consumed and resync rather
+                    # than waiting indefinitely for a phantom 64 KB frame.
+                    if length > MAX_LORA_PAYLOAD + 32:
+                        logger.warning(
+                            f"RX frame LEN={length} exceeds sanity bound — "
+                            f"dropping SYNC byte and resyncing"
+                        )
+                        buf = buf[1:]
+                        continue
                     frame_size = 1 + 1 + 2 + length + 2
 
                     if len(buf) < frame_size:
@@ -899,7 +920,6 @@ class TCPLoRaRadio(_RadioBase):
         On-loop caller: schedule with ensure_future (fire-and-forget, logs in bg).
         Off-loop caller: block with run_coroutine_threadsafe and return its result.
         Returns True on success/scheduled, False on timeout/exception."""
-        import asyncio
         try:
             running = asyncio.get_running_loop()
         except RuntimeError:
@@ -928,7 +948,6 @@ class TCPLoRaRadio(_RadioBase):
             return True
         if self._event_loop is None or not self._event_loop.is_running():
             return True
-        import asyncio
         payload = struct.pack(
             RADIO_CONFIG_FMT,
             self.frequency, self.bandwidth, self.spreading_factor,
@@ -1014,7 +1033,7 @@ class TCPLoRaRadio(_RadioBase):
 
     def set_custom_cad_thresholds(self, peak: int, min_val: int) -> bool:
         self._custom_cad_peak = int(peak)
-        self._custom_cad_min  = int(min_val)
+        self._custom_cad_min = int(min_val)
         if not self._initialized:
             return True
         if self._event_loop is None or not self._event_loop.is_running():
@@ -1030,7 +1049,7 @@ class TCPLoRaRadio(_RadioBase):
 
     def clear_custom_cad_thresholds(self) -> None:
         self._custom_cad_peak = None
-        self._custom_cad_min  = None
+        self._custom_cad_min = None
         # Firmware retains last programmed values until reboot; explicit
         # reset would need a dedicated command — out of scope for v0.5.4.
 

@@ -137,3 +137,14 @@ def test_frame_preserves_command_byte(cmd):
     """Command byte goes in unchanged regardless of value."""
     frame = build_frame(cmd, b"")
     assert frame[1] == cmd
+
+
+def test_build_frame_rejects_oversized_payload():
+    """
+    Payloads larger than 0xFFFF cannot fit in the 16-bit LEN field.
+    build_frame() must raise ValueError with a clear message rather than
+    letting struct.pack blow up with a generic 'ushort format requires
+    0 <= number <= 65535' error.
+    """
+    with pytest.raises(ValueError, match="exceeds 16-bit LEN field"):
+        build_frame(CMD_TX_REQUEST, b"\x00" * 65536)

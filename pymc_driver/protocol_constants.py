@@ -26,64 +26,64 @@ PROTO_SYNC = 0xAA
 MAX_LORA_PAYLOAD = 255
 
 # ─── Host → Modem ────────────────────────────────────────────────────
-CMD_TX_REQUEST     = 0x01
-CMD_SET_CONFIG     = 0x10
-CMD_GET_CONFIG     = 0x11
-CMD_STATUS_REQ     = 0x20
-CMD_NOISE_REQ      = 0x22
-CMD_CAD_REQUEST    = 0x30
-CMD_RX_START       = 0x31
-CMD_SET_CAD_PARAMS = 0x34   # v0.5.4
-CMD_SET_WIFI       = 0x41   # v0.5
-CMD_AUTH           = 0x50
-CMD_WIFI_RESET     = 0x60
-CMD_GET_WIFI       = 0x61   # v0.5
-CMD_GET_VERSION    = 0x70   # v0.5.3
-CMD_PING           = 0xFF
+CMD_TX_REQUEST = 0x01
+CMD_SET_CONFIG = 0x10
+CMD_GET_CONFIG = 0x11
+CMD_STATUS_REQ = 0x20
+CMD_NOISE_REQ = 0x22
+CMD_CAD_REQUEST = 0x30
+CMD_RX_START = 0x31
+CMD_SET_CAD_PARAMS = 0x34  # v0.5.4
+CMD_SET_WIFI = 0x41  # v0.5
+CMD_AUTH = 0x50
+CMD_WIFI_RESET = 0x60
+CMD_GET_WIFI = 0x61  # v0.5
+CMD_GET_VERSION = 0x70  # v0.5.3
+CMD_PING = 0xFF
 
 # ─── Modem → Host ────────────────────────────────────────────────────
-CMD_TX_DONE         = 0x02
-CMD_TX_FAIL         = 0x03
-CMD_RX_PACKET       = 0x04
-CMD_CONFIG_RESP     = 0x12
-CMD_STATUS_RESP     = 0x21
-CMD_NOISE_RESP      = 0x23
-CMD_CAD_RESP        = 0x32
-CMD_RX_STARTED      = 0x33
+CMD_TX_DONE = 0x02
+CMD_TX_FAIL = 0x03
+CMD_RX_PACKET = 0x04
+CMD_CONFIG_RESP = 0x12
+CMD_STATUS_RESP = 0x21
+CMD_NOISE_RESP = 0x23
+CMD_CAD_RESP = 0x32
+CMD_RX_STARTED = 0x33
 CMD_CAD_PARAMS_RESP = 0x35  # v0.5.4
-CMD_AUTH_OK         = 0x51
-CMD_WIFI_STATUS     = 0x62  # v0.5
-CMD_VERSION_RESP    = 0x71  # v0.5.3
-CMD_ERROR           = 0xFE
-CMD_PONG            = 0xFF
+CMD_AUTH_OK = 0x51
+CMD_WIFI_STATUS = 0x62  # v0.5
+CMD_VERSION_RESP = 0x71  # v0.5.3
+CMD_ERROR = 0xFE
+CMD_PONG = 0xFF
 
 # ─── Error codes (CMD_ERROR payload[0]) ──────────────────────────────
-ERR_CRC_MISMATCH     = 0x01
-ERR_INVALID_CMD      = 0x02
-ERR_RADIO_BUSY       = 0x03
-ERR_TX_TIMEOUT       = 0x04
-ERR_PAYLOAD_TOO_BIG  = 0x05
-ERR_INVALID_CONFIG   = 0x06
-ERR_CAD_FAILED       = 0x07
-ERR_RADIO_INIT       = 0x08
-ERR_UNAUTHORIZED     = 0x09
+ERR_CRC_MISMATCH = 0x01
+ERR_INVALID_CMD = 0x02
+ERR_RADIO_BUSY = 0x03
+ERR_TX_TIMEOUT = 0x04
+ERR_PAYLOAD_TOO_BIG = 0x05
+ERR_INVALID_CONFIG = 0x06
+ERR_CAD_FAILED = 0x07
+ERR_RADIO_INIT = 0x08
+ERR_UNAUTHORIZED = 0x09
 
 # ─── WIFI_STATUS mode codes ──────────────────────────────────────────
 # Matches firmware main.cpp::buildWifiStatusPayload
-WIFI_MODE_OFFLINE        = 0
+WIFI_MODE_OFFLINE = 0
 WIFI_MODE_STA_CONNECTING = 1
-WIFI_MODE_STA_CONNECTED  = 2
-WIFI_MODE_AP_CONFIG      = 3
+WIFI_MODE_STA_CONNECTED = 2
+WIFI_MODE_AP_CONFIG = 3
 
 # ─── Packed struct layouts ───────────────────────────────────────────
 # RadioConfig (14 B): freq_hz(u32) | bandwidth_hz(u32) | sf(u8) | cr(u8)
 #                     | power_dbm(i8) | syncword(u16) | preamble_len(u8)
-RADIO_CONFIG_FMT  = "<IIBBbHB"
+RADIO_CONFIG_FMT = "<IIBBbHB"
 RADIO_CONFIG_SIZE = struct.calcsize(RADIO_CONFIG_FMT)
 
 # StatusResp (24 B): uptime | rx_count | tx_count | crc_errors
 #                    | last_rssi | snr×10 | noise×10 | temp_c | radio_state
-STATUS_RESP_FMT  = "<IIIIhhhbB"
+STATUS_RESP_FMT = "<IIIIhhhbB"
 STATUS_RESP_SIZE = struct.calcsize(STATUS_RESP_FMT)
 
 
@@ -104,8 +104,19 @@ def crc16_ccitt(data: bytes) -> int:
 
 
 def build_frame(cmd: int, payload: bytes = b"") -> bytes:
-    """Build a wire frame: SYNC | CMD | LEN | PAYLOAD | CRC."""
+    """Build a wire frame: SYNC | CMD | LEN | PAYLOAD | CRC.
+
+    Raises ValueError if the payload does not fit in the 16-bit LEN
+    field. The firmware caps individual LoRa payloads at
+    MAX_LORA_PAYLOAD, but the framing itself accepts anything up to
+    0xFFFF — exceeding that is a programming error in the caller.
+    """
     length = len(payload)
+    if length > 0xFFFF:
+        raise ValueError(
+            f"payload length {length} exceeds 16-bit LEN field "
+            f"(max 65535; firmware caps at MAX_LORA_PAYLOAD={MAX_LORA_PAYLOAD})"
+        )
     hdr = struct.pack("<BH", cmd, length)
     crc = crc16_ccitt(hdr + payload)
     return bytes([PROTO_SYNC]) + hdr + payload + struct.pack("<H", crc)
@@ -135,7 +146,7 @@ __all__ = [
     "WIFI_MODE_STA_CONNECTED", "WIFI_MODE_AP_CONFIG",
     # Structs
     "RADIO_CONFIG_FMT", "RADIO_CONFIG_SIZE",
-    "STATUS_RESP_FMT",  "STATUS_RESP_SIZE",
+    "STATUS_RESP_FMT", "STATUS_RESP_SIZE",
     # Framing
     "crc16_ccitt", "build_frame",
 ]

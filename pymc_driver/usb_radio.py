@@ -41,19 +41,19 @@ import serial
 from .protocol_constants import (
     PROTO_SYNC,
     MAX_LORA_PAYLOAD,
-    CMD_TX_REQUEST, CMD_SET_CONFIG, CMD_GET_CONFIG,
+    CMD_TX_REQUEST, CMD_SET_CONFIG,
     CMD_STATUS_REQ, CMD_NOISE_REQ,
     CMD_CAD_REQUEST, CMD_RX_START, CMD_SET_CAD_PARAMS,
-    CMD_SET_WIFI, CMD_AUTH, CMD_WIFI_RESET,
+    CMD_SET_WIFI, CMD_WIFI_RESET,
     CMD_GET_WIFI, CMD_GET_VERSION, CMD_PING,
     CMD_TX_DONE, CMD_TX_FAIL, CMD_RX_PACKET,
     CMD_CONFIG_RESP, CMD_STATUS_RESP, CMD_NOISE_RESP,
     CMD_CAD_RESP, CMD_RX_STARTED, CMD_CAD_PARAMS_RESP,
-    CMD_AUTH_OK, CMD_WIFI_STATUS, CMD_VERSION_RESP,
+    CMD_WIFI_STATUS, CMD_VERSION_RESP,
     CMD_ERROR, CMD_PONG,
     WIFI_MODE_OFFLINE, WIFI_MODE_STA_CONNECTING,
     WIFI_MODE_STA_CONNECTED, WIFI_MODE_AP_CONFIG,
-    RADIO_CONFIG_FMT, RADIO_CONFIG_SIZE,
+    RADIO_CONFIG_FMT,
     STATUS_RESP_FMT, STATUS_RESP_SIZE,
     crc16_ccitt, build_frame,
 )
@@ -133,8 +133,15 @@ class USBLoRaRadio(_RadioBase):
 
         # Response synchronization (command → response matching)
         self._response_events: dict[int, asyncio.Event] = {}
-        self._response_data: dict[int, bytes] = {}
+        self._response_data: dict[int, Optional[bytes]] = {}
         self._response_lock = threading.Lock()
+
+        # Custom CAD thresholds. Set lazily by set_custom_cad_thresholds()
+        # or perform_cad(det_peak=..., det_min=...); kept in attributes from
+        # construction so the calibration-sample fast-path doesn't trip on
+        # AttributeError before the first call.
+        self._custom_cad_peak: Optional[int] = None
+        self._custom_cad_min: Optional[int] = None
 
         # TX lock to serialize transmissions (matches SX1262Radio)
         self._tx_lock = asyncio.Lock()
@@ -159,18 +166,20 @@ class USBLoRaRadio(_RadioBase):
             return True
 
         try:
-            # dsrdtr=False avoids rebooting the ESP32 on every port open
-            # (CP2102 on Heltec V3 pulses EN on DTR transitions). macOS CDC
-            # drivers in this mode only reliably deliver TX/RX if we force
-            # rtscts=True and pre-assert RTS — otherwise read returns
-            # trickle-dribbles after the first response.
+            # dsrdtr=True tells pyserial to leave DTR/DSR alone on open
+            # rather than pulsing them. On boards with a CP2102 (Heltec
+            # V3 et al.), pyserial's default toggles DTR and the CP2102
+            # in turn pulls EN low, rebooting the ESP32 every time we
+            # (re-)open the port. dsrdtr=True is the workaround; rtscts
+            # stays off because the firmware does not implement hardware
+            # flow control on the RX pipe.
             self._serial = serial.Serial()
-            self._serial.port         = self.port
-            self._serial.baudrate     = self.baudrate
-            self._serial.timeout      = 0.1
+            self._serial.port = self.port
+            self._serial.baudrate = self.baudrate
+            self._serial.timeout = 0.1
             self._serial.write_timeout = 2.0
-            self._serial.dsrdtr       = True
-            self._serial.rtscts       = False
+            self._serial.dsrdtr = True
+            self._serial.rtscts = False
             self._serial.open()
 
             # Short settle in case the caller just power-cycled the device.
@@ -464,16 +473,14 @@ class USBLoRaRadio(_RadioBase):
         """
         if det_peak is not None and det_min is not None:
             new_peak = int(det_peak)
-            new_min  = int(det_min)
+            new_min = int(det_min)
             # Same caching rationale as tcp_radio: avoid re-sending unchanged
             # thresholds during the per-sample inner loop of calibration.
-            cached_peak = getattr(self, "_custom_cad_peak", None)
-            cached_min  = getattr(self, "_custom_cad_min", None)
-            if new_peak != cached_peak or new_min != cached_min:
+            if new_peak != self._custom_cad_peak or new_min != self._custom_cad_min:
                 payload = bytes([
                     0x01,
                     new_peak & 0xFF,
-                    new_min  & 0xFF,
+                    new_min & 0xFF,
                     0x00,
                 ])
                 await self._send_command(
@@ -481,7 +488,7 @@ class USBLoRaRadio(_RadioBase):
                     expect_cmd=CMD_CAD_PARAMS_RESP, timeout=2.0,
                 )
                 self._custom_cad_peak = new_peak
-                self._custom_cad_min  = new_min
+                self._custom_cad_min = new_min
 
         # Calibration tool sends timeout=0.3 which is tight for our stack;
         # raise the floor so we don't lose samples to "no response".
@@ -512,7 +519,7 @@ class USBLoRaRadio(_RadioBase):
         """
         ssid_b = ssid.encode("utf-8")
         pass_b = password.encode("utf-8")
-        tok_b  = tcp_token.encode("utf-8")
+        tok_b = tcp_token.encode("utf-8")
         if len(ssid_b) == 0 or len(ssid_b) > 32:
             raise ValueError("SSID must be 1..32 bytes")
         if len(pass_b) > 64:
@@ -589,31 +596,37 @@ class USBLoRaRadio(_RadioBase):
         """Parse WIFI_STATUS payload (see protocol.h for layout)."""
         try:
             i = 0
-            mode = payload[i]; i += 1
-            ip = f"{payload[i]}.{payload[i+1]}.{payload[i+2]}.{payload[i+3]}"; i += 4
-            port = payload[i] | (payload[i+1] << 8); i += 2
-            slen = payload[i]; i += 1
-            ssid = payload[i:i+slen].decode("utf-8", errors="replace"); i += slen
-            hlen = payload[i]; i += 1
-            host = payload[i:i+hlen].decode("utf-8", errors="replace"); i += hlen
+            mode = payload[i]
+            i += 1
+            ip = f"{payload[i]}.{payload[i+1]}.{payload[i+2]}.{payload[i+3]}"
+            i += 4
+            port = payload[i] | (payload[i+1] << 8)
+            i += 2
+            slen = payload[i]
+            i += 1
+            ssid = payload[i:i+slen].decode("utf-8", errors="replace")
+            i += slen
+            hlen = payload[i]
+            i += 1
+            host = payload[i:i+hlen].decode("utf-8", errors="replace")
         except (IndexError, UnicodeDecodeError) as e:
             logger.error(f"Malformed WIFI_STATUS: {e}")
             return None
 
         mode_names = {
-            WIFI_MODE_OFFLINE:        "offline",
+            WIFI_MODE_OFFLINE: "offline",
             WIFI_MODE_STA_CONNECTING: "connecting",
-            WIFI_MODE_STA_CONNECTED:  "sta",
-            WIFI_MODE_AP_CONFIG:      "ap",
+            WIFI_MODE_STA_CONNECTED: "sta",
+            WIFI_MODE_AP_CONFIG: "ap",
         }
         return {
-            "mode":      mode,
+            "mode": mode,
             "mode_name": mode_names.get(mode, "unknown"),
-            "ip":        ip,
-            "port":      port,
-            "ssid":      ssid,
-            "hostname":  host,
-            "mdns":      f"{host}.local" if host else "",
+            "ip": ip,
+            "port": port,
+            "ssid": ssid,
+            "hostname": host,
+            "mdns": f"{host}.local" if host else "",
         }
 
     def cleanup(self):
@@ -783,6 +796,18 @@ class USBLoRaRadio(_RadioBase):
 
                     cmd = buf[1]
                     length = buf[2] | (buf[3] << 8)
+                    # Sanity-cap the LEN field. The largest legitimate frame
+                    # is RX_PACKET (6 B header + MAX_LORA_PAYLOAD); anything
+                    # bigger means we're parsing garbage from a desync.
+                    # Drop the SYNC byte we just consumed and resync rather
+                    # than waiting indefinitely for a phantom 64 KB frame.
+                    if length > MAX_LORA_PAYLOAD + 32:
+                        logger.warning(
+                            f"RX frame LEN={length} exceeds sanity bound — "
+                            f"dropping SYNC byte and resyncing"
+                        )
+                        buf = buf[1:]
+                        continue
                     frame_size = 1 + 1 + 2 + length + 2
 
                     if len(buf) < frame_size:
