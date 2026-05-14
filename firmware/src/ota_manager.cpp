@@ -176,17 +176,17 @@ static void handleRoot() {
             "</form>"
             "<p class='m'>Blank resets to the board default. Reboot required.</p>"
             "<hr>"
-            "<h3>pyMC TCP password</h3>"
+            "<h3>pyMC Token</h3>"
             "<form method='POST' action='/token'>"
-            "<label>New TCP password</label>"
+            "<label>New pyMC token</label>"
             "<input type='password' name='token' autocomplete='new-password' maxlength='64'>"
-            "<label>Confirm TCP password</label>"
+            "<label>Confirm pyMC token</label>"
             "<input type='password' name='confirm' autocomplete='new-password' maxlength='64'>"
-            "<button type='submit'>Save TCP password</button>"
+            "<button type='submit'>Save pyMC token</button>"
             "</form>";
     body += "<p class='m'>Current mode: <b>";
     body += cfg.tcpToken.length() > 0 ? "protected" : "open";
-    body += F("</b>. Leave both fields blank to clear the TCP password. Reboot required.</p>"
+    body += F("</b>. This token must match the <code>token</code> value in pyMC so pyMC can connect to the radio. Leave both fields blank to clear it. Reboot required.</p>"
               "<hr>"
             "<h3>HTTP password</h3>"
             "<form method='POST' action='/auth'>"
@@ -238,26 +238,26 @@ static void handleTokenSave() {
     String confirm   = httpServer->arg("confirm");
 
     if (requested.length() > MAX_TCP_TOKEN_LEN) {
-        httpServer->send(400, "text/plain", "TCP password must be 0-64 characters.\n");
+        httpServer->send(400, "text/plain", "pyMC token must be 0-64 characters.\n");
         return;
     }
     if (requested != confirm) {
-        httpServer->send(400, "text/plain", "TCP password confirmation does not match.\n");
+        httpServer->send(400, "text/plain", "pyMC token confirmation does not match.\n");
         return;
     }
 
     cfg.tcpToken = requested;
     WifiManager::saveConfig(cfg);
 
-    Serial.printf("[OTA] TCP password updated by %s -> %s\n",
+    Serial.printf("[OTA] pyMC token updated by %s -> %s\n",
                   httpServer->client().remoteIP().toString().c_str(),
                   requested.length() > 0 ? "set" : "cleared");
 
-    sendSimplePage(F("TCP password saved"),
-                   F("TCP password saved"),
+    sendSimplePage(F("pyMC token saved"),
+                   F("pyMC token saved"),
                    requested.length() > 0
-                       ? F("The modem will reboot now and require the new pyMC TCP password.")
-                       : F("The modem will reboot now and allow open TCP access again."));
+                       ? F("The modem will reboot now and require the new pyMC token.")
+                       : F("The modem will reboot now and allow open pyMC access again."));
     delay(500);
     ESP.restart();
 }
