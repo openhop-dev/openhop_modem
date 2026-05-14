@@ -4,6 +4,7 @@
 // =============================================================
 #include "ota_manager.h"
 #include "net_filter.h"
+#include "wifi_manager.h"
 
 #include <ArduinoOTA.h>
 #include <ESPmDNS.h>
@@ -118,8 +119,9 @@ static bool checkAuth() {
 static void handleRoot() {
     if (!checkAuth()) return;
     String title = modemTitle();
+    const auto& cfg = WifiManager::getConfig();
     String body;
-    body.reserve(2048);
+    body.reserve(3072);
     body += F("<!DOCTYPE html><html><head><meta charset='utf-8'>"
               "<meta name='viewport' content='width=device-width,initial-scale=1'>"
               "<title>");
@@ -145,6 +147,16 @@ static void handleRoot() {
               "<code>curl -u admin:&lt;password&gt; -F firmware=@firmware.bin http://");
     body += hostname + ".local/update</code></p>"
             "<hr>"
+            "<h3>Hostname</h3>"
+            "<form method='POST' action='/hostname'>"
+            "<label>mDNS / OTA hostname</label>"
+            "<input type='text' name='hostname' autocomplete='off' maxlength='32' value='" +
+            cfg.hostname +
+            "' placeholder='leave blank for default'>"
+            "<button type='submit'>Save hostname</button>"
+            "</form>"
+            "<p class='m'>Blank resets to the board default. Reboot required.</p>"
+            "<hr>"
             "<h3>HTTP password</h3>"
             "<form method='POST' action='/auth'>"
             "<label>New password</label>"
@@ -158,6 +170,33 @@ static void handleRoot() {
             "<p class='m'>Username: <b>admin</b>. Password changes take effect on the next request.</p>";
     body += F("</body></html>");
     httpServer->send(200, "text/html; charset=utf-8", body);
+}
+
+static void handleHostnameSave() {
+    if (!checkAuth()) return;
+
+    WifiManager::Config cfg = WifiManager::getConfig();
+    String requested = httpServer->arg("hostname");
+    requested.trim();
+    cfg.hostname = requested;
+    WifiManager::saveConfig(cfg);
+
+    Serial.printf("[OTA] hostname updated by %s -> '%s'\n",
+                  httpServer->client().remoteIP().toString().c_str(),
+                  requested.c_str());
+
+    String body = F("<!DOCTYPE html><html><head><meta charset='utf-8'>"
+                    "<meta name='viewport' content='width=device-width,initial-scale=1'>"
+                    "<title>Hostname saved</title></head>"
+                    "<body style='font-family:system-ui,sans-serif;max-width:540px;"
+                    "margin:2em auto;padding:0 1em;color:#222'>"
+                    "<h2>Hostname saved</h2>"
+                    "<p>The modem will reboot now and come back with the updated hostname.</p>"
+                    "<p><a href='/'>Back to OTA page</a></p>"
+                    "</body></html>");
+    httpServer->send(200, "text/html; charset=utf-8", body);
+    delay(500);
+    ESP.restart();
 }
 
 static void handleAuthSave() {
@@ -279,6 +318,7 @@ void begin(const String& hn, const String& tk) {
 
     httpServer = new WebServer(HTTP_PORT);
     httpServer->on("/",       HTTP_GET,  handleRoot);
+    httpServer->on("/hostname", HTTP_POST, handleHostnameSave);
     httpServer->on("/auth",   HTTP_POST, handleAuthSave);
     httpServer->on("/update", HTTP_POST, handleUpdateResult, handleUpdateUpload);
     httpServer->onNotFound([]() { httpServer->send(404, "text/plain", "Not found"); });
