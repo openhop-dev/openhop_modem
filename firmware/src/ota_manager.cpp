@@ -23,6 +23,7 @@ static constexpr const char* HTTP_PASS_KEY  = "http_pass";
 static constexpr const char* HTTP_AUTH_USER = "admin";
 static constexpr const char* DEFAULT_HTTP_PASSWORD = "password";
 static constexpr uint8_t MAX_HTTP_PASSWORD_LEN = 64;
+static constexpr uint8_t MAX_TCP_TOKEN_LEN = 64;
 
 static String      hostname;
 static String      token;
@@ -62,6 +63,24 @@ static bool saveHttpPassword(const String& password) {
     if (written == 0) return false;
     httpPassword = password;
     return true;
+}
+
+static void sendSimplePage(const __FlashStringHelper* title,
+                           const __FlashStringHelper* heading,
+                           const __FlashStringHelper* message) {
+    String body = F("<!DOCTYPE html><html><head><meta charset='utf-8'>"
+                    "<meta name='viewport' content='width=device-width,initial-scale=1'>"
+                    "<title>");
+    body += String(title);
+    body += F("</title></head>"
+              "<body style='font-family:system-ui,sans-serif;max-width:540px;"
+              "margin:2em auto;padding:0 1em;color:#222'>"
+              "<h2>");
+    body += String(heading);
+    body += F("</h2><p>");
+    body += String(message);
+    body += F("</p><p><a href='/'>Back to OTA page</a></p></body></html>");
+    httpServer->send(200, "text/html; charset=utf-8", body);
 }
 // ─── Rollback sanity check ──────────────────────────────────
 //
@@ -157,6 +176,18 @@ static void handleRoot() {
             "</form>"
             "<p class='m'>Blank resets to the board default. Reboot required.</p>"
             "<hr>"
+            "<h3>pyMC TCP password</h3>"
+            "<form method='POST' action='/token'>"
+            "<label>New TCP password</label>"
+            "<input type='password' name='token' autocomplete='new-password' maxlength='64'>"
+            "<label>Confirm TCP password</label>"
+            "<input type='password' name='confirm' autocomplete='new-password' maxlength='64'>"
+            "<button type='submit'>Save TCP password</button>"
+            "</form>";
+    body += "<p class='m'>Current mode: <b>";
+    body += cfg.tcpToken.length() > 0 ? "protected" : "open";
+    body += F("</b>. Leave both fields blank to clear the TCP password. Reboot required.</p>"
+              "<hr>"
             "<h3>HTTP password</h3>"
             "<form method='POST' action='/auth'>"
             "<label>New password</label>"
@@ -167,7 +198,7 @@ static void handleRoot() {
             "required minlength='1' maxlength='64'>"
             "<button type='submit'>Save password</button>"
             "</form>"
-            "<p class='m'>Username: <b>admin</b>. Password changes take effect on the next request.</p>";
+            "<p class='m'>Username: <b>admin</b>. Password changes take effect on the next request.</p>");
     body += F("</body></html>");
     httpServer->send(200, "text/html; charset=utf-8", body);
 }
@@ -199,6 +230,38 @@ static void handleHostnameSave() {
     ESP.restart();
 }
 
+static void handleTokenSave() {
+    if (!checkAuth()) return;
+
+    WifiManager::Config cfg = WifiManager::getConfig();
+    String requested = httpServer->arg("token");
+    String confirm   = httpServer->arg("confirm");
+
+    if (requested.length() > MAX_TCP_TOKEN_LEN) {
+        httpServer->send(400, "text/plain", "TCP password must be 0-64 characters.\n");
+        return;
+    }
+    if (requested != confirm) {
+        httpServer->send(400, "text/plain", "TCP password confirmation does not match.\n");
+        return;
+    }
+
+    cfg.tcpToken = requested;
+    WifiManager::saveConfig(cfg);
+
+    Serial.printf("[OTA] TCP password updated by %s -> %s\n",
+                  httpServer->client().remoteIP().toString().c_str(),
+                  requested.length() > 0 ? "set" : "cleared");
+
+    sendSimplePage(F("TCP password saved"),
+                   F("TCP password saved"),
+                   requested.length() > 0
+                       ? F("The modem will reboot now and require the new pyMC TCP password.")
+                       : F("The modem will reboot now and allow open TCP access again."));
+    delay(500);
+    ESP.restart();
+}
+
 static void handleAuthSave() {
     if (!checkAuth()) return;
 
@@ -222,16 +285,9 @@ static void handleAuthSave() {
     Serial.printf("[OTA] HTTP password changed by %s\n",
                   httpServer->client().remoteIP().toString().c_str());
 
-    String body = F("<!DOCTYPE html><html><head><meta charset='utf-8'>"
-                    "<meta name='viewport' content='width=device-width,initial-scale=1'>"
-                    "<title>Password saved</title></head>"
-                    "<body style='font-family:system-ui,sans-serif;max-width:540px;"
-                    "margin:2em auto;padding:0 1em;color:#222'>"
-                    "<h2>Password saved</h2>"
-                    "<p>Use the new password the next time this page asks for credentials.</p>"
-                    "<p><a href='/'>Back to OTA page</a></p>"
-                    "</body></html>");
-    httpServer->send(200, "text/html; charset=utf-8", body);
+    sendSimplePage(F("Password saved"),
+                   F("Password saved"),
+                   F("Use the new password the next time this page asks for credentials."));
 }
 
 static void handleUpdateResult() {
@@ -319,6 +375,7 @@ void begin(const String& hn, const String& tk) {
     httpServer = new WebServer(HTTP_PORT);
     httpServer->on("/",       HTTP_GET,  handleRoot);
     httpServer->on("/hostname", HTTP_POST, handleHostnameSave);
+    httpServer->on("/token",  HTTP_POST, handleTokenSave);
     httpServer->on("/auth",   HTTP_POST, handleAuthSave);
     httpServer->on("/update", HTTP_POST, handleUpdateResult, handleUpdateUpload);
     httpServer->onNotFound([]() { httpServer->send(404, "text/plain", "Not found"); });
@@ -329,16 +386,10 @@ void begin(const String& hn, const String& tk) {
     markedValid    = false;
     started        = true;
 
-<<<<<<< HEAD
-    Serial.printf("[OTA] HTTP /update + ArduinoOTA ready on %s (%s)\n",
-                  WiFi.localIP().toString().c_str(),
-                  token.length() > 0 ? "auth: token" : "auth: open");
-=======
     Serial.printf("[OTA] HTTP /update + ArduinoOTA ready on %s (http auth: %s, arduino ota: %s)\n",
                   currentIPString().c_str(),
                   HTTP_AUTH_USER,
                   token.length() > 0 ? "tcp token" : "http password");
->>>>>>> 55b393d (firmware: require auth for OTA web page)
 }
 
 void loop() {
