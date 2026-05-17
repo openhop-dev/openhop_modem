@@ -38,6 +38,7 @@
 #  include "tcp_server.h"
 #  include "ota_manager.h"
 #  include "ethernet_manager.h"
+#  include "runtime_stats.h"
 #else
 // nRF52 (Heltec T114) build: the network / OLED / OTA managers are
 // excluded from the build via platformio.ini's build_src_filter.
@@ -227,6 +228,24 @@ static uint32_t maxLoopUs = 0;
 // Host-link health for the DIAGNOSTICS screen: millis() of the last USB
 // frame that parsed cleanly. 0 = no frame yet since boot.
 static uint32_t lastUsbCmdMs = 0;
+
+#ifdef ARDUINO_ARCH_ESP32
+namespace RuntimeStats {
+Snapshot capture() {
+    Snapshot snap = {};
+    snap.status = status;
+    snap.status.uptime_sec = millis() / 1000;
+    snap.status.radio_state = radioStandby ? 2 : (isTxActive ? 1 : 0);
+    snap.status.temp_c = (int8_t)temperatureRead();
+    snap.status.noise_floor_x10 = (int16_t)(noiseFloor * 10.0f);
+    snap.radio = currentConfig;
+    snap.firmwareVersion = fwVersion;
+    snap.radioStandby = radioStandby;
+    snap.autoCadEnabled = autoCadEnabled;
+    return snap;
+}
+}
+#endif
 
 // ─── ISR callback ────────────────────────────────────────────
 #if defined(ESP32)
