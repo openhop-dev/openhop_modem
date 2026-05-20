@@ -523,7 +523,6 @@ class USBLoRaRadio(_RadioBase):
         """
         ssid_b = ssid.encode("utf-8")
         pass_b = password.encode("utf-8")
-<<<<<<< HEAD
         tok_b  = tcp_token.encode("utf-8")
         host_b = None if hostname is None else hostname.encode("utf-8")
         if len(ssid_b) == 0 or len(ssid_b) > 32:
