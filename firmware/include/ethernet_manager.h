@@ -13,10 +13,17 @@
 
 namespace EthernetManager {
 
-// Bring the EMAC + PHY up. Drives PHY reset, calls ETH.begin() with
-// the parameters from BOARD.ethernet, then waits up to ~5 s for the
-// link to come up and DHCP to lease an address. Watchdog-friendly.
-void begin();
+// Bring the EMAC + PHY up. Drives PHY reset, applies the requested
+// DHCP hostname, calls ETH.begin() with the parameters from
+// BOARD.ethernet, then waits up to ~5 s for the link to come up and
+// DHCP to lease an address. Watchdog-friendly.
+void begin(const char* hostname = nullptr,
+           bool useStaticIP = false,
+           const IPAddress& staticIP = IPAddress((uint32_t)0),
+           const IPAddress& gateway = IPAddress((uint32_t)0),
+           const IPAddress& subnet = IPAddress((uint32_t)0),
+           const IPAddress& dns1 = IPAddress((uint32_t)0),
+           const IPAddress& dns2 = IPAddress((uint32_t)0));
 
 // Tear down the EMAC + netif. After this call, isLinkUp() / hasIP()
 // return false and the RMII GPIOs are released so another driver

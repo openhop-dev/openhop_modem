@@ -1,9 +1,9 @@
 // =============================================================
 // ota_manager.h — OTA firmware update over Wi-Fi (STA mode)
 //
-// Two routes, both always-on whenever STA is connected:
+// Two routes, both always-on whenever a network interface is connected:
 //   - ArduinoOTA  : espota.py / pio run -t upload --upload-port <host>.local
-//   - HTTP POST   : curl -F firmware=@firmware.bin http://<host>.local/update
+//   - HTTP POST   : curl -u admin:<password> -F firmware=@firmware.bin http://<host>.local/update
 //
 // Dual-bank rollback: new firmware only "stays" if it passes a sanity
 // check (SX1262 init OK + at least one valid USB/TCP frame received
@@ -18,9 +18,10 @@
 namespace OTAManager {
 
 // Start ArduinoOTA + HTTP /update endpoint on port 80.
-// `token` is reused from WifiManager config — if non-empty, HTTP /update
-// requires Basic auth with user="heltec", pass=token; ArduinoOTA uses the
-// same value as its upload password. Must be called after WiFi STA is up.
+// HTTP requires Basic auth with user="admin" and an NVS-backed password
+// that defaults to "password"; the web page exposes a password-change form.
+// ArduinoOTA uses the TCP token when one is configured, otherwise the same
+// HTTP password. Must be called after Wi-Fi STA or Ethernet is up.
 void begin(const String& hostname, const String& token);
 
 // Service pending OTA transactions + feed the rollback sanity watchdog.

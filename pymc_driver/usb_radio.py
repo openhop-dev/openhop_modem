@@ -503,6 +503,7 @@ class USBLoRaRadio(_RadioBase):
         password: str,
         tcp_port: int = 5055,
         tcp_token: str = "",
+        hostname: Optional[str] = None,
     ) -> Optional[dict]:
         """Provision Wi-Fi credentials over USB and reboot into STA mode.
 
@@ -513,30 +514,39 @@ class USBLoRaRadio(_RadioBase):
         `get_wifi_status()` that STA came up.
 
         tcp_token: shared secret. Empty = open LAN (TCP + HTTP OTA). Non-empty
-        enforces CMD_AUTH on TCP and Basic-auth (user='heltec') on HTTP /update.
+        enforces CMD_AUTH on TCP and Basic-auth (user='admin') on HTTP /update.
+        hostname: optional mDNS/OTA hostname override. Omit it to preserve the
+        current hostname on older/newer firmware. Pass "" to reset to the
+        MAC-derived default on firmware that supports hostname provisioning.
 
         Returns the pending WIFI_STATUS dict, or None on timeout/error.
         """
         ssid_b = ssid.encode("utf-8")
         pass_b = password.encode("utf-8")
-        tok_b = tcp_token.encode("utf-8")
+<<<<<<< HEAD
+        tok_b  = tcp_token.encode("utf-8")
+        host_b = None if hostname is None else hostname.encode("utf-8")
         if len(ssid_b) == 0 or len(ssid_b) > 32:
             raise ValueError("SSID must be 1..32 bytes")
         if len(pass_b) > 64:
             raise ValueError("password must be <=64 bytes")
         if len(tok_b) > 64:
             raise ValueError("token must be <=64 bytes")
+        if host_b is not None and len(host_b) > 32:
+            raise ValueError("hostname must be <=32 bytes")
         if not (1 <= tcp_port <= 65535):
             raise ValueError("tcp_port out of range")
 
-        payload = (
+        payload = bytearray(
             bytes([len(ssid_b)]) + ssid_b +
             bytes([len(pass_b)]) + pass_b +
             struct.pack("<H", tcp_port) +
             bytes([len(tok_b)]) + tok_b
         )
+        if host_b is not None:
+            payload.extend(bytes([len(host_b)]) + host_b)
         resp = await self._send_command(
-            CMD_SET_WIFI, payload, expect_cmd=CMD_WIFI_STATUS, timeout=3.0
+            CMD_SET_WIFI, bytes(payload), expect_cmd=CMD_WIFI_STATUS, timeout=3.0
         )
         if resp is None:
             return None

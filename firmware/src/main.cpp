@@ -38,6 +38,7 @@
 #  include "tcp_server.h"
 #  include "ota_manager.h"
 #  include "ethernet_manager.h"
+#  include "runtime_stats.h"
 #else
 // nRF52 (Heltec T114) build: the network / OLED / OTA managers are
 // excluded from the build via platformio.ini's build_src_filter.
@@ -114,8 +115,8 @@ static _WiFiStub WiFi;
 
 // ─── Version ─────────────────────────────────────────────────
 // Base version is shared by every board; the board's fw_suffix
-// distinguishes one binary from another (e.g. "v0.7.0-ikoka").
-#define FW_VERSION_BASE "v0.7.0"
+// distinguishes one binary from another (e.g. "v0.8.0-ikoka").
+#define FW_VERSION_BASE "v0.8.0"
 static String fwVersion;   // populated in setup()
 
 // ─── Task watchdog — self-heal on loop() hang ───────────────
@@ -228,30 +229,30 @@ static uint32_t maxLoopUs = 0;
 // frame that parsed cleanly. 0 = no frame yet since boot.
 static uint32_t lastUsbCmdMs = 0;
 
+#ifdef ARDUINO_ARCH_ESP32
+namespace RuntimeStats {
+Snapshot capture() {
+    Snapshot snap = {};
+    snap.status = status;
+    snap.status.uptime_sec = millis() / 1000;
+    snap.status.radio_state = radioStandby ? 2 : (isTxActive ? 1 : 0);
+    snap.status.temp_c = (int8_t)temperatureRead();
+    snap.status.noise_floor_x10 = (int16_t)(noiseFloor * 10.0f);
+    snap.radio = currentConfig;
+    snap.firmwareVersion = fwVersion;
+    snap.radioStandby = radioStandby;
+    snap.autoCadEnabled = autoCadEnabled;
+    return snap;
+}
+}
+#endif
+
 // ─── ISR callback ────────────────────────────────────────────
 #if defined(ESP32)
 IRAM_ATTR
 #endif
 void onDio1Rise() {
     dio1Flag = true;
-}
-
-// ─── Hostname derivation (deterministic from MAC) ───────────
-// "<prefix>-XXXXXX" from last 3 MAC bytes. No OLED needed to find
-// device — host resolves it via mDNS: e.g. `heltec-ab12cd.local`
-// or `ikoka-ab12cd.local` depending on the board.
-static String buildHostname() {
-    // Read directly from eFuse so this works even on boards where the
-    // Wi-Fi stack hasn't been initialised (ESP32-P4 with the C6 SDIO
-    // bridge unprovisioned). esp_efuse_mac_get_default() returns the
-    // base MAC; WiFi STA MAC == base MAC, so the value is the same as
-    // the previous WiFi.macAddress() call.
-    uint8_t mac[6] = {0};
-    compatGetMac(mac);
-    char buf[40];
-    snprintf(buf, sizeof(buf), "%s-%02x%02x%02x",
-             BOARD.mdns_prefix, mac[3], mac[4], mac[5]);
-    return String(buf);
 }
 
 // ─── E22 RF switch boot sequence ────────────────────────────
@@ -450,16 +451,18 @@ static uint16_t buildWifiStatusPayload(uint8_t* out) {
     out[i++] = ssid_len;
     if (ssid_len) { memcpy(out + i, ssid, ssid_len); i += ssid_len; }
 
-    uint8_t host_len = (uint8_t)deviceHostname.length();
+    const char* host = WifiManager::getHostname();
+    uint8_t host_len = host ? (uint8_t)strnlen(host, 32) : 0;
     if (host_len > 32) host_len = 32;
     out[i++] = host_len;
-    if (host_len) { memcpy(out + i, deviceHostname.c_str(), host_len); i += host_len; }
+    if (host_len) { memcpy(out + i, host, host_len); i += host_len; }
 
     return i;
 }
 
 // ─── SET_WIFI payload parser ────────────────────────────────
-// Layout: ssid_len(1) ssid(N) pass_len(1) pass(M) port(2,LE) tok_len(1) tok(K)
+// Layout: ssid_len(1) ssid(N) pass_len(1) pass(M) port(2,LE)
+//         tok_len(1) tok(K) [host_len(1) host(H)]
 // Only meaningful when the firmware actually has a Wi-Fi stack;
 // the nRF52 build (Heltec T114) doesn't, so the parser is gone
 // from the binary entirely.
@@ -490,6 +493,17 @@ static bool parseSetWifi(const uint8_t* p, uint16_t len, WifiManager::Config& ou
     uint8_t tlen = p[i++];
     if (tlen > 64 || i + tlen > len) return false;
     out.tcpToken = tlen ? String((const char*)(p + i), tlen) : String();
+    i += tlen;
+
+    if (i < len) {
+        if (i + 1 > len) return false;
+        uint8_t hlen = p[i++];
+        if (hlen > 32 || i + hlen > len) return false;
+        out.hostname = hlen ? String((const char*)(p + i), hlen) : String();
+        i += hlen;
+    }
+
+    if (i != len) return false;
 
     out.useStaticIP = false;   // USB provisioning = DHCP only
     return true;
@@ -1246,9 +1260,17 @@ void setup() {
     // and skip Wi-Fi; if no link we tear EMAC back down (so the RMII
     // GPIOs are released) and fall back to Wi-Fi. Boards without
     // Ethernet (`ethernet.enabled = false`) skip straight to Wi-Fi.
+    WifiManager::loadConfigOnly();
+    const auto& netCfg = WifiManager::getConfig();
     bool useEthernet = false;
     if (BOARD.ethernet.enabled) {
-        EthernetManager::begin();   // waits up to 5 s for link + DHCP
+        EthernetManager::begin(WifiManager::getHostname(),
+                               netCfg.useStaticIP,
+                               netCfg.staticIP,
+                               netCfg.gateway,
+                               netCfg.subnet,
+                               netCfg.dns1,
+                               netCfg.dns2);   // waits up to 5 s for link + DHCP
         if (EthernetManager::isLinkUp()) {
             useEthernet = true;
             Serial.println("[NET] Ethernet link up — Wi-Fi will be skipped");
@@ -1260,14 +1282,11 @@ void setup() {
 
     if (!useEthernet && BOARD.has_wifi) {
         WifiManager::begin();
-        WiFi.setHostname(buildHostname().c_str());
     } else {
-        // Either Ethernet won, or Wi-Fi is compile-time disabled. We
-        // still need the saved tcpPort/tcpToken loaded from NVS for
-        // the TCP server config below.
-        WifiManager::loadConfigOnly();
+        // Either Ethernet won, or Wi-Fi is compile-time disabled. The
+        // saved config was loaded above for hostname/TCP setup.
     }
-    deviceHostname = buildHostname();
+    deviceHostname = WifiManager::getHostname();
 
     bool netUp = WifiManager::isSTAConnected() || EthernetManager::hasIP();
     if (netUp) {

@@ -15,6 +15,7 @@
 #if CONFIG_ETH_USE_ESP32_EMAC
 
 #include <ETH.h>
+#include <Network.h>
 #include <esp_task_wdt.h>
 
 namespace EthernetManager {
@@ -22,6 +23,20 @@ namespace EthernetManager {
 static bool   _started   = false;
 static char   _ip_str[20]  = "---";
 static char   _mac_str[18] = "";
+static String _pending_hostname;
+static network_event_handle_t _eth_event_handle = 0;
+
+static void onEthernetEvent(arduino_event_id_t event, arduino_event_info_t) {
+    if (event != ARDUINO_EVENT_ETH_START) return;
+    if (_pending_hostname.length() == 0) return;
+    if (ETH.setHostname(_pending_hostname.c_str())) {
+        Serial.printf("[ETH] hostname='%s' applied at ETH_START\n",
+                      _pending_hostname.c_str());
+    } else {
+        Serial.printf("[ETH] failed to apply hostname '%s' at ETH_START\n",
+                      _pending_hostname.c_str());
+    }
+}
 
 static eth_phy_type_t mapPhyType(BoardConfig::EthernetPhy phy) {
     switch (phy) {
@@ -56,7 +71,13 @@ static void resetPhy(int8_t rst_pin) {
     delay(50);   // datasheet: IP101 needs ≥10 ms after RST deassert
 }
 
-void begin() {
+void begin(const char* hostname,
+           bool useStaticIP,
+           const IPAddress& staticIP,
+           const IPAddress& gateway,
+           const IPAddress& subnet,
+           const IPAddress& dns1,
+           const IPAddress& dns2) {
     if (!BOARD.ethernet.enabled) return;
 
     const auto& e = BOARD.ethernet;
@@ -74,18 +95,9 @@ void begin() {
         return;
     }
 
-    // Apply static IP BEFORE begin() — same idiom as WiFi.config().
-    // When use_static_ip is false the call is skipped and DHCP is used.
-    if (e.use_static_ip) {
-        IPAddress ip   (e.static_ip[0], e.static_ip[1], e.static_ip[2], e.static_ip[3]);
-        IPAddress gw   (e.gateway[0],   e.gateway[1],   e.gateway[2],   e.gateway[3]);
-        IPAddress sn   (e.subnet[0],    e.subnet[1],    e.subnet[2],    e.subnet[3]);
-        IPAddress dns1 (e.dns[0],       e.dns[1],       e.dns[2],       e.dns[3]);
-        ETH.config(ip, gw, sn, dns1);
-        Serial.printf("[ETH] static cfg %u.%u.%u.%u/%u.%u.%u.%u gw=%u.%u.%u.%u\n",
-                      ip[0], ip[1], ip[2], ip[3],
-                      sn[0], sn[1], sn[2], sn[3],
-                      gw[0], gw[1], gw[2], gw[3]);
+    _pending_hostname = (hostname && hostname[0] != '\0') ? String(hostname) : String();
+    if (_eth_event_handle == 0) {
+        _eth_event_handle = Network.onEvent(onEthernetEvent, ARDUINO_EVENT_ETH_START);
     }
 
     // power pin (-1 = none); clock mode mapped per-target above.
@@ -100,6 +112,38 @@ void begin() {
         return;
     }
     _started = true;
+
+    if (_pending_hostname.length() > 0) {
+        const char* applied = ETH.getHostname();
+        Serial.printf("[ETH] netif hostname now '%s'\n",
+                      (applied && applied[0] != '\0') ? applied : "(empty)");
+    }
+
+    // Apply hostname/static settings only after ETH.begin(), because
+    // the Arduino NetworkInterface requires a live esp_netif first.
+    if (useStaticIP) {
+        if (ETH.config(staticIP, gateway, subnet, dns1, dns2)) {
+            Serial.printf("[ETH] static cfg %u.%u.%u.%u/%u.%u.%u.%u gw=%u.%u.%u.%u\n",
+                          staticIP[0], staticIP[1], staticIP[2], staticIP[3],
+                          subnet[0], subnet[1], subnet[2], subnet[3],
+                          gateway[0], gateway[1], gateway[2], gateway[3]);
+        } else {
+            Serial.println("[ETH] failed to apply runtime static config");
+        }
+    } else if (e.use_static_ip) {
+        IPAddress ip  (e.static_ip[0], e.static_ip[1], e.static_ip[2], e.static_ip[3]);
+        IPAddress gw  (e.gateway[0],   e.gateway[1],   e.gateway[2],   e.gateway[3]);
+        IPAddress sn  (e.subnet[0],    e.subnet[1],    e.subnet[2],    e.subnet[3]);
+        IPAddress bd1 (e.dns[0],       e.dns[1],       e.dns[2],       e.dns[3]);
+        if (ETH.config(ip, gw, sn, bd1)) {
+            Serial.printf("[ETH] board static cfg %u.%u.%u.%u/%u.%u.%u.%u gw=%u.%u.%u.%u\n",
+                          ip[0], ip[1], ip[2], ip[3],
+                          sn[0], sn[1], sn[2], sn[3],
+                          gw[0], gw[1], gw[2], gw[3]);
+        } else {
+            Serial.println("[ETH] failed to apply board static config");
+        }
+    }
 
     // Cache MAC for later getMACString() lookups; ETH.macAddress() is
     // valid as soon as begin() returns true.
@@ -174,7 +218,8 @@ const char* getMACString() {
 #else  // !CONFIG_ETH_USE_ESP32_EMAC — chip has no internal EMAC
 
 namespace EthernetManager {
-void        begin()        {}
+void        begin(const char*, bool, const IPAddress&, const IPAddress&, const IPAddress&,
+                  const IPAddress&, const IPAddress&) {}
 void        end()          {}
 void        loop()         {}
 bool        isLinkUp()     { return false; }

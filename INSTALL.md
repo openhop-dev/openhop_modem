@@ -89,12 +89,14 @@ Once the board is on the LAN (Wi-Fi STA or Ethernet) and visible via mDNS:
 cd firmware
 pio run -e <env> -t upload --upload-port <env-stem>-<mac3>.local
 # or HTTP directly:
-curl -F firmware=@.pio/build/<env>/firmware.bin \
+curl -u admin:password -F firmware=@.pio/build/<env>/firmware.bin \
      http://<env-stem>-<mac3>.local/update
 ```
 
 Hostname stems are listed in §1 (e.g. `heltec`, `ikoka`,
 `lilygo-t3s3`, `rak3112`, `p4nano`). The board reboots after upload.
+The HTTP OTA page uses Basic Auth with username `admin` and default
+password `password`; change it from the OTA page after first network boot.
 Rollback is **not** automatic on a broken image — keep the USB cable
 as a recovery fallback.
 
@@ -358,7 +360,7 @@ Retransmitted packet (X bytes, Yms airtime)   ← mesh forwarding is live
 - **Firmware version:** the STATUS screen shows it after the boot
   splash. Or programmatically:
   ```python
-  await radio.get_version()   # e.g. "v0.7.0-heltec" / "-esp32_p4" / "-heltec_t114"
+  await radio.get_version()   # e.g. "v0.8.0-heltec" / "-esp32_p4" / "-heltec_t114"
   ```
 - **OLED screen cycle** (short PRG taps): SLEEP → STATUS → RADIO → DIAGNOSTICS.
   The RADIO screen shows the live chip configuration (freq, SF, BW, CR,
@@ -401,9 +403,9 @@ multi-arch (linux/amd64 + linux/arm64) and pushes on every git tag
 starting with `v*`:
 
 ```bash
-git tag v0.7.0
-git push origin v0.7.0
-# Action runs ~5 minutes, pushes itkeny/pymc-usb-repeater:v0.7.0
+git tag v0.8.0
+git push origin v0.8.0
+# Action runs ~5 minutes, pushes itkeny/pymc-usb-repeater:v0.8.0
 # and :latest. Watch progress under the repo's Actions tab.
 ```
 

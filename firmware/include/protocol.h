@@ -134,6 +134,7 @@
 //  pass_len(1B) | pass(M)
 //  port(2B LE)
 //  token_len(1B) | token(K)
+//  [host_len(1B) | hostname(H)]   // optional; blank/omitted = MAC-derived default
 //
 //  Modem ACKs with WIFI_STATUS (new pending config), then reboots.
 //

@@ -19,11 +19,13 @@ enum class Mode : uint8_t {
 struct Config {
     String    ssid;
     String    password;
+    String    hostname;   // empty = derive "<board>-XXXXXX" from MAC
     bool      useStaticIP;
     IPAddress staticIP;
     IPAddress gateway;
     IPAddress subnet;
-    IPAddress dns;
+    IPAddress dns1;
+    IPAddress dns2;
     String    tcpToken;  // empty = no auth required
     uint16_t  tcpPort;   // default 5055
 };
@@ -46,6 +48,7 @@ void loop();
 Mode        getMode();
 const char* getSSID();        // current STA SSID, or AP SSID in AP_CONFIG
 const char* getIPString();    // dotted quad, "---" when offline
+const char* getHostname();    // configured hostname, or MAC-derived fallback
 bool        isSTAConnected();
 bool        isAPActive();
 
