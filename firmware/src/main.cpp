@@ -54,11 +54,13 @@ namespace WifiManager {
     struct Config {
         String   ssid;
         String   password;
+        String   hostname;
         bool     useStaticIP = false;
         IPAddress staticIP;
         IPAddress gateway;
         IPAddress subnet;
-        IPAddress dns;
+        IPAddress dns1;
+        IPAddress dns2;
         String   tcpToken;
         uint16_t tcpPort = 0;
     };
@@ -70,6 +72,7 @@ namespace WifiManager {
     inline bool  isAPActive()        { return false; }
     inline const char* getSSID()     { return "---"; }
     inline const char* getIPString() { return "---"; }
+    inline const char* getHostname() { return "---"; }
     inline Mode  getMode()           { return Mode::OFFLINE; }
     inline const Config& getConfig() { static Config c; return c; }
     inline void  saveConfig(const Config&) {}
@@ -89,7 +92,13 @@ namespace OTAManager {
     inline void notifyValidFrame() {}
 }
 namespace EthernetManager {
-    inline void begin() {}
+    inline void begin(const char* = nullptr,
+                      bool = false,
+                      const IPAddress& = IPAddress((uint32_t)0),
+                      const IPAddress& = IPAddress((uint32_t)0),
+                      const IPAddress& = IPAddress((uint32_t)0),
+                      const IPAddress& = IPAddress((uint32_t)0),
+                      const IPAddress& = IPAddress((uint32_t)0)) {}
     inline void end()   {}
     inline void loop()  {}
     inline bool isLinkUp() { return false; }
