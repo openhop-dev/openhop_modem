@@ -153,8 +153,8 @@ in-app `OTA_*` commands carried over the same transport.
 ## Wire protocol v0.7
 
 *(Full command list in `firmware/include/protocol.h`; the section below is
-summarised. Reported firmware version is `v0.7.0-<BoardConfig.fw_suffix>`,
-e.g. `v0.7.0-heltec_t114`.)*
+summarised. Reported firmware version is `v0.8.0-<BoardConfig.fw_suffix>`,
+e.g. `v0.8.0-heltec_t114`.)*
 
 ### Frame format
 

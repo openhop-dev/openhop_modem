@@ -29,7 +29,7 @@ Example:
 ```json
 {
   "die_temperature_c": 24,
-  "firmware": "v0.7.0-heltec_v3",
+  "firmware": "v0.8.0-heltec_v3",
   "hostname": "heltec-ab12cd"
 }
 ```
@@ -43,7 +43,7 @@ Example:
 ```json
 {
   "board": "Heltec WiFi LoRa 32 V3",
-  "firmware": "v0.7.0-heltec_v3",
+  "firmware": "v0.8.0-heltec_v3",
   "hostname": "heltec-ab12cd",
   "mdns": "heltec-ab12cd.local",
   "interface": "Wi-Fi",

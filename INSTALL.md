@@ -360,7 +360,7 @@ Retransmitted packet (X bytes, Yms airtime)   ← mesh forwarding is live
 - **Firmware version:** the STATUS screen shows it after the boot
   splash. Or programmatically:
   ```python
-  await radio.get_version()   # e.g. "v0.7.0-heltec" / "-esp32_p4" / "-heltec_t114"
+  await radio.get_version()   # e.g. "v0.8.0-heltec" / "-esp32_p4" / "-heltec_t114"
   ```
 - **OLED screen cycle** (short PRG taps): SLEEP → STATUS → RADIO → DIAGNOSTICS.
   The RADIO screen shows the live chip configuration (freq, SF, BW, CR,
@@ -403,9 +403,9 @@ multi-arch (linux/amd64 + linux/arm64) and pushes on every git tag
 starting with `v*`:
 
 ```bash
-git tag v0.7.0
-git push origin v0.7.0
-# Action runs ~5 minutes, pushes itkeny/pymc-usb-repeater:v0.7.0
+git tag v0.8.0
+git push origin v0.8.0
+# Action runs ~5 minutes, pushes itkeny/pymc-usb-repeater:v0.8.0
 # and :latest. Watch progress under the repo's Actions tab.
 ```
 
