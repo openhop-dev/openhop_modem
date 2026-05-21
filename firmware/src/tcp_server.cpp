@@ -12,6 +12,7 @@
 // Forward decl — implemented in main.cpp; invoked for authorized frames.
 extern void processHostCommand(uint8_t cmd, const uint8_t* payload,
                                uint16_t len, TransportSource src);
+extern void noteTransportFrameError(uint8_t err_code);
 
 namespace TCPServer {
 
@@ -94,6 +95,7 @@ static void onFrameOk(uint8_t cmd, const uint8_t* payload, uint16_t len, Transpo
 
 static void onFrameErr(uint8_t err_code, TransportSource src) {
     (void)src;
+    noteTransportFrameError(err_code);
     sendErrorToClient(err_code);
 }
 

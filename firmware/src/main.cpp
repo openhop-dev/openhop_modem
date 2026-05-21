@@ -1109,6 +1109,10 @@ static void onSerialFrameErr(uint8_t err_code, TransportSource src) {
     sendError(err_code, src);
 }
 
+void noteTransportFrameError(uint8_t err_code) {
+    if (err_code == ERR_CRC_MISMATCH) status.crc_errors++;
+}
+
 // ─── Setup ───────────────────────────────────────────────────
 void setup() {
     // PRG held ≥3s at boot → wipe Wi-Fi NVS and reboot. Must come before
