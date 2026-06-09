@@ -1,4 +1,4 @@
-# pymc_usb — USB/TCP LoRa Modem for pymc_core
+# pymc_modem — USB/TCP LoRa Modem for pymc_core
 
 Firmware + Python driver that turns a supported ESP32 or nRF52 board
 with an SX1262 front end into a "dumb" LoRa modem controlled from a
@@ -26,7 +26,7 @@ only the SX1262 physical layer: TX, RX, CAD, LoRa parameter configuration.
 
 ```
                           USB-CDC / WiFi-TCP
-Raspberry Pi                                  pymc_usb modem
+Raspberry Pi                                  pymc_modem modem
 ┌────────────────────┐                        ┌─────────────────┐
 │ pymc_repeater      │◄ USB 921600 ────────►  │ LoRa Modem FW   │
 │  └─ pymc_core      │                        │  └─ SX1262      │

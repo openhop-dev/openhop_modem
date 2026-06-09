@@ -1,6 +1,6 @@
 # Installation — step by step
 
-All commands assume you are in the repository root `pymc_usb/`.
+All commands assume you are in the repository root `pymc_modem/`.
 
 ## 1. Flash the firmware
 
