@@ -1,11 +1,10 @@
 // =============================================================
-// tft_display.cpp — Heltec T114 ST7789 (LH114T-IF03) driver.
+// tft_display.cpp — Heltec SPI TFT display drivers.
 //
 // Compiled into every env (because src_filter `+<*>` picks it up)
-// but the contents are gated on -DBOARD_HELTEC_T114 so non-T114
-// builds skip it without needing per-env src_filter exclusions.
-// On T114 it replaces the SSD1306 oled_display.cpp (which the
-// heltec_t114 env excludes via build_src_filter).
+// but the contents are gated on board flags so non-TFT builds skip it
+// without needing per-env src_filter exclusions. TFT board envs exclude
+// oled_display.cpp and keep main.cpp talking to this same OledDisplay API.
 //
 // The TFT lives on the second hardware SPI peripheral (`SPI1` in
 // the Adafruit BSP — PIN_SPI1_SCK=P1.08, MOSI=P1.09, MISO=P1.11
@@ -18,7 +17,223 @@
 // Public API matches OledDisplay so main.cpp doesn't care which
 // panel lives on the board.
 // =============================================================
-#if defined(BOARD_HELTEC_T114)
+#if defined(BOARD_HELTEC_TRACKER_V2)
+
+#include "tft_display.h"
+#include "board_config.h"
+
+#include <Adafruit_GFX.h>
+#include <Adafruit_ST7735.h>
+
+static constexpr int16_t TFT_W = 160;
+static constexpr int16_t TFT_H = 80;
+static constexpr int16_t HEADER_H = 14;
+
+static constexpr uint16_t COLOUR_BG     = 0x0000;
+static constexpr uint16_t COLOUR_FG     = 0xFFFF;
+static constexpr uint16_t COLOUR_HEADER = 0x07E0;
+static constexpr uint16_t COLOUR_ACCENT = 0x07FF;
+static constexpr uint16_t COLOUR_WARN   = 0xFD20;
+static constexpr uint16_t COLOUR_ERR    = 0xF800;
+
+static Adafruit_ST7735 tft(BOARD.pin_tft_cs, BOARD.pin_tft_dc,
+                           BOARD.pin_tft_sda, BOARD.pin_tft_scl,
+                           BOARD.pin_tft_rst);
+
+static void writeActivePin(int8_t pin, bool activeHigh, bool active) {
+    if (pin < 0) return;
+    pinMode(pin, OUTPUT);
+    digitalWrite(pin, active == activeHigh ? HIGH : LOW);
+}
+
+static void drawHeader(const char* displayName, const char* version) {
+    tft.fillRect(0, 0, TFT_W, HEADER_H, COLOUR_HEADER);
+    tft.setTextSize(1);
+    tft.setTextColor(COLOUR_BG, COLOUR_HEADER);
+    tft.setCursor(2, 3);
+    const char* name = (displayName && *displayName) ? displayName : "pyMC";
+    tft.print(name);
+
+    if (version) {
+        int16_t bx, by; uint16_t bw, bh;
+        tft.getTextBounds(version, 0, 0, &bx, &by, &bw, &bh);
+        if (bw < 70) {
+            tft.setCursor(TFT_W - (int16_t)bw - 2, 3);
+            tft.print(version);
+        }
+    }
+
+    tft.setTextColor(COLOUR_FG, COLOUR_BG);
+}
+
+static void drawText(int16_t x, int16_t y, const char* text,
+                     uint16_t colour = COLOUR_FG, uint8_t size = 1) {
+    tft.setTextSize(size);
+    tft.setTextColor(colour, COLOUR_BG);
+    tft.setCursor(x, y);
+    tft.print(text ? text : "");
+}
+
+void OledDisplay::begin() {
+    if (BOARD.pin_tft_sda < 0 || BOARD.pin_tft_scl < 0 ||
+        BOARD.pin_tft_dc < 0 || BOARD.pin_tft_rst < 0 ||
+        BOARD.pin_tft_cs < 0) {
+        _ready = false;
+        return;
+    }
+
+    writeActivePin(BOARD.pin_tft_power, BOARD.tft_power_active_high, true);
+    writeActivePin(BOARD.pin_tft_bl, BOARD.tft_bl_active_high, true);
+    pinMode(BOARD.pin_tft_rst, OUTPUT);
+    digitalWrite(BOARD.pin_tft_rst, HIGH);
+    delay(10);
+
+    tft.initR(INITR_MINI160x80);
+    tft.setRotation(1);
+    uint8_t madctl = ST77XX_MADCTL_MY | ST77XX_MADCTL_MV | ST7735_MADCTL_BGR;
+    tft.sendCommand(ST77XX_MADCTL, &madctl, 1);
+    tft.setSPISpeed(40000000);
+    tft.fillScreen(COLOUR_BG);
+    tft.setTextColor(COLOUR_FG, COLOUR_BG);
+    tft.setTextWrap(false);
+    tft.cp437(true);
+    _ready = true;
+}
+
+void OledDisplay::setDisplayName(const char* name) {
+    if (!name) name = "";
+    snprintf(_displayName, sizeof(_displayName), "%s", name);
+}
+
+void OledDisplay::setRadioInfo(uint32_t freq_hz, uint8_t sf, uint32_t bw_hz,
+                               uint8_t cr, int8_t power_dbm,
+                               int16_t last_rssi, int16_t last_snr_x10) {
+    _freq_hz = freq_hz;
+    _sf = sf;
+    _bw_hz = bw_hz;
+    _cr = cr;
+    _power_dbm = power_dbm;
+    _last_rssi = last_rssi;
+    _last_snr_x10 = last_snr_x10;
+}
+
+void OledDisplay::setStandby(bool on) {
+    _standby = on;
+}
+
+void OledDisplay::showSplash() {
+    if (!_ready) return;
+    tft.fillScreen(COLOUR_BG);
+    drawText(8, 18, "pyMC", COLOUR_ACCENT, 3);
+    drawText(8, 50, BOARD.name, COLOUR_FG, 1);
+}
+
+void OledDisplay::showStatus(uint32_t rx, uint32_t tx,
+                             const char* ssid, const char* ip,
+                             const char* state, const char* version,
+                             uint16_t battery_mv) {
+    (void)battery_mv;
+    if (!_ready) return;
+    tft.fillScreen(COLOUR_BG);
+    drawHeader(_displayName, version);
+
+    if (_standby) {
+        drawText(22, 28, "STANDBY", COLOUR_ERR, 2);
+        drawText(18, 52, "radio parked", COLOUR_FG, 1);
+        return;
+    }
+
+    char buf[48];
+    snprintf(buf, sizeof(buf), "%s  RX %lu TX %lu",
+             state ? state : "---", (unsigned long)rx, (unsigned long)tx);
+    drawText(2, 18, buf, COLOUR_ACCENT, 1);
+
+    if (_last_rssi == INT16_MIN) {
+        snprintf(buf, sizeof(buf), "RSSI --  SNR --");
+    } else {
+        snprintf(buf, sizeof(buf), "RSSI %d  SNR %.1f",
+                 (int)_last_rssi, _last_snr_x10 / 10.0);
+    }
+    drawText(2, 31, buf, COLOUR_FG, 1);
+
+    snprintf(buf, sizeof(buf), "%.3fM SF%u BW%lu",
+             _freq_hz / 1e6, (unsigned)_sf,
+             (unsigned long)(_bw_hz / 1000));
+    drawText(2, 44, buf, COLOUR_FG, 1);
+
+    snprintf(buf, sizeof(buf), "%s %s", ssid ? ssid : "---", ip ? ip : "---");
+    drawText(2, 57, buf, COLOUR_WARN, 1);
+}
+
+void OledDisplay::showRadioConfig(uint32_t freq_hz, uint32_t bandwidth_hz,
+                                  uint8_t sf, uint8_t cr, int8_t power_dbm,
+                                  uint16_t syncword, uint8_t preamble_len,
+                                  const char* version) {
+    if (!_ready) return;
+    tft.fillScreen(COLOUR_BG);
+    drawHeader(_displayName, version);
+
+    char buf[48];
+    snprintf(buf, sizeof(buf), "%.3f MHz", freq_hz / 1e6);
+    drawText(2, 18, buf, COLOUR_ACCENT, 1);
+    snprintf(buf, sizeof(buf), "BW %lu SF%u CR4/%u",
+             (unsigned long)bandwidth_hz, (unsigned)sf, (unsigned)cr);
+    drawText(2, 31, buf, COLOUR_FG, 1);
+    snprintf(buf, sizeof(buf), "Pwr %d dBm Sync %02X",
+             (int)power_dbm, (unsigned)syncword);
+    drawText(2, 44, buf, COLOUR_FG, 1);
+    snprintf(buf, sizeof(buf), "Preamble %u", (unsigned)preamble_len);
+    drawText(2, 57, buf, COLOUR_FG, 1);
+}
+
+void OledDisplay::showDiagnostics(uint32_t uptime_sec,
+                                  const char* tcp_client_ip,
+                                  uint32_t usb_idle_sec,
+                                  uint32_t rx_count, uint32_t tx_count,
+                                  uint32_t crc_errors,
+                                  const char* version) {
+    if (!_ready) return;
+    tft.fillScreen(COLOUR_BG);
+    drawHeader(_displayName, version);
+
+    char buf[48];
+    uint32_t h = uptime_sec / 3600;
+    uint32_t m = (uptime_sec / 60) % 60;
+    uint32_t s = uptime_sec % 60;
+    snprintf(buf, sizeof(buf), "Up %lu:%02lu:%02lu",
+             (unsigned long)h, (unsigned long)m, (unsigned long)s);
+    drawText(2, 18, buf, COLOUR_ACCENT, 1);
+    snprintf(buf, sizeof(buf), "TCP %s", tcp_client_ip ? tcp_client_ip : "---");
+    drawText(2, 31, buf, COLOUR_FG, 1);
+    snprintf(buf, sizeof(buf), "USB idle %lus", (unsigned long)usb_idle_sec);
+    drawText(2, 44, buf, COLOUR_FG, 1);
+    snprintf(buf, sizeof(buf), "RX %lu TX %lu CRC %lu",
+             (unsigned long)rx_count, (unsigned long)tx_count,
+             (unsigned long)crc_errors);
+    drawText(2, 57, buf, crc_errors ? COLOUR_WARN : COLOUR_FG, 1);
+}
+
+void OledDisplay::showError(const char* msg) {
+    if (!_ready) return;
+    tft.fillScreen(COLOUR_BG);
+    tft.fillRect(0, 0, TFT_W, HEADER_H, COLOUR_ERR);
+    drawText(2, 3, "ERROR", COLOUR_FG, 1);
+    drawText(2, 24, msg ? msg : "", COLOUR_ERR, 2);
+}
+
+void OledDisplay::turnOff() {
+    if (!_ready) return;
+    digitalWrite(BOARD.pin_tft_rst, LOW);
+    writeActivePin(BOARD.pin_tft_bl, BOARD.tft_bl_active_high, false);
+    writeActivePin(BOARD.pin_tft_power, BOARD.tft_power_active_high, false);
+    _ready = false;
+}
+
+void OledDisplay::turnOn() {
+    begin();
+}
+
+#elif defined(BOARD_HELTEC_T114)
 
 #include "tft_display.h"
 #include "splash_logo.h"

@@ -11,12 +11,15 @@ Ethernet) wired LAN.
 | Board                                                                                                       | MCU                          | Front end                  | Networks |
 |-------------------------------------------------------------------------------------------------------------|------------------------------|----------------------------|----------|
 | **Heltec WiFi LoRa 32 V3**                                                                                  | ESP32-S3                     | bare SX1262                | Wi-Fi    |
+| **Heltec WiFi LoRa 32 V4**                                                                                  | ESP32-S3                     | SX1262 + PA/LNA FEM        | Wi-Fi    |
+| **Heltec Wireless Tracker V2**                                                                              | ESP32-S3                     | SX1262 + KCT8103L PA/FEM + TFT 160×80 | Wi-Fi |
 | **Ikoka Stick** ([ndoo/ikoka-stick-meshtastic-device](https://github.com/ndoo/ikoka-stick-meshtastic-device))| XIAO ESP32-S3                | Ebyte E22-P868M30S, +30 dBm | Wi-Fi   |
 | **Seeed XIAO Wio-SX1262**                                                                                   | XIAO ESP32-S3                | bare SX1262                | Wi-Fi    |
 | **LilyGO T-LoRa T3-S3** v1.2/v1.3                                                                           | ESP32-S3                     | bare SX1262 + OLED         | Wi-Fi    |
 | **RAK3112 WisMesh**                                                                                         | ESP32-S3 (module)            | SX1262 in-module           | Wi-Fi    |
 | **WaveShare ESP32-P4-Nano**                                                                                 | ESP32-P4 (RISC-V) + ESP32-C6 | E22 (off-board, optional)  | **Ethernet *or* Wi-Fi** — runtime auto-select: cable plugged → Ethernet wins, no link → fall back to Wi-Fi via C6 SDIO bridge. Both at once is unstable with the radio attached, see [P4-Nano notes](#porting-to-another-esp32-p4-board) |
 | **Heltec T114**                                                                                             | nRF52840                     | bare SX1262 + TFT 135×240  | **none** — USB-CDC + UART only |
+| **Seeed XIAO nRF52840 + Wio-SX1262**                                                                        | XIAO nRF52840                | bare SX1262                | **none** — USB-CDC only |
 
 Drop-in replacement for `SX1262Radio` in pymc_core — all MeshCore logic
 (routing, encryption, retransmission) runs on the RPi. The modem handles
@@ -47,7 +50,7 @@ Raspberry Pi                                  pymc_modem modem
 
 ## Project layout
 
-- **`firmware/`** — PlatformIO tree, seven envs sharing one source.
+- **`firmware/`** — PlatformIO tree, ten envs sharing one source.
   Each board lives in `include/boards/<env>.h`; `platformio.ini` picks
   one via `-DBOARD_<NAME>`. Prebuilt artifacts (ESP32: `bootloader.bin
   / partitions.bin / firmware.bin`; nRF52 T114: `firmware.hex` +
@@ -94,6 +97,7 @@ Per-board highlights (full pin numbers in the headers, mDNS prefix is
 
 - **Heltec V3** — onboard SSD1306, bare SX1262, max 22 dBm.
 - **Heltec V4** — onboard SSD1306, SX1262 + V4.x PA/LNA front-end, native USB-CDC, max 22 dBm SX1262 command power.
+- **Heltec Wireless Tracker V2** — ESP32-S3 + SX1262 + KCT8103L PA/FEM, ST7735 TFT 160×80, native USB-CDC, max 22 dBm SX1262 command power.
 - **Ikoka Stick** — XIAO ESP32-S3 + E22-P868M30S, EN-held + DIO2-as-RF-switch, max 30 dBm chip / +10 dB PA, external OLED.
 - **XIAO Wio-SX1262** — Seeed XIAO ESP32-S3 + bare SX1262, no OLED.
 - **LilyGO T3-S3** — bare SX1262 + onboard SSD1306, native USB-CDC.

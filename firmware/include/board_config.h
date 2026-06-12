@@ -85,6 +85,10 @@ struct BoardConfig {
 
     RfSwitchPolicy rf_switch;
 
+    // Optional LoRa TX activity LED. Boards without one leave pin at -1.
+    int8_t pin_lora_tx_led = -1;
+    bool   lora_tx_led_active_high = true;
+
     // I2C bus for the SSD1306 OLED (same driver across all boards).
     int8_t pin_i2c_sda;
     int8_t pin_i2c_scl;
@@ -95,6 +99,17 @@ struct BoardConfig {
     // and other boards power the OLED straight from 3V3 and leave
     // this at -1 so the firmware skips the dance.
     int8_t pin_vext_enable_low;
+
+    // Optional SPI TFT. Boards without one leave these pins at -1.
+    int8_t pin_tft_sda = -1;
+    int8_t pin_tft_scl = -1;
+    int8_t pin_tft_dc = -1;
+    int8_t pin_tft_rst = -1;
+    int8_t pin_tft_cs = -1;
+    int8_t pin_tft_bl = -1;
+    bool   tft_bl_active_high = true;
+    int8_t pin_tft_power = -1;
+    bool   tft_power_active_high = true;
 
     // PRG / user button. active_low = pressed pulls LOW.
     int8_t pin_user_button;
@@ -112,6 +127,11 @@ struct BoardConfig {
     // 32 MHz TCXO powered by SX1262 DIO3 at 1.8 V.
     bool  use_dio3_tcxo;
     float tcxo_voltage;
+
+    // Optional SX126x board-level tuning applied after radio.begin().
+    int16_t sx126x_current_limit_ma = -1;
+    bool    sx126x_rx_boosted_gain = false;
+    bool    sx126x_register_patch = false;
 
     // Some carriers (ESP32-P4-Nano) ship without an SX1262 — the
     // module is added later. When false, main.cpp / wifi_manager skip
@@ -205,10 +225,12 @@ extern const BoardConfig BOARD;
 #  include "boards/esp32_p4_nano.h"
 #elif defined(BOARD_HELTEC_T114)
 #  include "boards/heltec_t114.h"
+#elif defined(BOARD_HELTEC_TRACKER_V2)
+#  include "boards/heltec_tracker_v2.h"
 #elif defined(BOARD_XIAO_WIO_SX1262)
 #  include "boards/xiao_wio_sx1262.h"
 #elif defined(BOARD_XIAO_NRF52_WIO)
 #  include "boards/xiao_nrf52_wio.h"
 #else
-#  error "No board selected — add one of -DBOARD_HELTEC_V3 / -DBOARD_HELTEC_V4 / -DBOARD_IKOKA_STICK / -DBOARD_LILYGO_T3S3 / -DBOARD_RAK3112_WISMESH / -DBOARD_ESP32_P4_NANO / -DBOARD_HELTEC_T114 / -DBOARD_XIAO_WIO_SX1262 / -DBOARD_XIAO_NRF52_WIO to platformio.ini build_flags"
+#  error "No board selected — add one of -DBOARD_HELTEC_V3 / -DBOARD_HELTEC_V4 / -DBOARD_IKOKA_STICK / -DBOARD_LILYGO_T3S3 / -DBOARD_RAK3112_WISMESH / -DBOARD_ESP32_P4_NANO / -DBOARD_HELTEC_T114 / -DBOARD_HELTEC_TRACKER_V2 / -DBOARD_XIAO_WIO_SX1262 / -DBOARD_XIAO_NRF52_WIO to platformio.ini build_flags"
 #endif
