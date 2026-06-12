@@ -536,7 +536,7 @@ static bool checkAuth() {
         Serial.printf("[OTA] reject non-LAN client %u.%u.%u.%u\n",
                       addr[0], addr[1], addr[2], addr[3]);
         httpServer->send(403, "text/plain",
-                         "Forbidden: pymc_usb modem accepts LAN clients only.\n");
+                         "Forbidden: pymc_modem accepts LAN clients only.\n");
         return false;
     }
     if (httpPassword.length() == 0) httpPassword = DEFAULT_HTTP_PASSWORD;

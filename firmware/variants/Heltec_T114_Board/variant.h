@@ -24,7 +24,7 @@
 // VDD has time to come up before the SPI traffic starts.
 #define PIN_3V3_EN              (38)
 
-// Battery sense (P0.04, A0). Not used by pymc_usb yet but kept
+// Battery sense (P0.04, A0). Not used by pymc_modem yet but kept
 // so analogRead() works if we ever expose it.
 #define BATTERY_PIN             (4)
 #define ADC_MULTIPLIER          (4.90F)
@@ -46,7 +46,7 @@
 #define PIN_SERIAL1_TX          (39)
 
 // UART2 (Serial2) = the protocol header pins silked 0.09/0.10.
-// pymc_usb uses these for the host-facing UART when the board
+// pymc_modem uses these for the host-facing UART when the board
 // is wired to a sector-array controller instead of USB.
 #define PIN_SERIAL2_RX          (9)
 #define PIN_SERIAL2_TX          (10)
@@ -88,7 +88,7 @@
 
 // External QSPI flash (MX25R1635F on T114) — required by the
 // Adafruit BSP's Adafruit_LittleFS init even if we never write
-// to it from pymc_usb.
+// to it from pymc_modem.
 #define EXTERNAL_FLASH_DEVICES  MX25R1635F
 #define EXTERNAL_FLASH_USE_QSPI
 

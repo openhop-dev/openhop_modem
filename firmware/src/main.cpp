@@ -1,5 +1,5 @@
 // =============================================================
-// main.cpp — pymc_usb LoRa Modem firmware
+// main.cpp — pymc_modem LoRa Modem firmware
 // Serial + Wi-Fi/TCP bridge to SX1262 for pymc_core on RPi.
 //
 // Supported boards (selected at compile time via -DBOARD_<name>):

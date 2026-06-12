@@ -21,6 +21,8 @@ __pycache__/
 *.pyc
 *.pyo
 *.egg-info/
+.venv-pio/
+firmware/.selected_firmware_envs
 
 # macOS
 .DS_Store

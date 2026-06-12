@@ -1,0 +1,312 @@
+name: Build Firmware Assets
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - '.github/workflows/build-firmware-assets.yml'
+      - 'firmware/**'
+  workflow_dispatch:
+    inputs:
+      variant:
+        description: 'PlatformIO env to build: auto, all, or comma-separated env names'
+        required: false
+        default: 'auto'
+      clean:
+        description: 'Run pio clean before each selected build'
+        required: false
+        default: false
+        type: boolean
+      commit_artifacts:
+        description: 'Commit generated firmware/<env>/ artifacts back to this branch'
+        required: false
+        default: false
+        type: boolean
+
+permissions:
+  contents: write
+
+env:
+  # Opt into the GitHub Actions Node 24 runtime now so the repo does not
+  # emit Node.js 20 deprecation warnings on checkout/cache/artifact actions.
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+
+jobs:
+  select:
+    name: Select firmware variants
+    runs-on: ubuntu-latest
+    outputs:
+      envs_json: ${{ steps.plan.outputs.envs_json }}
+      has_envs: ${{ steps.plan.outputs.has_envs }}
+      variant_input: ${{ steps.inputs.outputs.variant }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+
+      - name: Resolve inputs
+        id: inputs
+        shell: bash
+        run: |
+          set -euo pipefail
+          variant='auto'
+          clean='false'
+          commit_artifacts='false'
+
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            variant='${{ inputs.variant }}'
+            clean='${{ inputs.clean }}'
+            commit_artifacts='${{ inputs.commit_artifacts }}'
+          fi
+
+          echo "variant=$variant" >> "$GITHUB_OUTPUT"
+          echo "clean=$clean" >> "$GITHUB_OUTPUT"
+          echo "commit_artifacts=$commit_artifacts" >> "$GITHUB_OUTPUT"
+
+      - name: Plan selected variants
+        id: plan
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          before='${{ github.event.before }}'
+          after='${{ github.sha }}'
+
+          python3 firmware/tools/build_firmware_assets.py \
+            --variant '${{ steps.inputs.outputs.variant }}' \
+            --changed-from "$before" \
+            --changed-to "$after" \
+            --plan
+
+          if [ -s firmware/.selected_firmware_envs ]; then
+            envs_json=$(python3 - <<'PY'
+          import json
+          from pathlib import Path
+          envs = [line.strip() for line in Path('firmware/.selected_firmware_envs').read_text().splitlines() if line.strip()]
+          print(json.dumps(envs))
+          PY
+          )
+            echo "has_envs=true" >> "$GITHUB_OUTPUT"
+          else
+            envs_json='[]'
+            echo "has_envs=false" >> "$GITHUB_OUTPUT"
+          fi
+          echo "envs_json=$envs_json" >> "$GITHUB_OUTPUT"
+          echo "Selected envs: $envs_json"
+
+  build-manual-artifacts:
+    name: Build ${{ matrix.env }}
+    needs: select
+    if: github.event_name == 'workflow_dispatch' && needs.select.outputs.has_envs == 'true'
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        env: ${{ fromJson(needs.select.outputs.envs_json) }}
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: '3.11'
+
+      - name: Restore PlatformIO cache
+        uses: actions/cache@v5
+        with:
+          path: |
+            ~/.platformio
+            .venv-pio
+          key: ${{ runner.os }}-platformio-${{ matrix.env }}-${{ hashFiles('firmware/platformio.ini') }}
+          restore-keys: |
+            ${{ runner.os }}-platformio-${{ matrix.env }}-
+            ${{ runner.os }}-platformio-
+
+      - name: Ensure PlatformIO is available
+        shell: bash
+        run: |
+          set -euo pipefail
+          if command -v pio >/dev/null 2>&1; then
+            echo "PIO=$(command -v pio)" >> "$GITHUB_ENV"
+            exit 0
+          fi
+
+          if [ ! -x "$GITHUB_WORKSPACE/.venv-pio/bin/pio" ]; then
+            python -m venv "$GITHUB_WORKSPACE/.venv-pio"
+            "$GITHUB_WORKSPACE/.venv-pio/bin/python" -m pip install --upgrade pip
+            "$GITHUB_WORKSPACE/.venv-pio/bin/python" -m pip install platformio
+          fi
+          echo "PIO=$GITHUB_WORKSPACE/.venv-pio/bin/pio" >> "$GITHUB_ENV"
+
+      - name: Build and stage firmware assets
+        shell: bash
+        run: |
+          set -euo pipefail
+          clean_flag=''
+          if [ "${{ inputs.clean }}" = "true" ]; then
+            clean_flag='--clean'
+          fi
+          python3 firmware/tools/build_firmware_assets.py \
+            --variant '${{ matrix.env }}' \
+            --pio "$PIO" \
+            $clean_flag
+
+      - name: Upload firmware assets
+        uses: actions/upload-artifact@v7
+        with:
+          name: firmware-${{ matrix.env }}
+          path: |
+            firmware/${{ matrix.env }}/**
+          if-no-files-found: error
+
+  commit-manual-artifacts:
+    name: Commit manual firmware assets
+    needs:
+      - select
+      - build-manual-artifacts
+    if: github.event_name == 'workflow_dispatch' && inputs.commit_artifacts == true && needs.select.outputs.has_envs == 'true'
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+          ref: ${{ github.ref_name }}
+
+      - name: Download generated firmware assets
+        uses: actions/download-artifact@v8
+        with:
+          pattern: firmware-*
+          path: _firmware_artifacts
+
+      - name: Stage downloaded assets
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          from pathlib import Path
+          import shutil
+          root = Path('_firmware_artifacts')
+          for artifact in root.glob('firmware-*'):
+              env = artifact.name.removeprefix('firmware-')
+              dest = Path('firmware') / env
+              if dest.exists():
+                  shutil.rmtree(dest)
+              shutil.copytree(artifact, dest)
+              print(f'staged {dest}')
+          PY
+
+      - name: Commit firmware assets
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+
+          while read -r env; do
+            [ -n "$env" ] || continue
+            git add "firmware/$env"
+          done < <(python3 - <<'PY'
+          import json
+          for env in json.loads('${{ needs.select.outputs.envs_json }}'):
+              print(env)
+          PY
+          )
+
+          if git diff --cached --quiet; then
+            echo 'No firmware artifact changes to commit.'
+            exit 0
+          fi
+
+          git commit -m 'firmware: update generated firmware assets [skip ci]'
+          git push
+
+  build-and-commit-main:
+    name: Build and commit main firmware assets
+    needs: select
+    if: github.event_name == 'push' && github.ref_name == 'main' && needs.select.outputs.has_envs == 'true'
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+          ref: ${{ github.ref_name }}
+
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: '3.11'
+
+      - name: Restore PlatformIO cache
+        uses: actions/cache@v5
+        with:
+          path: |
+            ~/.platformio
+            .venv-pio
+          key: ${{ runner.os }}-platformio-main-${{ hashFiles('firmware/platformio.ini') }}
+          restore-keys: |
+            ${{ runner.os }}-platformio-main-
+            ${{ runner.os }}-platformio-
+
+      - name: Ensure PlatformIO is available
+        shell: bash
+        run: |
+          set -euo pipefail
+          if command -v pio >/dev/null 2>&1; then
+            echo "PIO=$(command -v pio)" >> "$GITHUB_ENV"
+            exit 0
+          fi
+
+          if [ ! -x "$GITHUB_WORKSPACE/.venv-pio/bin/pio" ]; then
+            python -m venv "$GITHUB_WORKSPACE/.venv-pio"
+            "$GITHUB_WORKSPACE/.venv-pio/bin/python" -m pip install --upgrade pip
+            "$GITHUB_WORKSPACE/.venv-pio/bin/python" -m pip install platformio
+          fi
+          echo "PIO=$GITHUB_WORKSPACE/.venv-pio/bin/pio" >> "$GITHUB_ENV"
+
+      - name: Build selected firmware assets without artifact upload
+        shell: bash
+        run: |
+          set -euo pipefail
+          variants=$(python3 - <<'PY'
+          import json
+          print(','.join(json.loads('${{ needs.select.outputs.envs_json }}')))
+          PY
+          )
+          python3 firmware/tools/build_firmware_assets.py \
+            --variant "$variants" \
+            --pio "$PIO"
+
+      - name: Commit firmware assets to main
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+
+          while read -r env; do
+            [ -n "$env" ] || continue
+            git add "firmware/$env"
+          done < <(python3 - <<'PY'
+          import json
+          for env in json.loads('${{ needs.select.outputs.envs_json }}'):
+              print(env)
+          PY
+          )
+
+          if git diff --cached --quiet; then
+            echo 'No firmware artifact changes to commit.'
+            exit 0
+          fi
+
+          git commit -m 'firmware: update generated firmware assets [skip ci]'
+          git push
