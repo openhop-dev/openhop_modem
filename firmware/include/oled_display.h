@@ -6,8 +6,16 @@
 
 #include <Wire.h>
 #include <Adafruit_GFX.h>
+#if defined(BOARD_STATION_G2)
+#include <Adafruit_SH110X.h>
+using OledDriver = Adafruit_SH1107;
+static constexpr uint16_t OLED_WHITE = SH110X_WHITE;
+#else
 #define SSD1306_NO_SPLASH
 #include <Adafruit_SSD1306.h>
+using OledDriver = Adafruit_SSD1306;
+static constexpr uint16_t OLED_WHITE = SSD1306_WHITE;
+#endif
 
 class OledDisplay {
 public:
@@ -69,6 +77,6 @@ public:
     void setStandby(bool standby);
 
 private:
-    Adafruit_SSD1306 *_display = nullptr;
+    OledDriver *_display = nullptr;
     bool _ready = false;
 };

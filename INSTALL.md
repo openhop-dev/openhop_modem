@@ -4,7 +4,7 @@ All commands assume you are in the repository root `pymc_modem/`.
 
 ## 1. Flash the firmware
 
-The same source tree builds five binaries; pick the env that matches
+The same source tree builds one firmware target per board; pick the env that matches
 your board:
 
 | Board | PlatformIO env | mDNS name | Network |
@@ -13,13 +13,13 @@ your board:
 | Ikoka Stick (XIAO ESP32-S3 + E22-P868M30S) | `ikoka_stick` | `ikoka-<mac3>.local` | Wi-Fi |
 | LilyGO T-LoRa T3-S3 v1.2/v1.3 | `lilygo_t3s3` | `lilygo-t3s3-<mac3>.local` | Wi-Fi |
 | RAK3112 WisMesh | `rak3112_wismesh` | `rak3112-<mac3>.local` | Wi-Fi |
+| B&Q Consulting Station G2 | `station_g2` | `station-g2-<mac3>.local` | Wi-Fi |
 | WaveShare ESP32-P4-Nano (+ off-board E22) | `esp32_p4_nano` | `p4nano-<mac3>.local` | **Ethernet or Wi-Fi** (runtime auto-select; cable plugged → ETH, no link → WiFi fallback. Both at once is unstable with radio active — see README "Porting to another ESP32-P4 board") |
 
-The `esp32_p4_nano` env uses the
+The `esp32_p4_nano` and `station_g2` envs use the
 [pioarduino fork](https://github.com/pioarduino/platform-espressif32)
-(pinned in `platformio.ini`) because vanilla `platformio/espressif32`
-doesn't ship ESP32-P4 support yet; first build will fetch the platform
-package once.
+(pinned in `platformio.ini`) for the Arduino-ESP32 3.x / ESP-IDF 5.x
+toolchain; first build will fetch the platform package once.
 
 ### 1a. Prebuilt binaries (no PlatformIO)
 
@@ -33,14 +33,14 @@ artefacts each:
 | `firmware/<env>/firmware.bin`     | `0x10000` | ~830 kB|
 
 `<env>` is one of: `heltec_v3`, `ikoka_stick`, `lilygo_t3s3`,
-`rak3112_wismesh`, `esp32_p4_nano`.
+`rak3112_wismesh`, `esp32_p4_nano`, `station_g2`.
 
 ```bash
 pip install esptool
 
 # Full flash (fresh board, first install) — replace the ENV/CHIP pair
 # with the row that matches your board:
-ENV=heltec_v3      ; CHIP=esp32s3   # also for ikoka_stick / lilygo_t3s3 / rak3112_wismesh
+ENV=heltec_v3      ; CHIP=esp32s3   # also for ikoka_stick / lilygo_t3s3 / rak3112_wismesh / station_g2
 # ENV=esp32_p4_nano ; CHIP=esp32p4
 
 esptool.py --chip $CHIP --port /dev/ttyUSB0 --baud 921600 write_flash \
@@ -94,7 +94,7 @@ curl -u admin:password -F firmware=@.pio/build/<env>/firmware.bin \
 ```
 
 Hostname stems are listed in §1 (e.g. `heltec`, `ikoka`,
-`lilygo-t3s3`, `rak3112`, `p4nano`). The board reboots after upload.
+`lilygo-t3s3`, `rak3112`, `station-g2`, `p4nano`). The board reboots after upload.
 The HTTP OTA page uses Basic Auth with username `admin` and default
 password `password`; change it from the OTA page after first network boot.
 Rollback is **not** automatic on a broken image — keep the USB cable
