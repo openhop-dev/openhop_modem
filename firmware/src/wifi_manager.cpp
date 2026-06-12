@@ -203,6 +203,7 @@ static bool attemptSTA() {
                   cfg.tcpToken.length() > 0 ? "token" : "open");
 
     WiFi.persistent(false);   // we manage persistence via Preferences
+    WiFi.setSleep(false);
     WiFi.setAutoReconnect(true);
     WiFi.mode(WIFI_STA);
     WiFi.setHostname(effectiveHostname.c_str());
