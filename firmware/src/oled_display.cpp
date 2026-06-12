@@ -1,8 +1,7 @@
 // =============================================================
-// oled_display.cpp — SSD1306 status display
-// Same Adafruit_SSD1306 driver across every supported board; only
-// the I2C pins, optional VEXT rail and optional OLED reset line
-// vary, all sourced from board_config.h.
+// oled_display.cpp — I2C OLED status display
+// Heltec V3-class boards use SSD1306; Station G2 uses SH1107.
+// The board config provides I2C pins, optional VEXT rail, and reset line.
 // =============================================================
 #include "oled_display.h"
 #include "board_config.h"
@@ -40,20 +39,27 @@ void OledDisplay::begin() {
     // 3. Init I2C with the board's SDA/SCL pins
     Wire.begin(BOARD.pin_i2c_sda, BOARD.pin_i2c_scl);
 
-    // 4. Create Adafruit_SSD1306. Pass -1 when no RST pin is wired —
-    //    the library accepts that and skips its internal reset call.
-    _display = new Adafruit_SSD1306(128, 64, &Wire, BOARD.pin_i2c_oled_rst);
+    // 4. Create the board-specific OLED driver. Pass -1 when no RST pin is
+    //    wired — both Adafruit drivers accept that and skip reset.
+    _display = new OledDriver(128, 64, &Wire, BOARD.pin_i2c_oled_rst);
 
-    // 5. Start display — same call as MeshCore
+    // 5. Start display.
+#if defined(BOARD_STATION_G2)
+    if (_display->begin(DISPLAY_ADDRESS, true)) {
+        _ready = true;
+
+        _display->setContrast(0xFF);
+#else
     if (_display->begin(SSD1306_SWITCHCAPVCC, DISPLAY_ADDRESS, true, false)) {
         _ready = true;
 
         // 6. Max contrast/brightness
         _display->ssd1306_command(SSD1306_SETCONTRAST);
         _display->ssd1306_command(0xFF);
+#endif
 
         _display->clearDisplay();
-        _display->setTextColor(SSD1306_WHITE);
+        _display->setTextColor(OLED_WHITE);
         _display->setTextSize(1);
         _display->cp437(true);
         _display->display();
@@ -68,7 +74,7 @@ void OledDisplay::showSplash() {
     int16_t x = (128 - SPLASH_LOGO_W) / 2;
     int16_t y = 0;
     _display->drawBitmap(x, y, SPLASH_LOGO,
-                         SPLASH_LOGO_W, SPLASH_LOGO_H, SSD1306_WHITE);
+                         SPLASH_LOGO_W, SPLASH_LOGO_H, OLED_WHITE);
     _display->display();
 }
 
@@ -76,7 +82,7 @@ void OledDisplay::showBoot(const char* version) {
     if (!_ready) return;
     _display->clearDisplay();
     _display->setTextSize(1);
-    _display->setTextColor(SSD1306_WHITE);
+    _display->setTextColor(OLED_WHITE);
     _display->setCursor(0, 0);
     _display->println("LoRa Modem");
     _display->println(version);
@@ -94,7 +100,7 @@ void OledDisplay::showStatus(uint32_t rx, uint32_t tx,
     char buf[32];
     _display->clearDisplay();
     _display->setTextSize(1);
-    _display->setTextColor(SSD1306_WHITE);
+    _display->setTextColor(OLED_WHITE);
 
     // Header: firmware version (left) + right-aligned state tag.
     // Font is 6 px/char; state tag reserves 6 * strlen(state) px on the right.
@@ -114,7 +120,7 @@ void OledDisplay::showStatus(uint32_t rx, uint32_t tx,
         _display->setCursor(stateX, 0);
         _display->print(state);
     }
-    _display->drawFastHLine(0, 10, 128, SSD1306_WHITE);
+    _display->drawFastHLine(0, 10, 128, OLED_WHITE);
 
     // Line 1 — RX/TX counters
     _display->setCursor(0, 14);
@@ -144,7 +150,7 @@ void OledDisplay::showStatus(uint32_t rx, uint32_t tx,
 
     // Heartbeat dot, bottom-right
     static bool dot = false;
-    if (dot) _display->fillCircle(124, 60, 2, SSD1306_WHITE);
+    if (dot) _display->fillCircle(124, 60, 2, OLED_WHITE);
     dot = !dot;
 
     _display->display();
@@ -159,7 +165,7 @@ void OledDisplay::showRadioConfig(uint32_t freq_hz, uint32_t bandwidth_hz,
     char buf[32];
     _display->clearDisplay();
     _display->setTextSize(1);
-    _display->setTextColor(SSD1306_WHITE);
+    _display->setTextColor(OLED_WHITE);
 
     // Header: version + right-aligned state tag "RADIO" (5 chars → 30 px)
     const char* vs = (version && *version) ? version : "FW:?";
@@ -176,7 +182,7 @@ void OledDisplay::showRadioConfig(uint32_t freq_hz, uint32_t bandwidth_hz,
     _display->print(vbuf);
     _display->setCursor(stateX, 0);
     _display->print(stateTag);
-    _display->drawFastHLine(0, 10, 128, SSD1306_WHITE);
+    _display->drawFastHLine(0, 10, 128, OLED_WHITE);
 
     // Line 1 (y=14) — frequency in MHz with 3 decimals
     float freq_mhz = freq_hz / 1e6f;
@@ -207,7 +213,7 @@ void OledDisplay::showRadioConfig(uint32_t freq_hz, uint32_t bandwidth_hz,
 
     // Heartbeat dot, bottom-right
     static bool dot = false;
-    if (dot) _display->fillCircle(124, 60, 2, SSD1306_WHITE);
+    if (dot) _display->fillCircle(124, 60, 2, OLED_WHITE);
     dot = !dot;
 
     _display->display();
@@ -224,7 +230,7 @@ void OledDisplay::showDiagnostics(uint32_t uptime_sec,
     char buf[32];
     _display->clearDisplay();
     _display->setTextSize(1);
-    _display->setTextColor(SSD1306_WHITE);
+    _display->setTextColor(OLED_WHITE);
 
     // Header: version + right-aligned state tag "DIAG"
     const char* vs = (version && *version) ? version : "FW:?";
@@ -241,7 +247,7 @@ void OledDisplay::showDiagnostics(uint32_t uptime_sec,
     _display->print(vbuf);
     _display->setCursor(stateX, 0);
     _display->print(stateTag);
-    _display->drawFastHLine(0, 10, 128, SSD1306_WHITE);
+    _display->drawFastHLine(0, 10, 128, OLED_WHITE);
 
     // Line 1 (y=14) — uptime HH:MM:SS (rolls to DDd HH:MM after 100h)
     uint32_t days = uptime_sec / 86400;
@@ -290,7 +296,7 @@ void OledDisplay::showDiagnostics(uint32_t uptime_sec,
 
     // Heartbeat dot, bottom-right
     static bool dot = false;
-    if (dot) _display->fillCircle(124, 60, 2, SSD1306_WHITE);
+    if (dot) _display->fillCircle(124, 60, 2, OLED_WHITE);
     dot = !dot;
 
     _display->display();
@@ -300,7 +306,7 @@ void OledDisplay::showError(const char* msg) {
     if (!_ready) return;
     _display->clearDisplay();
     _display->setTextSize(1);
-    _display->setTextColor(SSD1306_WHITE);
+    _display->setTextColor(OLED_WHITE);
     _display->setCursor(0, 0);
     _display->println("ERROR:");
     _display->println(msg);
@@ -315,12 +321,20 @@ void OledDisplay::clear() {
 
 void OledDisplay::turnOff() {
     if (!_ready) return;
+#if defined(BOARD_STATION_G2)
+    _display->oled_command(SH110X_DISPLAYOFF);
+#else
     _display->ssd1306_command(SSD1306_DISPLAYOFF);
+#endif
 }
 
 void OledDisplay::turnOn() {
     if (!_ready) return;
+#if defined(BOARD_STATION_G2)
+    _display->oled_command(SH110X_DISPLAYON);
+#else
     _display->ssd1306_command(SSD1306_DISPLAYON);
+#endif
 }
 
 // ─── v0.7 cache hooks (originally for T114 TFT) ─────────────────────────

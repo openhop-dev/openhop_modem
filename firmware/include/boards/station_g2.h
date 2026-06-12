@@ -33,9 +33,9 @@ inline const BoardConfig BOARD = {
         .dio2_as_rf_switch = true,
     },
 
-    // Built-in OLED is SH1107. Disable until the display backend supports it.
-    .pin_i2c_sda      = -1,
-    .pin_i2c_scl      = -1,
+    // Built-in OLED is SH1107 on the Station G2/G3 shared I2C bus.
+    .pin_i2c_sda      = 5,
+    .pin_i2c_scl      = 6,
     .pin_i2c_oled_rst = -1,
     .pin_vext_enable_low = -1,
 
