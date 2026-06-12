@@ -233,6 +233,7 @@ jobs:
       - name: Create firmware asset update PR for protected main
         if: github.ref_name == 'main'
         uses: peter-evans/create-pull-request@v7
+        continue-on-error: true
         with:
           commit-message: 'firmware: update generated firmware assets [skip ci]'
           branch: automation/update-firmware-assets
@@ -306,6 +307,7 @@ jobs:
 
       - name: Create firmware asset update PR
         uses: peter-evans/create-pull-request@v7
+        continue-on-error: true
         with:
           commit-message: 'firmware: update generated firmware assets [skip ci]'
           branch: automation/update-firmware-assets
