@@ -40,6 +40,16 @@ inline const BoardConfig BOARD = {
     .pin_user_button         = 0,
     .user_button_active_low  = true,
 
+    // LiPo monitor from Heltec/Meshtastic mapping: GPIO1 through a high-
+    // impedance divider, gated by GPIO37 HIGH. Multiplier includes the
+    // divider ratio plus the calibration factor used by the upstream map.
+    .battery = {
+        .pin = 1,
+        .enable_pin = 37,
+        .enable_active_high = true,
+        .multiplier = 4.90f * 1.045f,
+    },
+
     // Keep the firmware's host-visible setting equivalent to Heltec V3/bare
     // SX1262. V4's front-end can amplify RF output, but RadioLib still configures
     // SX1262 output power, so clamp the chip command to its normal ceiling.

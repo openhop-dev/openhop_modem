@@ -113,7 +113,7 @@ Example:
 Returns the combined system, radio, counters, and network state in one response.
 
 Top-level keys:
-- `system`
+- `system` — board, firmware, hostname, uptime, die temperature, and battery voltage when available (`battery_voltage_mv`, `battery_voltage_v`)
 - `radio`
 - `counters`
 - `network`

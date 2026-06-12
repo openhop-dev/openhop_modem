@@ -57,6 +57,13 @@ struct StaticGpioLevel {
     bool   level_high;
 };
 
+struct BatterySenseConfig {
+    int8_t pin;                 // ADC pin, -1 when no battery sense exists
+    int8_t enable_pin;          // optional divider/ADC gate, -1 when always on
+    bool   enable_active_high;
+    float  multiplier;          // raw pin voltage -> pack voltage
+};
+
 // ─── Full per-board config ──────────────────────────────────
 struct BoardConfig {
     const char* name;            // Display name on the OLED splash
@@ -92,6 +99,10 @@ struct BoardConfig {
     // PRG / user button. active_low = pressed pulls LOW.
     int8_t pin_user_button;
     bool   user_button_active_low;
+
+    // Optional LiPo battery monitor. `battery.pin = -1` reports null/unknown.
+    // Voltage is sampled in millivolts and exposed in status/API stats.
+    BatterySenseConfig battery;
 
     // Hardware RF ceiling. Firmware clamps any requested TX power to
     // this value; lets the host config drive everything below.

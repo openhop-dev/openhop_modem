@@ -244,6 +244,30 @@ static uint32_t maxLoopUs = 0;
 static uint32_t lastUsbCmdMs = 0;
 
 #ifdef ARDUINO_ARCH_ESP32
+static uint16_t readBatteryMilliVolts() {
+    if (BOARD.battery.pin < 0 || BOARD.battery.multiplier <= 0.0f) {
+        return 0xFFFF;
+    }
+
+    if (BOARD.battery.enable_pin >= 0) {
+        pinMode(BOARD.battery.enable_pin, OUTPUT);
+        digitalWrite(BOARD.battery.enable_pin,
+                     BOARD.battery.enable_active_high ? HIGH : LOW);
+        delay(5);
+    }
+
+    uint32_t totalMv = 0;
+    constexpr uint8_t samples = 8;
+    for (uint8_t i = 0; i < samples; ++i) {
+        totalMv += analogReadMilliVolts(BOARD.battery.pin);
+        delay(1);
+    }
+    float packMv = (totalMv / (float)samples) * BOARD.battery.multiplier;
+    if (packMv < 0.0f) return 0;
+    if (packMv > 65534.0f) return 65534;
+    return (uint16_t)(packMv + 0.5f);
+}
+
 namespace RuntimeStats {
 Snapshot capture() {
     Snapshot snap = {};
@@ -252,6 +276,7 @@ Snapshot capture() {
     snap.status.radio_state = radioStandby ? 2 : (isTxActive ? 1 : 0);
     snap.status.temp_c = (int8_t)temperatureRead();
     snap.status.noise_floor_x10 = (int16_t)(noiseFloor * 10.0f);
+    snap.status.battery_mv = readBatteryMilliVolts();
     snap.radio = currentConfig;
     snap.firmwareVersion = fwVersion;
     snap.radioStandby = radioStandby;
@@ -904,8 +929,10 @@ void processHostCommand(uint8_t cmd, const uint8_t* payload, uint16_t len,
         status.radio_state = isTxActive ? 1 : 0;
 #ifdef ARDUINO_ARCH_ESP32
         status.temp_c = (int8_t)temperatureRead();
+        status.battery_mv = readBatteryMilliVolts();
 #else
         status.temp_c = 0;   // nRF52 has its own temperature sensor — TODO
+        status.battery_mv = 0xFFFF;
 #endif
         status.noise_floor_x10 = (int16_t)(noiseFloor * 10.0f);
         sendFrame(CMD_STATUS_RESP, (uint8_t*)&status, sizeof(StatusResp), src);

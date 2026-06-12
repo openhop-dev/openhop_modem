@@ -244,6 +244,10 @@ static String buildSystemJson(const RuntimeStats::Snapshot& snap,
     body += jsonQuote(formatUptime(snap.status.uptime_sec));
     body += F(",\"die_temperature_c\":");
     body += String(snap.status.temp_c);
+    body += F(",\"battery_voltage_mv\":");
+    body += snap.status.battery_mv != 0xFFFF ? String(snap.status.battery_mv) : String("null");
+    body += F(",\"battery_voltage_v\":");
+    body += snap.status.battery_mv != 0xFFFF ? String(snap.status.battery_mv / 1000.0f, 3) : String("null");
     body += F("}");
     return body;
 }
@@ -695,6 +699,9 @@ static void handleStats() {
     body += "<div class='kv'><span class='k'>Connected client</span><span class='v'>" + (clientIP.length() > 0 ? clientIP : String("none")) + "</span></div>";
     body += "<div class='kv'><span class='k'>Interface</span><span class='v'>" + String(net.iface) + "</span></div>";
     body += "<div class='kv'><span class='k'>Uptime</span><span class='v'>" + formatUptime(snap.status.uptime_sec) + "</span></div>";
+    body += "<div class='kv'><span class='k'>Battery</span><span class='v'>" +
+            (snap.status.battery_mv != 0xFFFF ? String(snap.status.battery_mv / 1000.0f, 3) + " V" : String("unknown")) +
+            "</span></div>";
     body += "</div></div>";
 
     body += F("<h3>Radio</h3><div class='grid'>");
@@ -735,9 +742,13 @@ static void handleApiTemp() {
 
     RuntimeStats::Snapshot snap = RuntimeStats::capture();
     String body;
-    body.reserve(128);
+    body.reserve(192);
     body += F("{\"die_temperature_c\":");
     body += String(snap.status.temp_c);
+    body += F(",\"battery_voltage_mv\":");
+    body += snap.status.battery_mv != 0xFFFF ? String(snap.status.battery_mv) : String("null");
+    body += F(",\"battery_voltage_v\":");
+    body += snap.status.battery_mv != 0xFFFF ? String(snap.status.battery_mv / 1000.0f, 3) : String("null");
     body += F(",\"firmware\":\"");
     body += snap.firmwareVersion;
     body += F("\",\"hostname\":\"");

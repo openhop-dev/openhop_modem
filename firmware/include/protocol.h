@@ -169,6 +169,7 @@ struct __attribute__((packed)) StatusResp {
     int16_t  noise_floor_x10;  // averaged noise floor in dBm × 10
     int8_t   temp_c;           // ESP32 die temperature
     uint8_t  radio_state;      // 0=idle/rx, 1=tx, 2=error
+    uint16_t battery_mv;       // millivolts, 0xFFFF when unavailable
 };
 
 // CRC-16/CCITT (polynomial 0x1021, init 0xFFFF)
