@@ -669,7 +669,6 @@ bool startReceive() {
     // which re-runs applyConfig() and then calls this function
     // again with radioStandby=false.
     if (radioStandby) return true;
-    rfSwitchFemSetReceive();
     return radio.startReceive() == RADIOLIB_ERR_NONE;
 }
 

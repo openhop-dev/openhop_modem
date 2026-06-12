@@ -59,12 +59,25 @@ inline const BoardConfig BOARD = {
 
     {-1, 0, 5, -1, true},  // RXEN on D5/P0.05; TX via DIO2
 
+    -1,    // pin_lora_tx_led
+    true,  // lora_tx_led_active_high
+
     // No I2C peripheral on this kit. D4/D5 are claimed by NSS/RXEN,
     // so the silkscreen "SDA/SCL" labels are not honoured here.
     -1,  // pin_i2c_sda
     -1,  // pin_i2c_scl
     -1,  // pin_i2c_oled_rst
     -1,  // pin_vext_enable_low
+
+    -1,    // pin_tft_sda
+    -1,    // pin_tft_scl
+    -1,    // pin_tft_dc
+    -1,    // pin_tft_rst
+    -1,    // pin_tft_cs
+    -1,    // pin_tft_bl
+    true,  // tft_bl_active_high
+    -1,    // pin_tft_power
+    true,  // tft_power_active_high
 
     18,    // pin_user_button = P0.18 (Adafruit BTN0 / DFU)
     true,  // user_button_active_low
@@ -75,6 +88,10 @@ inline const BoardConfig BOARD = {
 
     true,  // use_dio3_tcxo
     1.8f,  // tcxo_voltage — 32 MHz TCXO on Wio-SX1262
+
+    -1,     // sx126x_current_limit_ma
+    false,  // sx126x_rx_boosted_gain
+    false,  // sx126x_register_patch
 
     true,   // has_lora_radio
     false,  // has_wifi — nRF52 has BLE but not Wi-Fi
@@ -87,4 +104,7 @@ inline const BoardConfig BOARD = {
 
     {false, BoardConfig::EthernetPhy::NONE, -1, -1, -1, -1, false, false,
      {0, 0, 0, 0}, {0, 0, 0, 0}, {0, 0, 0, 0}, {0, 0, 0, 0}},
+
+    {{-1, false}, {-1, false}, {-1, false}, {-1, false}},
+    0,
 };

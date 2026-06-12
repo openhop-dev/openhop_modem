@@ -130,7 +130,9 @@ void OledDisplay::showSplash() {
 
 void OledDisplay::showStatus(uint32_t rx, uint32_t tx,
                              const char* ssid, const char* ip,
-                             const char* state, const char* version) {
+                             const char* state, const char* version,
+                             uint16_t battery_mv) {
+    (void)battery_mv;
     if (!_ready) return;
     tft.fillScreen(COLOUR_BG);
     drawHeader(_displayName, version);

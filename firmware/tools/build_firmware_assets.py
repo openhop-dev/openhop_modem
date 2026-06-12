@@ -42,6 +42,11 @@ ENV_METADATA: dict[str, dict[str, str | bool]] = {
         "chip_family": "ESP32-S3",
         "web_manifest": True,
     },
+    "heltec_tracker_v2": {
+        "name": "Heltec Wireless Tracker V2 pyMC Modem",
+        "chip_family": "ESP32-S3",
+        "web_manifest": True,
+    },
     "ikoka_stick": {
         "name": "Ikoka Stick pyMC Modem",
         "chip_family": "ESP32-S3",
@@ -85,6 +90,7 @@ ENV_METADATA: dict[str, dict[str, str | bool]] = {
 BOARD_HEADER_TO_ENV = {
     "firmware/include/boards/heltec_v3.h": "heltec_v3",
     "firmware/include/boards/heltec_v4.h": "heltec_v4",
+    "firmware/include/boards/heltec_tracker_v2.h": "heltec_tracker_v2",
     "firmware/include/boards/ikoka_stick.h": "ikoka_stick",
     "firmware/include/boards/xiao_wio_sx1262.h": "xiao_wio_sx1262",
     "firmware/include/boards/rak3112_wismesh.h": "rak3112_wismesh",
