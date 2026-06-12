@@ -17,7 +17,8 @@ public:
     inline void showSplash() {}
     inline void showStatus(uint32_t, uint32_t,
                            const char*, const char*,
-                           const char*, const char*) {}
+                           const char*, const char*,
+                           uint16_t = 0xFFFF) {}
     inline void setDisplayName(const char*) {}
     inline void setRadioInfo(uint32_t, uint8_t, uint32_t,
                              uint8_t, int8_t,

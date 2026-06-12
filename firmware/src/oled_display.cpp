@@ -87,7 +87,8 @@ void OledDisplay::showBoot(const char* version) {
 
 void OledDisplay::showStatus(uint32_t rx, uint32_t tx,
                              const char* ssid, const char* ip,
-                             const char* state, const char* version) {
+                             const char* state, const char* version,
+                             uint16_t battery_mv) {
     if (!_ready) return;
 
     char buf[32];
@@ -130,7 +131,16 @@ void OledDisplay::showStatus(uint32_t rx, uint32_t tx,
     // Line 3 — IP address
     _display->setCursor(0, 42);
     snprintf(buf, sizeof(buf), "IP:%s", ip && *ip ? ip : "---");
+    if (strlen(buf) > 21) buf[21] = '\0';
     _display->print(buf);
+
+    // Optional Line 4 — battery voltage. Only board variants that define
+    // battery sensing pass a real value; every other board silently omits it.
+    if (battery_mv != 0xFFFF) {
+        _display->setCursor(0, 54);
+        snprintf(buf, sizeof(buf), "BAT:%.2fV", (double)(battery_mv / 1000.0f));
+        _display->print(buf);
+    }
 
     // Heartbeat dot, bottom-right
     static bool dot = false;

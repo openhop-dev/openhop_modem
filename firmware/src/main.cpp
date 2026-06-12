@@ -1573,8 +1573,13 @@ void loop() {
                     ssid     = BOARD.has_wifi ? WifiManager::getSSID()    : "---";
                     ip       = BOARD.has_wifi ? WifiManager::getIPString(): "---";
                 }
+                uint16_t batteryMv = 0xFFFF;
+#ifdef ARDUINO_ARCH_ESP32
+                batteryMv = readBatteryMilliVolts();
+                status.battery_mv = batteryMv;
+#endif
                 oled.showStatus(status.rx_count, status.tx_count,
-                                ssid, ip, stateTag, fwVersion.c_str());
+                                ssid, ip, stateTag, fwVersion.c_str(), batteryMv);
             } else if (currentScreen == Screen::RADIO) {
                 oled.showRadioConfig(currentConfig.freq_hz,
                                      currentConfig.bandwidth_hz,

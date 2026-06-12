@@ -23,7 +23,8 @@ public:
     // visible at a glance — useful after OTA to confirm the new build.
     void showStatus(uint32_t rx, uint32_t tx,
                     const char* ssid, const char* ip,
-                    const char* state, const char* version);
+                    const char* state, const char* version,
+                    uint16_t battery_mv = 0xFFFF);
     // Secondary screen: live radio configuration (freq, SF, BW, CR, power,
     // preamble, sync word). Reached by short-tap PRG from the status screen.
     void showRadioConfig(uint32_t freq_hz, uint32_t bandwidth_hz,

@@ -220,7 +220,8 @@ void OledDisplay::showSplash() {
 
 void OledDisplay::showStatus(uint32_t rx, uint32_t tx,
                              const char* /*ssid*/, const char* /*ip*/,
-                             const char* state, const char* version) {
+                             const char* state, const char* version,
+                             uint16_t /*battery_mv*/) {
     // T114 lives behind the sector controller via UART — we never
     // have an IP / SSID of our own. The two unused parameters stay
     // for ABI parity with oled_display.h on the ESP32 boards (same

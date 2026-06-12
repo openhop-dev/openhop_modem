@@ -31,7 +31,8 @@ public:
     void showSplash();
     void showStatus(uint32_t rx, uint32_t tx,
                     const char* ssid, const char* ip,
-                    const char* state, const char* version);
+                    const char* state, const char* version,
+                    uint16_t battery_mv = 0xFFFF);
     // Display name pushed by the sector controller (CMD_SET_DISPLAY_NAME).
     // Shown big at the top of every status screen so an operator can tell
     // physical T114s apart at a glance.

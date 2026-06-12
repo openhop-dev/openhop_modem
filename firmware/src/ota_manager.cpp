@@ -699,9 +699,10 @@ static void handleStats() {
     body += "<div class='kv'><span class='k'>Connected client</span><span class='v'>" + (clientIP.length() > 0 ? clientIP : String("none")) + "</span></div>";
     body += "<div class='kv'><span class='k'>Interface</span><span class='v'>" + String(net.iface) + "</span></div>";
     body += "<div class='kv'><span class='k'>Uptime</span><span class='v'>" + formatUptime(snap.status.uptime_sec) + "</span></div>";
-    body += "<div class='kv'><span class='k'>Battery</span><span class='v'>" +
-            (snap.status.battery_mv != 0xFFFF ? String(snap.status.battery_mv / 1000.0f, 3) + " V" : String("unknown")) +
-            "</span></div>";
+    if (snap.status.battery_mv != 0xFFFF) {
+        body += "<div class='kv'><span class='k'>Battery</span><span class='v'>" +
+                String(snap.status.battery_mv / 1000.0f, 3) + " V</span></div>";
+    }
     body += "</div></div>";
 
     body += F("<h3>Radio</h3><div class='grid'>");
