@@ -56,7 +56,17 @@ inline const BoardConfig BOARD = {
     .pin_user_button        = 9,     // BOOT button on Seeed XIAO ESP32-C6
     .user_button_active_low = true,
 
-    .battery = { .pin = -1 },
+    // Original MeshCore Photon firmware reads battery voltage from the
+    // MAX17048 fuel gauge on the Photon I2C bus (D4/D5), address 0x36,
+    // VCELL register 0x02.  No ADC divider is needed on the C6 module.
+    .battery = {
+        .pin = -1,
+        .enable_pin = -1,
+        .enable_active_high = false,
+        .multiplier = 0.0f,
+        .fuel_gauge_i2c_addr = 0x36,
+        .fuel_gauge_vcell_reg = 0x02,
+    },
 
     .max_tx_power_dbm = 30,          // Photon 1W / E22P class front end
 

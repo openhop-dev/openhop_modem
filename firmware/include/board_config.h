@@ -62,6 +62,8 @@ struct BatterySenseConfig {
     int8_t enable_pin;          // optional divider/ADC gate, -1 when always on
     bool   enable_active_high;
     float  multiplier;          // raw pin voltage -> pack voltage
+    uint8_t fuel_gauge_i2c_addr = 0;      // MAX17048-style fuel gauge, 0=none
+    uint8_t fuel_gauge_vcell_reg = 0x02;  // VCELL register (78.125 uV/LSB)
 };
 
 struct WifiAntennaSwitchConfig {

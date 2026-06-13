@@ -30,6 +30,7 @@
 // #ifdef below.
 #ifdef ARDUINO_ARCH_ESP32
 #  include <WiFi.h>
+#  include <Wire.h>
 #  include <esp_task_wdt.h>
 #  include <esp_system.h>
 #  include <esp_mac.h>
@@ -272,7 +273,33 @@ static uint32_t maxLoopUs = 0;
 static uint32_t lastUsbCmdMs = 0;
 
 #ifdef ARDUINO_ARCH_ESP32
+static bool readFuelGaugeRegister(uint8_t address, uint8_t reg, uint16_t& value) {
+    Wire.beginTransmission(address);
+    Wire.write(reg);
+    if (Wire.endTransmission(false) != 0) {
+        return false;
+    }
+    if (Wire.requestFrom(address, (uint8_t)2) != 2) {
+        return false;
+    }
+    value = ((uint16_t)Wire.read() << 8) | Wire.read();
+    return true;
+}
+
 static uint16_t readBatteryMilliVolts() {
+    if (BOARD.battery.fuel_gauge_i2c_addr != 0) {
+        uint16_t vcell = 0;
+        if (readFuelGaugeRegister(BOARD.battery.fuel_gauge_i2c_addr,
+                                  BOARD.battery.fuel_gauge_vcell_reg,
+                                  vcell)) {
+            // MAX17048 VCELL uses 78.125 uV/LSB units, same conversion as
+            // the original MeshCore Photon firmware: vcell * 5 / 64 mV.
+            uint32_t mv = ((uint32_t)vcell * 5U) / 64U;
+            return mv > 65534U ? 65534U : (uint16_t)mv;
+        }
+        return 0xFFFF;
+    }
+
     if (BOARD.battery.pin < 0 || BOARD.battery.multiplier <= 0.0f) {
         return 0xFFFF;
     }
