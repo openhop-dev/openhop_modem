@@ -727,11 +727,11 @@ void processHostCommand(uint8_t cmd, const uint8_t* payload, uint16_t len,
     // Any successfully-processed host frame counts toward OTA sanity.
     OTAManager::notifyValidFrame();
 
-    // Boards without a LoRa radio (ESP32-P4-Nano on day one) ack the
-    // non-radio commands (PING, GET_VERSION, GET_WIFI, AUTH, …) but
-    // refuse anything that would touch the SX1262. The host can still
+    // Boards without a LoRa radio, or boards where SX1262 init failed,
+    // ack the non-radio commands (PING, GET_VERSION, GET_WIFI, AUTH, …)
+    // but refuse anything that would touch the SX1262. The host can still
     // probe the modem and configure Wi-Fi via the existing flow.
-    if (!BOARD.has_lora_radio) {
+    if (!BOARD.has_lora_radio || !radioReady) {
         switch (cmd) {
         case CMD_TX_REQUEST:  case CMD_SET_CONFIG:  case CMD_GET_CONFIG:
         case CMD_STATUS_REQ:  case CMD_NOISE_REQ:   case CMD_CAD_REQUEST:
@@ -1358,12 +1358,9 @@ void setup() {
             oled.showError("SX1262 init fail!");
             while (Serial.availableForWrite() == 0) delay(10);
             sendError(ERR_RADIO_INIT, TransportSource::USB);
-            // Do not enter OTA loop without a working radio — this
-            // firmware would be rolled back automatically by the
-            // bootloader on reset.
-            while (true) delay(1000);
-        }
-
+            Serial.println("[BOOT] SX1262 init failed — continuing with Wi-Fi/config portal only");
+            radioReady = false;
+        } else {
         if (BOARD.use_dio3_tcxo) {
             state = radio.setTCXO(BOARD.tcxo_voltage);
             LOG_R_INFO("setTCXO(%.1f V) -> %d", BOARD.tcxo_voltage, state);
@@ -1386,6 +1383,7 @@ void setup() {
         }
 
         radioReady = true;
+        }
     } else {
         Serial.println("[BOOT] no LoRa radio on this board — running as Wi-Fi/Ethernet bridge only");
         radioReady = false;
