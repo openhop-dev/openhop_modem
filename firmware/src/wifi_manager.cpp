@@ -66,6 +66,7 @@ static void loadConfig() {
         cfg = {};
         cfg.hostname = "";
         cfg.tcpPort = DEFAULT_TCP_PORT;
+        cfg.wifiExternalAntenna = BOARD.wifi_antenna_switch.enabled;
         effectiveHostname = "";
         return;
     }
@@ -80,7 +81,38 @@ static void loadConfig() {
     cfg.dns2        = IPAddress(p.getUInt("dns2", 0));
     cfg.tcpToken    = p.getString("token", "");
     cfg.tcpPort     = p.getUShort("port", DEFAULT_TCP_PORT);
+    cfg.wifiExternalAntenna = p.getBool("ant_ext", BOARD.wifi_antenna_switch.enabled);
     p.end();
+}
+
+bool hasWifiAntennaSwitch() {
+    return BOARD.wifi_antenna_switch.enabled &&
+           BOARD.wifi_antenna_switch.gpio3_pin >= 0 &&
+           BOARD.wifi_antenna_switch.gpio14_pin >= 0;
+}
+
+void applyWifiAntennaSwitch() {
+    if (!hasWifiAntennaSwitch()) return;
+
+    pinMode(BOARD.wifi_antenna_switch.gpio3_pin, OUTPUT);
+    pinMode(BOARD.wifi_antenna_switch.gpio14_pin, OUTPUT);
+
+    if (cfg.wifiExternalAntenna) {
+        // Photon ESP32-C6 external Wi-Fi antenna path.
+        digitalWrite(BOARD.wifi_antenna_switch.gpio3_pin, LOW);
+        digitalWrite(BOARD.wifi_antenna_switch.gpio14_pin, HIGH);
+    } else {
+        // Internal/on-module antenna path: inverse of the external select.
+        digitalWrite(BOARD.wifi_antenna_switch.gpio3_pin, HIGH);
+        digitalWrite(BOARD.wifi_antenna_switch.gpio14_pin, LOW);
+    }
+
+    Serial.printf("[WiFi] antenna=%s gpio%d=%s gpio%d=%s\n",
+                  cfg.wifiExternalAntenna ? "external" : "internal",
+                  BOARD.wifi_antenna_switch.gpio3_pin,
+                  cfg.wifiExternalAntenna ? "LOW" : "HIGH",
+                  BOARD.wifi_antenna_switch.gpio14_pin,
+                  cfg.wifiExternalAntenna ? "HIGH" : "LOW");
 }
 
 static String buildDefaultHostname() {
@@ -142,9 +174,15 @@ void saveConfig(const Config& newCfg) {
     p.putUInt  ("dns2",  (uint32_t)newCfg.dns2);
     p.putString("token", newCfg.tcpToken);
     p.putUShort("port",  newCfg.tcpPort);
+    if (hasWifiAntennaSwitch()) {
+        p.putBool("ant_ext", newCfg.wifiExternalAntenna);
+    }
     p.end();
     cfg = newCfg;
     cfg.hostname = sanitizeHostname(cfg.hostname);
+    if (!hasWifiAntennaSwitch()) {
+        cfg.wifiExternalAntenna = false;
+    }
     refreshEffectiveHostname();
 }
 
@@ -250,12 +288,14 @@ void loadConfigOnly() {
     loadConfig();
     cfg.hostname = sanitizeHostname(cfg.hostname);
     refreshEffectiveHostname();
+    applyWifiAntennaSwitch();
 }
 
 void begin() {
     loadConfig();
     cfg.hostname = sanitizeHostname(cfg.hostname);
     refreshEffectiveHostname();
+    applyWifiAntennaSwitch();
 
     Serial.printf("[Boot] WifiManager: saved ssid='%s' host='%s' %s\n",
                   cfg.ssid.c_str(),

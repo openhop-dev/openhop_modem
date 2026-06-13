@@ -98,6 +98,8 @@ static IPAddress parseIPArg(const String& s) {
 struct NetworkSnapshot {
     const char* iface = "Offline";
     bool live = false;
+    bool has_wifi_rssi = false;
+    int32_t wifi_rssi_dbm = 0;
     IPAddress ip;
     IPAddress subnet;
     IPAddress gateway;
@@ -125,6 +127,8 @@ static NetworkSnapshot getNetworkSnapshot() {
         snap.gateway = WiFi.gatewayIP();
         snap.dns1 = WiFi.dnsIP(0);
         snap.dns2 = WiFi.dnsIP(1);
+        snap.has_wifi_rssi = true;
+        snap.wifi_rssi_dbm = WiFi.RSSI();
         return snap;
     }
     if (WifiManager::isAPActive()) {
@@ -326,6 +330,10 @@ static String buildNetworkJson(const WifiManager::Config& cfg,
     body += ipJson(net.dns1);
     body += F(",\"dns2\":");
     body += ipJson(net.dns2);
+    if (net.has_wifi_rssi) {
+        body += F(",\"wifi_rssi_dbm\":");
+        body += String(net.wifi_rssi_dbm);
+    }
     body += F(",\"tcp_port\":");
     body += String(cfg.tcpPort);
     body += F(",\"pymc_token_set\":");
@@ -368,6 +376,10 @@ static String buildConfigJson(const WifiManager::Config& cfg) {
     body += ipJson(cfg.dns1);
     body += F(",\"dns2\":");
     body += ipJson(cfg.dns2);
+    if (WifiManager::hasWifiAntennaSwitch()) {
+        body += F(",\"wifi_external_antenna\":");
+        body += boolJson(cfg.wifiExternalAntenna);
+    }
     body += F("}");
     return body;
 }
@@ -465,6 +477,19 @@ static bool applyConfigPatch(JsonVariantConst root, WifiManager::Config& cfg, St
         cfg.useStaticIP = staticVal.as<bool>();
     }
 
+    JsonVariantConst antennaVal = obj["wifi_external_antenna"];
+    if (!antennaVal.isNull()) {
+        if (!WifiManager::hasWifiAntennaSwitch()) {
+            error = "wifi_external_antenna is not supported on this board.";
+            return false;
+        }
+        if (!antennaVal.is<bool>()) {
+            error = "wifi_external_antenna must be true or false.";
+            return false;
+        }
+        cfg.wifiExternalAntenna = antennaVal.as<bool>();
+    }
+
     JsonVariantConst networkVal = obj["network"];
     if (!networkVal.isNull()) {
         if (!networkVal.is<JsonObjectConst>()) {
@@ -487,6 +512,19 @@ static bool applyConfigPatch(JsonVariantConst root, WifiManager::Config& cfg, St
         if (!parseJsonIp(network["gateway"], cfg.gateway, "network.gateway", error)) return false;
         if (!parseJsonIp(network["dns1"], cfg.dns1, "network.dns1", error)) return false;
         if (!parseJsonIp(network["dns2"], cfg.dns2, "network.dns2", error)) return false;
+
+        JsonVariantConst antennaVal = network["wifi_external_antenna"];
+        if (!antennaVal.isNull()) {
+            if (!WifiManager::hasWifiAntennaSwitch()) {
+                error = "network.wifi_external_antenna is not supported on this board.";
+                return false;
+            }
+            if (!antennaVal.is<bool>()) {
+                error = "network.wifi_external_antenna must be true or false.";
+                return false;
+            }
+            cfg.wifiExternalAntenna = antennaVal.as<bool>();
+        }
     }
 
     if (cfg.useStaticIP &&
@@ -634,7 +672,13 @@ static void handleRoot() {
     body += "<div><label>DNS 1</label><input type='text' name='dns1' value='" + dns1Value + "' placeholder='1.1.1.1'></div>";
     body += "<div><label>DNS 2</label><input type='text' name='dns2' value='" + dns2Value + "' placeholder='8.8.8.8'></div>";
     body += "<div><label>Current source</label><div class='chip'>" + String(net.iface) + "</div></div>";
-    body += F("</div><button type='submit'>Save network settings</button></form></div></details>");
+    body += F("</div>");
+    if (WifiManager::hasWifiAntennaSwitch()) {
+        body += F("<div class='checkline'><input type='checkbox' id='wifi_ant_ext' name='wifi_ant_ext' value='1'");
+        if (cfg.wifiExternalAntenna) body += F(" checked");
+        body += F("><label for='wifi_ant_ext'>Use external Wi-Fi antenna <span class='m'>(ESP32-C6: GPIO3 low, GPIO14 high)</span></label></div>");
+    }
+    body += F("<button type='submit'>Save network settings</button></form></div></details>");
 
     body += F("<details><summary>pyMC Token</summary><div class='inside'>"
               "<p>This token must match the <code>token</code> value in pyMC so pyMC can connect to the radio.</p>"
@@ -698,6 +742,10 @@ static void handleStats() {
     body += "<div class='kv'><span class='k'>Current IP</span><span class='v'>" + currentIPString() + "</span></div>";
     body += "<div class='kv'><span class='k'>Connected client</span><span class='v'>" + (clientIP.length() > 0 ? clientIP : String("none")) + "</span></div>";
     body += "<div class='kv'><span class='k'>Interface</span><span class='v'>" + String(net.iface) + "</span></div>";
+    if (net.has_wifi_rssi) {
+        body += "<div class='kv'><span class='k'>Wi-Fi signal</span><span class='v'>" +
+                String(net.wifi_rssi_dbm) + " dBm</span></div>";
+    }
     body += "<div class='kv'><span class='k'>Uptime</span><span class='v'>" + formatUptime(snap.status.uptime_sec) + "</span></div>";
     if (snap.status.battery_mv != 0xFFFF) {
         body += "<div class='kv'><span class='k'>Battery</span><span class='v'>" +
@@ -730,6 +778,14 @@ static void handleStats() {
     body += F("<h3>Network</h3><div class='grid'>");
     body += "<div class='kv'><span class='k'>Mode</span><span class='v'>" + String(cfg.useStaticIP ? "Static" : "DHCP") + "</span></div>";
     body += "<div class='kv'><span class='k'>Port</span><span class='v'>" + String(cfg.tcpPort) + "</span></div>";
+    if (net.has_wifi_rssi) {
+        body += "<div class='kv'><span class='k'>Wi-Fi RSSI</span><span class='v'>" +
+                String(net.wifi_rssi_dbm) + " dBm</span></div>";
+    }
+    if (WifiManager::hasWifiAntennaSwitch()) {
+        body += "<div class='kv'><span class='k'>Wi-Fi antenna</span><span class='v'>" +
+                String(cfg.wifiExternalAntenna ? "External" : "Internal") + "</span></div>";
+    }
     body += "<div class='kv'><span class='k'>Gateway</span><span class='v'>" + ((uint32_t)net.gateway != 0 ? net.gateway.toString() : String("none")) + "</span></div>";
     body += "<div class='kv'><span class='k'>Subnet</span><span class='v'>" + ((uint32_t)net.subnet != 0 ? net.subnet.toString() : String("none")) + "</span></div>";
     body += "<div class='kv'><span class='k'>DNS 1</span><span class='v'>" + ((uint32_t)net.dns1 != 0 ? net.dns1.toString() : String("none")) + "</span></div>";
@@ -874,6 +930,11 @@ static void handleNetworkSave() {
     cfg.gateway     = parseIPArg(httpServer->arg("gw"));
     cfg.dns1        = parseIPArg(httpServer->arg("dns1"));
     cfg.dns2        = parseIPArg(httpServer->arg("dns2"));
+    if (WifiManager::hasWifiAntennaSwitch()) {
+        cfg.wifiExternalAntenna = httpServer->hasArg("wifi_ant_ext");
+    } else {
+        cfg.wifiExternalAntenna = false;
+    }
 
     if (cfg.useStaticIP) {
         if ((uint32_t)cfg.staticIP == 0 || (uint32_t)cfg.subnet == 0 || (uint32_t)cfg.gateway == 0) {

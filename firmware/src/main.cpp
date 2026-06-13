@@ -67,6 +67,7 @@ namespace WifiManager {
         IPAddress dns2;
         String   tcpToken;
         uint16_t tcpPort = 0;
+        bool     wifiExternalAntenna = false;
     };
     inline void  checkResetButton()  {}
     inline void  begin()             {}
@@ -74,6 +75,8 @@ namespace WifiManager {
     inline void  loadConfigOnly()    {}
     inline bool  isSTAConnected()    { return false; }
     inline bool  isAPActive()        { return false; }
+    inline bool  hasWifiAntennaSwitch() { return false; }
+    inline void  applyWifiAntennaSwitch() {}
     inline const char* getSSID()     { return "---"; }
     inline const char* getIPString() { return "---"; }
     inline const char* getHostname() { return "---"; }

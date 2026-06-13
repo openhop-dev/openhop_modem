@@ -64,6 +64,12 @@ struct BatterySenseConfig {
     float  multiplier;          // raw pin voltage -> pack voltage
 };
 
+struct WifiAntennaSwitchConfig {
+    bool   enabled = false;      // true only on boards with a Wi-Fi RF switch
+    int8_t gpio3_pin = -1;       // ESP32-C6 Wi-Fi antenna select line 1
+    int8_t gpio14_pin = -1;      // ESP32-C6 Wi-Fi antenna select line 2
+};
+
 // ─── Full per-board config ──────────────────────────────────
 struct BoardConfig {
     const char* name;            // Display name on the OLED splash
@@ -147,6 +153,11 @@ struct BoardConfig {
     // entirely (Ethernet still comes up). Flip back to true once
     // esp_hosted is flashed on the C6.
     bool has_wifi;
+
+    // Optional Wi-Fi antenna switch. The ESP32-C6 Photon board uses two
+    // GPIOs to select the external Wi-Fi antenna path. Other boards leave
+    // this disabled so no extra settings or GPIO writes appear there.
+    WifiAntennaSwitchConfig wifi_antenna_switch;
 
     // Whole-board network capability gate. ESP32-S3 / ESP32-P4 boards
     // ship with the WifiManager + TCPServer + OTAManager + Ethernet

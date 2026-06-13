@@ -99,6 +99,7 @@ inline const BoardConfig BOARD = {
 
     true,   // has_lora_radio
     false,  // has_wifi — nRF52 has BT but not Wi-Fi
+    {},     // wifi_antenna_switch
     false,  // has_network — gates the entire WiFi+TCP+OTA stack
 
     // Protocol on UART1 by default (sector-array controller wiring).

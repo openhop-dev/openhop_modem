@@ -95,6 +95,7 @@ inline const BoardConfig BOARD = {
 
     true,   // has_lora_radio
     false,  // has_wifi — nRF52 has BLE but not Wi-Fi
+    {},     // wifi_antenna_switch
     false,  // has_network — no WiFi/TCP/OTA stack on this build
 
     // No dedicated protocol UART — USB-CDC only.

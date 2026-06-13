@@ -15,6 +15,7 @@
 //   D8  -> SPI SCK
 //   D9  -> SPI MISO
 //   D10 -> SPI MOSI
+//   GPIO3/GPIO14 -> ESP32-C6 Wi-Fi antenna switch
 //
 // Arduino-ESP32 XIAO ESP32-C6 pin map:
 //   D1=GPIO1, D2=GPIO2, D3=GPIO21, D4=GPIO22, D5=GPIO23,
@@ -65,6 +66,13 @@ inline const BoardConfig BOARD = {
 
     .has_lora_radio = true,
     .has_wifi       = true,
+
+    // External Wi-Fi antenna path: GPIO3 LOW and GPIO14 HIGH.
+    .wifi_antenna_switch = {
+        .enabled = true,
+        .gpio3_pin = 3,
+        .gpio14_pin = 14,
+    },
     .has_network    = true,
 
     // Protocol on USB-CDC by default; TCP is also available after Wi-Fi setup.

@@ -106,6 +106,12 @@ static void handleRoot() {
     html += F("<label>Wi-Fi password</label>");
     html += "<input type='password' name='password' value='" + htmlEscape(cfg.password) + "'>";
 
+    if (WifiManager::hasWifiAntennaSwitch()) {
+        html += F("<label><input type='checkbox' name='wifi_ant_ext' value='1'");
+        if (cfg.wifiExternalAntenna) html += F(" checked");
+        html += F("> Use external Wi-Fi antenna <span class='hint'>(ESP32-C6: GPIO3 low, GPIO14 high)</span></label>");
+    }
+
     html += F("<label><input type='checkbox' name='static' value='1'");
     if (cfg.useStaticIP) html += F(" checked");
     html += F("> Use static IP (otherwise DHCP)</label>");
@@ -152,6 +158,9 @@ static void handleSave() {
     ssidSel.trim();
     newCfg.ssid        = ssidMan.length() > 0 ? ssidMan : ssidSel;
     newCfg.password    = server->arg("password");
+    newCfg.wifiExternalAntenna = WifiManager::hasWifiAntennaSwitch()
+                                    ? server->hasArg("wifi_ant_ext")
+                                    : false;
     newCfg.useStaticIP = server->hasArg("static");
     newCfg.staticIP    = parseIP(server->arg("ip"));
     newCfg.gateway     = parseIP(server->arg("gw"));

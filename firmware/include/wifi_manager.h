@@ -28,6 +28,7 @@ struct Config {
     IPAddress dns2;
     String    tcpToken;  // empty = no auth required
     uint16_t  tcpPort;   // default 5055
+    bool      wifiExternalAntenna; // C6-only when BOARD enables antenna switch
 };
 
 // Poll PRG button at boot; if held >= 3s, wipe NVS and reboot. Call from setup().
@@ -51,6 +52,8 @@ const char* getIPString();    // dotted quad, "---" when offline
 const char* getHostname();    // configured hostname, or MAC-derived fallback
 bool        isSTAConnected();
 bool        isAPActive();
+bool        hasWifiAntennaSwitch();
+void        applyWifiAntennaSwitch();
 
 const Config& getConfig();
 void          saveConfig(const Config& cfg);
