@@ -66,7 +66,7 @@ static void loadConfig() {
         cfg = {};
         cfg.hostname = "";
         cfg.tcpPort = DEFAULT_TCP_PORT;
-        cfg.wifiExternalAntenna = BOARD.wifi_antenna_switch.enabled;
+        cfg.wifiExternalAntenna = false;
         effectiveHostname = "";
         return;
     }
@@ -81,7 +81,7 @@ static void loadConfig() {
     cfg.dns2        = IPAddress(p.getUInt("dns2", 0));
     cfg.tcpToken    = p.getString("token", "");
     cfg.tcpPort     = p.getUShort("port", DEFAULT_TCP_PORT);
-    cfg.wifiExternalAntenna = p.getBool("ant_ext", BOARD.wifi_antenna_switch.enabled);
+    cfg.wifiExternalAntenna = p.getBool("ant_ext", false);
     p.end();
 }
 
