@@ -4,12 +4,23 @@
 
 namespace GPSManager {
 
+struct SatelliteInView {
+    String prn;
+    int16_t elevationDegrees = -1;
+    int16_t azimuthDegrees = -1;
+    float snrDb = -1.0f;
+    bool hasSnr = false;
+};
+
 struct Snapshot {
     bool enabled = false;
     bool seen = false;
     bool fixValid = false;
     uint8_t fixQuality = 0;
     uint8_t satellitesUsed = 0;
+    uint8_t satellitesInViewCount = 0;
+    uint8_t satellitesInViewStored = 0;
+    SatelliteInView satellitesInView[32];
     float latitude = 0.0f;
     float longitude = 0.0f;
     float altitudeM = 0.0f;

@@ -53,7 +53,7 @@ static void scheduleAtgm336hConfig() {
 static void runAtgm336hConfig() {
     static const char* const configCommands[CONFIG_COMMAND_COUNT] = {
         "$PCAS02,1000*2E",              // 1 Hz fixes.
-        "$PCAS03,1,0,0,0,1,0,0,0*02",  // GGA + RMC only.
+        "$PCAS03,1,0,0,1,1,0,0,0*03",  // GGA + GSV + RMC.
     };
 
     if (nextConfigCommand >= CONFIG_COMMAND_COUNT) return;
@@ -194,6 +194,32 @@ static void parseRmc(const String& payload) {
     updateDatetime();
 }
 
+static void parseGsv(const String& payload) {
+    int messageNumber = field(payload, 2).toInt();
+    int satellitesInView = field(payload, 3).toInt();
+    if (satellitesInView >= 0) {
+        current.satellitesInViewCount = (uint8_t)max(0, min(255, satellitesInView));
+    }
+    if (messageNumber == 1) {
+        current.satellitesInViewStored = 0;
+    }
+
+    for (uint8_t idx = 4; idx < 20; idx += 4) {
+        String prn = field(payload, idx);
+        if (prn.length() == 0) continue;
+        if (current.satellitesInViewStored >= 32) break;
+
+        SatelliteInView& sat = current.satellitesInView[current.satellitesInViewStored++];
+        sat.prn = prn;
+        sat.elevationDegrees = (int16_t)field(payload, idx + 1).toInt();
+        sat.azimuthDegrees = (int16_t)field(payload, idx + 2).toInt();
+
+        String snr = field(payload, idx + 3);
+        sat.hasSnr = snr.length() > 0;
+        sat.snrDb = sat.hasSnr ? snr.toFloat() : -1.0f;
+    }
+}
+
 static void parseSentence(String sentence) {
     sentence.trim();
     if (sentence.length() == 0) return;
@@ -223,6 +249,8 @@ static void parseSentence(String sentence) {
 
     if (type == "GGA") {
         parseGga(payload);
+    } else if (type == "GSV") {
+        parseGsv(payload);
     } else if (type == "RMC") {
         parseRmc(payload);
     }
@@ -272,7 +300,7 @@ Snapshot snapshot() {
 String buildJson() {
     Snapshot snap = snapshot();
     String body;
-    body.reserve(512);
+    body.reserve(2048);
     body += F("{\"enabled\":");
     body += snap.enabled ? F("true") : F("false");
     body += F(",\"seen\":");
@@ -292,6 +320,23 @@ String buildJson() {
     body += F("},\"satellites\":{");
     body += F("\"used_count\":");
     body += String(snap.satellitesUsed);
+    body += F(",\"in_view_count\":");
+    body += String(snap.satellitesInViewCount);
+    body += F(",\"in_view\":[");
+    for (uint8_t i = 0; i < snap.satellitesInViewStored; ++i) {
+        const SatelliteInView& sat = snap.satellitesInView[i];
+        if (i > 0) body += ',';
+        body += F("{\"prn\":");
+        body += jsonQuote(sat.prn);
+        body += F(",\"elevation_degrees\":");
+        body += sat.elevationDegrees >= 0 ? String(sat.elevationDegrees) : String("null");
+        body += F(",\"azimuth_degrees\":");
+        body += sat.azimuthDegrees >= 0 ? String(sat.azimuthDegrees) : String("null");
+        body += F(",\"snr_db\":");
+        body += sat.hasSnr ? String(sat.snrDb, 1) : String("null");
+        body += F("}");
+    }
+    body += F("]");
     body += F("},\"time\":{");
     body += F("\"utc_time\":");
     body += snap.utcTime.length() ? jsonQuote(snap.utcTime) : String("null");
