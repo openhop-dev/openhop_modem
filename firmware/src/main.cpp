@@ -206,9 +206,8 @@ static volatile uint32_t dio1IrqCount = 0;
 static bool        radioReady    = false;
 static bool        isTxActive    = false;
 
-// ─── Noise floor sampling (mirrors SX1262Radio._sample_noise_floor) ──
+// ─── Noise floor sampling ────────────────────────────────────
 #define NUM_NOISE_FLOOR_SAMPLES 20
-#define NOISE_SAMPLING_THRESHOLD 10
 static float    noiseFloor       = -99.0f;
 static float    noiseFloorSum    = 0.0f;
 static int      noiseFloorCount  = 0;
@@ -1569,13 +1568,13 @@ void sampleNoiseFloor() {
     if (millis() - lastNoiseSample < 10) return;
     lastNoiseSample = millis();
 
-    if (noiseFloorCount < NUM_NOISE_FLOOR_SAMPLES) {
-        float instRssi = radio.getRSSI();
-        if (instRssi < (noiseFloor + NOISE_SAMPLING_THRESHOLD)) {
-            noiseFloorCount++;
-            noiseFloorSum += instRssi;
-        }
-    } else if (noiseFloorCount >= NUM_NOISE_FLOOR_SAMPLES && noiseFloorSum != 0.0f) {
+    float instRssi = radio.getRSSI();
+    if (instRssi < -150.0f || instRssi > -30.0f) return;
+
+    noiseFloorCount++;
+    noiseFloorSum += instRssi;
+
+    if (noiseFloorCount >= NUM_NOISE_FLOOR_SAMPLES) {
         float newFloor = noiseFloorSum / NUM_NOISE_FLOOR_SAMPLES;
         if (newFloor < -150.0f) newFloor = -150.0f;
         if (newFloor > -50.0f)  newFloor = -50.0f;
