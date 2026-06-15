@@ -108,6 +108,10 @@ inline const BoardConfig BOARD = {
     10,      // pin_protocol_uart_tx
     921600,  // protocol_uart_baud
 
+    -1,    // pin_gps_uart_rx — no GPS UART claimed by this firmware profile
+    -1,    // pin_gps_uart_tx
+    9600,  // gps_uart_baud
+
     {false, BoardConfig::EthernetPhy::NONE, -1, -1, -1, -1, false, false,
      {0, 0, 0, 0}, {0, 0, 0, 0}, {0, 0, 0, 0}, {0, 0, 0, 0}},
 
