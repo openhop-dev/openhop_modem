@@ -664,7 +664,7 @@ static void handleRoot() {
               "label{display:block;margin-top:.8em;font-weight:600}input{width:100%;padding:.55em;box-sizing:border-box;font-size:1em;border:1px solid #ccc;border-radius:6px}"
               "input[type=file]{padding:.3em 0;border:0}input[type=checkbox]{width:auto;margin-right:.45em}"
               ".checkline{display:flex;align-items:center;gap:.35em;margin-top:.8em}button{margin-top:.9em;padding:.6em 1em;background:#2f6f5e;color:#fff;border:0;border-radius:6px;cursor:pointer}"
-              "code{font-family:ui-monospace,SFMono-Regular,monospace;background:#f3f3f3;padding:.1em .35em;border-radius:4px}"
+              "button.danger{background:#b3261e}code{font-family:ui-monospace,SFMono-Regular,monospace;background:#f3f3f3;padding:.1em .35em;border-radius:4px}"
               "@media (max-width:640px){body{padding:0 .75em}}</style></head><body>");
     body += "<h2>" + title + "</h2>";
     body += "<div class='summary'><p><strong>mDNS</strong> " + hostname + ".local</p>";
@@ -748,6 +748,12 @@ static void handleRoot() {
               "<input type='password' name='confirm' autocomplete='new-password' required minlength='1' maxlength='64'>"
               "<button type='submit'>Save password</button>"
               "</form><p class='m'>Password changes take effect on the next request.</p></div></details>");
+
+    body += F("<details><summary>Wi-Fi Setup Mode</summary><div class='inside'>"
+              "<p>Clear the saved modem configuration and reboot into the open <code>LoRa-Modem-XXXX</code> setup AP.</p>"
+              "<form method='POST' action='/wifi-reset' onsubmit=\"return confirm('Clear saved modem configuration and reboot into Wi-Fi setup AP?');\">"
+              "<button class='danger' type='submit'>Enter Wi-Fi Setup Mode</button>"
+              "</form><p class='m'>Use this before moving the modem to a different Wi-Fi network.</p></div></details>");
 
     body += F("<details><summary>Reboot</summary><div class='inside'>"
               "<p>Restart the modem without changing any settings.</p>"
@@ -967,6 +973,18 @@ static void handleApiReboot() {
     sendJson(200, F("{\"status\":\"rebooting\"}"));
     delay(500);
     ESP.restart();
+}
+
+static void handleWifiReset() {
+    if (!checkAuth()) return;
+
+    Serial.printf("[OTA] Wi-Fi setup reset requested by %s\n",
+                  httpServer->client().remoteIP().toString().c_str());
+    sendSimplePage(F("Entering Wi-Fi setup mode"),
+                   F("Entering Wi-Fi setup mode"),
+                   F("Saved modem configuration is being cleared. The modem will reboot into the open LoRa-Modem setup AP."));
+    delay(500);
+    WifiManager::factoryReset();   // does not return
 }
 
 static void handleHostnameSave() {
@@ -1230,6 +1248,7 @@ void begin(const String& hn, const String& tk) {
     httpServer->on("/gps",     HTTP_POST, handleGpsSave);
     httpServer->on("/token",  HTTP_POST, handleTokenSave);
     httpServer->on("/auth",   HTTP_POST, handleAuthSave);
+    httpServer->on("/wifi-reset", HTTP_POST, handleWifiReset);
     httpServer->on("/reboot", HTTP_POST, handleReboot);
     httpServer->on("/update", HTTP_POST, handleUpdateResult, handleUpdateUpload);
     httpServer->onNotFound([]() { httpServer->send(404, "text/plain", "Not found"); });

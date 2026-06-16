@@ -14,7 +14,7 @@ namespace WifiManager {
 static constexpr const char* NVS_NAMESPACE         = "lora_modem";
 static constexpr uint16_t    DEFAULT_TCP_PORT      = 5055;
 static constexpr uint32_t    STA_CONNECT_TIMEOUT_MS = 30000;
-static constexpr uint32_t    PRG_RESET_HOLD_MS     = 3000;
+static constexpr uint32_t    PRG_RESET_HOLD_MS     = 5000;
 static constexpr uint8_t     MAX_HOSTNAME_LEN      = 32;
 
 static Config  cfg;

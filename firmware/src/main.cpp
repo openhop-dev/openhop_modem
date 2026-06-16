@@ -1286,7 +1286,7 @@ void noteTransportFrameError(uint8_t err_code) {
 
 // ─── Setup ───────────────────────────────────────────────────
 void setup() {
-    // PRG held ≥3s at boot → wipe Wi-Fi NVS and reboot. Must come before
+    // PRG held ≥5s at boot → wipe Wi-Fi NVS and reboot. Must come before
     // other init so button sampling is clean.
     WifiManager::checkResetButton();
 
@@ -1646,13 +1646,14 @@ void loop() {
     }
 
     // PRG short-tap: cycle SLEEP → STATUS → RADIO → DIAGNOSTICS → STATUS → …
-    // (Factory reset on 3 s hold-at-boot is handled in setup()/checkResetButton.)
+    // (Wi-Fi setup reset on 5 s hold-at-boot is handled in setup()/checkResetButton.)
     // Boards with pin_user_button < 0 (e.g. ESP32-P4-Nano where the BOOT
     // button shares a pin with RMII Ethernet TXD1) skip polling entirely.
     bool btn = false;
     if (BOARD.pin_user_button >= 0) {
         btn = (digitalRead(BOARD.pin_user_button) == (BOARD.user_button_active_low ? LOW : HIGH));
     }
+
     if (btn && millis() > prgIgnoreUntil) {
         prgIgnoreUntil = millis() + PRG_DEBOUNCE_MS;
         oledWakeUntil  = millis() + OLED_WAKE_DURATION_MS;
