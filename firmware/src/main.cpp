@@ -1568,7 +1568,11 @@ void sampleNoiseFloor() {
     if (millis() - lastNoiseSample < 10) return;
     lastNoiseSample = millis();
 
-    float instRssi = radio.getRSSI();
+    // RadioLib's no-arg SX126x::getRSSI() returns the last packet RSSI.
+    // For ambient/noise telemetry we must read instantaneous RSSI instead;
+    // otherwise a strong RX packet can pin the reported noise floor around
+    // that packet's RSSI until another radio state transition clears it.
+    float instRssi = radio.getRSSI(false);
     if (instRssi < -150.0f || instRssi > -30.0f) return;
 
     noiseFloorCount++;
