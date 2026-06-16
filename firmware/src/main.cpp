@@ -252,6 +252,7 @@ enum class Screen : uint8_t { SLEEP = 0, STATUS = 1, RADIO = 2, DIAGNOSTICS = 3 
 static Screen   currentScreen  = Screen::SLEEP;
 static constexpr uint32_t OLED_WAKE_DURATION_MS = 30000;
 static constexpr uint32_t PRG_DEBOUNCE_MS       = 200;
+static constexpr uint32_t PRG_WIFI_RESET_HOLD_MS = 5000;
 // pyMC splash holds for at least SPLASH_HOLD_MS while setup() runs Wi-Fi /
 // Ethernet / radio init in parallel. End-of-setup waits out any remainder.
 static constexpr uint32_t SPLASH_HOLD_MS        = 5000;
@@ -261,6 +262,9 @@ static constexpr uint32_t SPLASH_HOLD_MS        = 5000;
 static constexpr uint32_t SCREEN_AUTO_CYCLE_MS  = 4000;
 static uint32_t oledWakeUntil    = 0;
 static uint32_t prgIgnoreUntil   = 0;
+static uint32_t prgPressedSince  = 0;
+static bool     prgWasPressed    = false;
+static bool     prgLongHandled   = false;
 static uint32_t splashStartedMs  = 0;
 static uint32_t lastAutoCycleMs  = 0;
 
@@ -1645,33 +1649,59 @@ void loop() {
         otaStarted = true;
     }
 
-    // PRG short-tap: cycle SLEEP → STATUS → RADIO → DIAGNOSTICS → STATUS → …
-    // (Factory reset on 3 s hold-at-boot is handled in setup()/checkResetButton.)
+    // PRG/BOOT button:
+    //   short tap       → cycle SLEEP → STATUS → RADIO → DIAGNOSTICS
+    //   runtime 5s hold → wipe saved Wi-Fi/config and reboot into AP setup
+    //   boot 3s hold    → same wipe/reboot, handled in setup()/checkResetButton()
     // Boards with pin_user_button < 0 (e.g. ESP32-P4-Nano where the BOOT
     // button shares a pin with RMII Ethernet TXD1) skip polling entirely.
     bool btn = false;
     if (BOARD.pin_user_button >= 0) {
         btn = (digitalRead(BOARD.pin_user_button) == (BOARD.user_button_active_low ? LOW : HIGH));
     }
-    if (btn && millis() > prgIgnoreUntil) {
+
+    if (btn && !prgWasPressed) {
+        prgPressedSince = millis();
+        prgLongHandled = false;
+        prgWasPressed = true;
+    }
+
+    if (btn && !prgLongHandled &&
+        millis() - prgPressedSince >= PRG_WIFI_RESET_HOLD_MS) {
+        prgLongHandled = true;
+        Serial.println("[WiFi] PRG long hold -> reset Wi-Fi config and reboot to AP setup");
+        if (currentScreen == Screen::SLEEP) oled.turnOn();
+        oled.showError("Wi-Fi reset");
+        delay(250);
+        WifiManager::factoryReset();   // does not return
+    }
+
+    if (!btn && prgWasPressed) {
+        bool shortTap = !prgLongHandled &&
+                        millis() - prgPressedSince >= PRG_DEBOUNCE_MS &&
+                        millis() > prgIgnoreUntil;
+        prgWasPressed = false;
         prgIgnoreUntil = millis() + PRG_DEBOUNCE_MS;
-        oledWakeUntil  = millis() + OLED_WAKE_DURATION_MS;
-        switch (currentScreen) {
-            case Screen::SLEEP:
-                oled.turnOn();
-                currentScreen = Screen::STATUS;
-                break;
-            case Screen::STATUS:
-                currentScreen = Screen::RADIO;
-                break;
-            case Screen::RADIO:
-                currentScreen = Screen::DIAGNOSTICS;
-                break;
-            case Screen::DIAGNOSTICS:
-                currentScreen = Screen::STATUS;
-                break;
+
+        if (shortTap) {
+            oledWakeUntil  = millis() + OLED_WAKE_DURATION_MS;
+            switch (currentScreen) {
+                case Screen::SLEEP:
+                    oled.turnOn();
+                    currentScreen = Screen::STATUS;
+                    break;
+                case Screen::STATUS:
+                    currentScreen = Screen::RADIO;
+                    break;
+                case Screen::RADIO:
+                    currentScreen = Screen::DIAGNOSTICS;
+                    break;
+                case Screen::DIAGNOSTICS:
+                    currentScreen = Screen::STATUS;
+                    break;
+            }
+            lastOledUpdate = 0;  // force immediate refresh on next render pass
         }
-        lastOledUpdate = 0;  // force immediate refresh on next render pass
     }
 
     // Auto-cycle for boards without a working user button. Keeps the
