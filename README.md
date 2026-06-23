@@ -48,10 +48,10 @@ Raspberry Pi                                  pymc_modem modem
 ```
 
 - **USB mode** — cable, instant, no provisioning; ideal for single-board setups.
-- **Wi-Fi/TCP mode** — no cable; modem can live anywhere on the LAN while the
-  Pi sits elsewhere. Provisioned once via on-device AP portal (open AP
-  `LoRa-Modem-XXXX` → `http://192.168.4.1`) or over USB with
-  `USBLoRaRadio.set_wifi_credentials()`.
+- **Network TCP mode** — Wi-Fi/TCP on ESP32 boards, or Ethernet/TCP on wired
+  targets (P4-Nano, RAK4631). Wi-Fi boards are provisioned via AP portal or
+  USB; RAK4631 uses compile-time Ethernet settings (`PYMC_ETH_*` in
+  `platformio.ini`).
 
 ## Project layout
 
