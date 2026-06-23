@@ -36,7 +36,7 @@ static const uint8_t WB_SPI_MOSI = 30;
 
 #define PINS_COUNT (48)
 #define NUM_DIGITAL_PINS (48)
-#define NUM_ANALOG_INPUTS (6)
+#define NUM_ANALOG_INPUTS (0)
 #define NUM_ANALOG_OUTPUTS (0)
 
 #define PIN_LED1 (35)
@@ -47,28 +47,10 @@ static const uint8_t WB_SPI_MOSI = 30;
 #define LED_BLUE PIN_LED2
 #define LED_STATE_ON 1
 
-#define PIN_A0 (5)
-#define PIN_A1 (31)
-#define PIN_A2 (28)
-#define PIN_A3 (29)
-#define PIN_A4 (30)
-#define PIN_A5 (31)
-#define PIN_A6 (0xff)
-#define PIN_A7 (0xff)
-static const uint8_t A0 = PIN_A0;
-static const uint8_t A1 = PIN_A1;
-static const uint8_t A2 = PIN_A2;
-static const uint8_t A3 = PIN_A3;
-static const uint8_t A4 = PIN_A4;
-static const uint8_t A5 = PIN_A5;
-static const uint8_t A6 = PIN_A6;
-static const uint8_t A7 = PIN_A7;
 #define ADC_RESOLUTION 14
 
-#define PIN_AREF (2)
 #define PIN_NFC1 (9)
 #define PIN_NFC2 (10)
-static const uint8_t AREF = PIN_AREF;
 
 #define PIN_SERIAL1_RX (15)
 #define PIN_SERIAL1_TX (16)
