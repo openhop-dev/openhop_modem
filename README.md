@@ -21,6 +21,7 @@ Ethernet) wired LAN.
 | **B&Q Consulting Station G2**                                                                                | ESP32-S3                     | SX1262 + 35 dBm PA/LNA     | Wi-Fi    |
 | **WaveShare ESP32-P4-Nano**                                                                                 | ESP32-P4 (RISC-V) + ESP32-C6 | E22 (off-board, optional)  | **Ethernet *or* Wi-Fi** — runtime auto-select: cable plugged → Ethernet wins, no link → fall back to Wi-Fi via C6 SDIO bridge. Both at once is unstable with the radio attached, see [P4-Nano notes](#porting-to-another-esp32-p4-board) |
 | **Heltec T114**                                                                                             | nRF52840                     | bare SX1262 + TFT 135×240  | **none** — USB-CDC + UART only |
+| **RAK4631 WisMesh Ethernet**                                                                                | nRF52840 (RAK4631) + RAK13800/W5100S | SX1262 in-module     | **Ethernet** (W5100S) — TCP port 5055, USB-CDC fallback |
 | **Seeed XIAO nRF52840 + Wio-SX1262**                                                                        | XIAO nRF52840                | bare SX1262                | **none** — USB-CDC only |
 
 Drop-in replacement for `SX1262Radio` in pymc_core — all MeshCore logic
@@ -110,6 +111,7 @@ Per-board highlights (full pin numbers in the headers, mDNS prefix is
 - **Station G2** — SX1262 + high-power PA/LNA, SH1107 display currently disabled, max SX1262 drive capped at 19 dBm.
 - **WaveShare ESP32-P4-Nano** — RISC-V P4 + C6 + IP101GRI Ethernet PHY + off-board E22, runtime ETH-or-Wi-Fi (never both, see below).
 - **Heltec T114** — nRF52840 + bare SX1262 + ST7789 TFT 135×240, **no Wi-Fi/TCP/network OTA**; USB-CDC + UART transport only, OTA via Adafruit nRF52 DFU (USB) or in-app `CMD_OTA_*` over the protocol transport.
+- **RAK4631 WisMesh Ethernet** — RAK4631 nRF52840 core module + RAK13800 W5100S Ethernet on the WisBlock IO slot. Separate SPIM instances for Ethernet (SPIM3) and LoRa (SPIM2). No display, no Wi-Fi. The TCP server on port 5055 is the primary transport; USB-CDC is available as a fallback. TCP token, port and hostname are compile-time constants (`PYMC_ETH_*` in `platformio.ini`). The hostname is stored for status reporting only — the W5100S library does not support DHCP option 12, so the DHCP lease does not carry a hostname.
 - **Seeed XIAO nRF52840 + Wio-SX1262** (SKU 102010710) — XIAO nRF52840 + bare SX1262 on the Wio-SX1262 carrier, BLE 5.0 hardware unused, **no Wi-Fi/TCP/network OTA**, no display; native USB-CDC transport only, OTA via Adafruit nRF52 DFU (UF2 disk on double-click reset) or in-app `CMD_OTA_*`.
 
 ### E22P RF switch (Ikoka, P4-Nano + E22P)
