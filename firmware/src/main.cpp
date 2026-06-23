@@ -42,13 +42,11 @@
 #  include "runtime_stats.h"
 #  include "gps_manager.h"
 #else
-// nRF52 (Heltec T114) build: the network / OLED / OTA managers are
-// excluded from the build via platformio.ini's build_src_filter.
-// Provide drop-in stub namespaces + an empty OledDisplay class so
-// the existing call sites in main.cpp compile unchanged. All
-// methods are no-ops and isSTAConnected() / hasIP() / etc. always
-// return false, so the runtime branches that gate on network
-// state simply skip.
+// nRF52 builds exclude the ESP32 Wi-Fi/OTA/display managers via
+// platformio.ini's build_src_filter. Most nRF52 targets are
+// USB/UART-only; RAK4631 enables a separate W5100S Ethernet TCP
+// transport under PYMC_ETHERNET_W5100S. Provide drop-in stub
+// namespaces for the rest so call sites compile unchanged.
 #include <IPAddress.h>
 #if defined(PYMC_ETHERNET_W5100S)
 #  ifndef PYMC_ETH_TCP_PORT

@@ -58,7 +58,7 @@ Raspberry Pi                                  pymc_modem modem
 - **`firmware/`** — PlatformIO tree, thirteen envs sharing one source.
   Each board lives in `include/boards/<env>.h`; `platformio.ini` picks
   one via `-DBOARD_<NAME>`. Prebuilt artifacts (ESP32: `bootloader.bin
-  / partitions.bin / firmware.bin`; nRF52 T114: `firmware.hex` +
+  / partitions.bin / firmware.bin`; nRF52: `firmware.hex` +
   Adafruit DFU `firmware.zip`) live in `firmware/<env>/`.
 - **`pymc_driver/`** — Python drivers `usb_radio.py` / `tcp_radio.py` +
   shared `protocol_constants.py`. **Since 2026-05-13 these ship in

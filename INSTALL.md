@@ -92,13 +92,14 @@ release RESET, release BOOT.
 
 ### 1c. OTA over the network (after the first flash, no cable)
 
-**Only ESP32-family boards with Wi-Fi** support network OTA. The
-nRF52 targets (`heltec_t114`, `xiao_nrf52_wio`, `rak4631_wismesh_eth`)
+**Only ESP32-family targets with the OTA/HTTP stack** support network
+OTA. nRF52 targets (`heltec_t114`, `xiao_nrf52_wio`, `rak4631_wismesh_eth`)
 must be flashed via USB with `pio run -e <env> -t upload` (Adafruit
-nRF52 DFU). The `rak4631_wismesh_eth` target has Ethernet but no
-OTA/HTTP stack — the `OTAManager` stub is a no-op.
+nRF52 DFU). The `rak4631_wismesh_eth` target has Ethernet for pyMC TCP
+only — it has no HTTP/OTA stack, and the `OTAManager` stub is a no-op.
 
-Once the board is on the LAN (Wi-Fi STA or Ethernet) and visible via mDNS:
+Once the board is on the LAN (Wi-Fi STA or Ethernet — ESP32 only) and
+visible via mDNS:
 
 ```bash
 cd firmware
