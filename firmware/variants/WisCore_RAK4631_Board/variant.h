@@ -2,10 +2,10 @@
   Minimal RAK4631 variant for pyMC_modem.
   Based on RAKWireless/RAK-nRF52-Arduino variants/WisCore_RAK4631_Board.
 */
-#ifndef _VARIANT_RAK4630_PYMC_
-#define _VARIANT_RAK4630_PYMC_
+#ifndef _VARIANT_RAK4631_PYMC_
+#define _VARIANT_RAK4631_PYMC_
 
-#define RAK4630
+#define RAK4631
 #define VARIANT_MCK (64000000ul)
 #define USE_LFXO
 
