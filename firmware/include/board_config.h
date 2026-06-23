@@ -188,6 +188,11 @@ struct BoardConfig {
     int8_t   pin_gps_uart_rx = -1;
     int8_t   pin_gps_uart_tx = -1;
     uint32_t gps_uart_baud = 9600;
+    int8_t   pin_gps_enable = -1;       // optional GPS/GNSS power-enable GPIO
+    bool     gps_enable_active_high = true;
+    int8_t   pin_gps_reset = -1;        // optional GPS reset GPIO
+    bool     gps_reset_active_high = false;
+    bool     gps_send_casic_config = true; // false for modules/boards that should be left at defaults
 
     // ─── On-board Ethernet (RMII PHY) ───────────────────────
     // Set ethernet.enabled = true on boards with an internal EMAC +
@@ -235,6 +240,10 @@ extern const BoardConfig BOARD;
 #  include "boards/heltec_v3.h"
 #elif defined(BOARD_HELTEC_V4)
 #  include "boards/heltec_v4.h"
+#elif defined(BOARD_HELTEC_V42)
+#  include "boards/heltec_v42.h"
+#elif defined(BOARD_HELTEC_V43)
+#  include "boards/heltec_v43.h"
 #elif defined(BOARD_IKOKA_STICK)
 #  include "boards/ikoka_stick.h"
 #elif defined(BOARD_LILYGO_T3S3)
@@ -256,5 +265,5 @@ extern const BoardConfig BOARD;
 #elif defined(BOARD_STATION_G2)
 #  include "boards/station_g2.h"
 #else
-#  error "No board selected — add one of -DBOARD_HELTEC_V3 / -DBOARD_HELTEC_V4 / -DBOARD_IKOKA_STICK / -DBOARD_LILYGO_T3S3 / -DBOARD_RAK3112_WISMESH / -DBOARD_ESP32_P4_NANO / -DBOARD_HELTEC_T114 / -DBOARD_HELTEC_TRACKER_V2 / -DBOARD_XIAO_WIO_SX1262 / -DBOARD_PHOTON_1W_XIAO_ESP32C6 / -DBOARD_XIAO_NRF52_WIO / -DBOARD_STATION_G2 to platformio.ini build_flags"
+#  error "No board selected — add one of -DBOARD_HELTEC_V3 / -DBOARD_HELTEC_V4 / -DBOARD_HELTEC_V42 / -DBOARD_HELTEC_V43 / -DBOARD_IKOKA_STICK / -DBOARD_LILYGO_T3S3 / -DBOARD_RAK3112_WISMESH / -DBOARD_ESP32_P4_NANO / -DBOARD_HELTEC_T114 / -DBOARD_HELTEC_TRACKER_V2 / -DBOARD_XIAO_WIO_SX1262 / -DBOARD_PHOTON_1W_XIAO_ESP32C6 / -DBOARD_XIAO_NRF52_WIO / -DBOARD_STATION_G2 to platformio.ini build_flags"
 #endif

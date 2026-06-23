@@ -111,6 +111,11 @@ inline const BoardConfig BOARD = {
     -1,    // pin_gps_uart_rx — no GPS UART claimed by this firmware profile
     -1,    // pin_gps_uart_tx
     9600,  // gps_uart_baud
+    -1,    // pin_gps_enable
+    true,  // gps_enable_active_high
+    -1,    // pin_gps_reset
+    false, // gps_reset_active_high
+    true,  // gps_send_casic_config
 
     {false, BoardConfig::EthernetPhy::NONE, -1, -1, -1, -1, false, false,
      {0, 0, 0, 0}, {0, 0, 0, 0}, {0, 0, 0, 0}, {0, 0, 0, 0}},

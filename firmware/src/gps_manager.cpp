@@ -18,6 +18,41 @@ static size_t nextConfigCommand = CONFIG_COMMAND_COUNT;
 
 #ifdef ARDUINO_ARCH_ESP32
 static HardwareSerial& gpsSerial = Serial1;
+
+static int gpsActiveLevel(bool activeHigh) {
+    return activeHigh ? HIGH : LOW;
+}
+
+static int gpsInactiveLevel(bool activeHigh) {
+    return activeHigh ? LOW : HIGH;
+}
+
+static void setGpsPower(bool on) {
+    if (BOARD.pin_gps_enable < 0) return;
+    pinMode(BOARD.pin_gps_enable, OUTPUT);
+    digitalWrite(BOARD.pin_gps_enable,
+                 on ? gpsActiveLevel(BOARD.gps_enable_active_high)
+                    : gpsInactiveLevel(BOARD.gps_enable_active_high));
+}
+
+static void setGpsReset(bool active) {
+    if (BOARD.pin_gps_reset < 0) return;
+    pinMode(BOARD.pin_gps_reset, OUTPUT);
+    digitalWrite(BOARD.pin_gps_reset,
+                 active ? gpsActiveLevel(BOARD.gps_reset_active_high)
+                        : gpsInactiveLevel(BOARD.gps_reset_active_high));
+}
+
+static void releaseGpsReset() {
+    setGpsReset(false);
+}
+
+static void pulseGpsReset() {
+    if (BOARD.pin_gps_reset < 0) return;
+    setGpsReset(true);
+    delay(10);
+    releaseGpsReset();
+}
 #endif
 
 static String jsonEscape(const String& value) {
@@ -308,17 +343,28 @@ void setEnabled(bool enabled) {
 
     if (enabled) {
         resetRuntimeFields();
+        setGpsPower(true);
+        releaseGpsReset();
+        pulseGpsReset();
+        delay(50);
         gpsSerial.begin(BOARD.gps_uart_baud, SERIAL_8N1, BOARD.pin_gps_uart_rx, BOARD.pin_gps_uart_tx);
         current.enabled = true;
-        Serial.printf("[GPS] UART GPS enabled on RX=%d TX=%d baud=%lu\n",
+        Serial.printf("[GPS] UART GPS enabled on RX=%d TX=%d baud=%lu EN=%d RST=%d\n",
                       BOARD.pin_gps_uart_rx, BOARD.pin_gps_uart_tx,
-                      (unsigned long)BOARD.gps_uart_baud);
-        scheduleAtgm336hConfig();
+                      (unsigned long)BOARD.gps_uart_baud,
+                      BOARD.pin_gps_enable, BOARD.pin_gps_reset);
+        if (BOARD.gps_send_casic_config) {
+            scheduleAtgm336hConfig();
+        } else {
+            nextConfigCommand = CONFIG_COMMAND_COUNT;
+        }
     } else {
         gpsSerial.end();
         current.enabled = false;
         nextConfigCommand = CONFIG_COMMAND_COUNT;
         resetRuntimeFields();
+        setGpsReset(true);
+        setGpsPower(false);
         Serial.println("[GPS] UART GPS disabled");
     }
 #else
@@ -424,6 +470,10 @@ String buildJson() {
     body += String(BOARD.pin_gps_uart_tx);
     body += F(",\"uart_baud\":");
     body += String(BOARD.gps_uart_baud);
+    body += F(",\"enable_pin\":");
+    body += String(BOARD.pin_gps_enable);
+    body += F(",\"reset_pin\":");
+    body += String(BOARD.pin_gps_reset);
     body += F(",\"age_ms\":");
     body += snap.lastUpdateMs ? String((uint32_t)(millis() - snap.lastUpdateMs)) : String("null");
     body += F("}}");
