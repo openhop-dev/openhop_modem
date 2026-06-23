@@ -91,10 +91,10 @@
 #endif
 
 #if defined(ARDUINO_ARCH_NRF52) || defined(NRF52_SERIES) || defined(ARDUINO_NRF52_ADAFRUIT)
-// Match the official MeshCore RAK4631 Ethernet implementation: keep
-// RAK13800/W5100S on its own nRF SPIM instance using the WisBlock IO-slot
-// pins. The SX1262 LoRa radio uses a separate SPIM instance in main.cpp.
-static SPIClass PymcEthSpi(NRF_SPIM1, PYMC_ETH_SPI_MISO,
+// W5100S Ethernet on SPIM3 (SPIM1 is reserved for I2C/TWI by the Adafruit
+// nRF52 BSP — see nrfx_config.h). The SX1262 LoRa radio uses SPIM2 in
+// main.cpp. Both use the WisBlock IO-slot pins defined in the board header.
+static SPIClass PymcEthSpi(NRF_SPIM3, PYMC_ETH_SPI_MISO,
                            PYMC_ETH_SPI_SCK, PYMC_ETH_SPI_MOSI);
 
 // RAK19018 PoE can brown out if WB_IO2 is not asserted early enough. The
