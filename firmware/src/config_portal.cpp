@@ -2,6 +2,7 @@
 // config_portal.cpp — HTML setup form served in AP mode
 // =============================================================
 #include "config_portal.h"
+#include "rf_frontend.h"
 #include "wifi_manager.h"
 
 #include <WebServer.h>
@@ -112,6 +113,15 @@ static void handleRoot() {
         html += F("> Use external Wi-Fi antenna</label>");
     }
 
+    if (RFFrontEnd::hasHeltecV43LnaControl()) {
+        html += F("<label><input type='checkbox' name='v43_lna_on' value='1'");
+        if (RFFrontEnd::isExternalLnaEnabled()) html += F(" checked");
+        html += F("> Enable Heltec V4.3 external FEM RX LNA <span class='hint'>(unchecked = bypass LNA for lower noise floor)</span></label>");
+        html += F("<label>agc.reset.interval seconds <span class='hint'>(0 disables; periodically resets AGC during long idle periods)</span><input name='agc_reset_interval_sec' type='number' min='0' max='3600' step='1' value='");
+        html += String(RFFrontEnd::getAgcResetIntervalSec());
+        html += F("'></label>");
+    }
+
     html += F("<label><input type='checkbox' name='static' value='1'");
     if (cfg.useStaticIP) html += F(" checked");
     html += F("> Use static IP (otherwise DHCP)</label>");
@@ -161,6 +171,12 @@ static void handleSave() {
     newCfg.wifiExternalAntenna = WifiManager::hasWifiAntennaSwitch()
                                     ? server->hasArg("wifi_ant_ext")
                                     : false;
+    if (RFFrontEnd::hasHeltecV43LnaControl()) {
+        RFFrontEnd::setFemLnaBypassed(!server->hasArg("v43_lna_on"), true);
+        uint32_t sec = (uint32_t)server->arg("agc_reset_interval_sec").toInt();
+        if (sec > 3600U) sec = 3600U;
+        RFFrontEnd::setAgcResetIntervalSec((uint16_t)sec, true);
+    }
     newCfg.useStaticIP = server->hasArg("static");
     newCfg.staticIP    = parseIP(server->arg("ip"));
     newCfg.gateway     = parseIP(server->arg("gw"));

@@ -20,6 +20,7 @@
 #include "board_config.h"
 #include "frame_parser.h"
 #include "compat.h"
+#include "rf_frontend.h"
 #if defined(BOARD_HELTEC_T114)
 #  include "node_state.h"
 #endif
@@ -213,6 +214,7 @@ static float    noiseFloorSum    = 0.0f;
 static int      noiseFloorCount  = 0;
 static uint32_t lastPacketTime   = 0;
 static uint32_t lastNoiseSample  = 0;
+static uint32_t lastAgcResetMs   = 0;
 
 // ─── CAD parameters (set by host via CMD_SET_CAD_PARAMS) ─────
 // When cadCustom == false we call scanChannel() with RadioLib's defaults;
@@ -449,6 +451,7 @@ static void configureStaticGpios() {
         pinMode(gpio.pin, OUTPUT);
         digitalWrite(gpio.pin, gpio.level_high ? HIGH : LOW);
     }
+    RFFrontEnd::begin();
 }
 
 static void rfSwitchConfigureRadio() {
@@ -1588,6 +1591,35 @@ void sampleNoiseFloor() {
     }
 }
 
+void maybeResetAgc() {
+    if (!radioReady || radioStandby || isTxActive) return;
+    if (!RFFrontEnd::hasHeltecV43LnaControl()) return;
+    uint16_t intervalSec = RFFrontEnd::getAgcResetIntervalSec();
+    if (intervalSec == 0) return;
+
+    uint32_t now = millis();
+    uint32_t intervalMs = (uint32_t)intervalSec * 1000U;
+    if (lastAgcResetMs == 0) {
+        lastAgcResetMs = now;
+        return;
+    }
+    if ((uint32_t)(now - lastAgcResetMs) < intervalMs) return;
+    if ((uint32_t)(now - lastPacketTime) < 500) return;
+    if (dio1Flag) return;
+
+    // Heltec V4.3 can clamp its apparent noise floor after strong
+    // out-of-band interference. A brief RX restart mirrors the
+    // agc.reset.interval behaviour used by LoRa firmwares such as
+    // MeshCore/Meshtastic without disturbing TX or packet IRQ handling.
+    radio.standby();
+    delay(2);
+    startReceive();
+    lastAgcResetMs = now;
+    noiseFloorSum = 0.0f;
+    noiseFloorCount = 0;
+    LOG_R_INFO("agc.reset.interval fired after %u s", (unsigned)intervalSec);
+}
+
 // ─── Main loop ───────────────────────────────────────────────
 void loop() {
     // Track per-iteration time for watchdog-bait detection. Stored as
@@ -1629,6 +1661,7 @@ void loop() {
 #endif
 
     sampleNoiseFloor();
+    maybeResetAgc();
     if (BOARD.has_wifi) WifiManager::loop();
     EthernetManager::loop();
 

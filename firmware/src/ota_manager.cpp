@@ -7,6 +7,7 @@
 #include "ethernet_manager.h"
 #include "gps_manager.h"
 #include "net_filter.h"
+#include "rf_frontend.h"
 #include "runtime_stats.h"
 #include "tcp_server.h"
 #include "wifi_manager.h"
@@ -75,6 +76,7 @@ static bool saveHttpPassword(const String& password) {
 static void sendSimplePage(const __FlashStringHelper* title,
                            const __FlashStringHelper* heading,
                            const __FlashStringHelper* message) {
+    String messageStr(message);
     String body = F("<!DOCTYPE html><html><head><meta charset='utf-8'>"
                     "<meta name='viewport' content='width=device-width,initial-scale=1'>"
                     "<title>");
@@ -85,7 +87,25 @@ static void sendSimplePage(const __FlashStringHelper* title,
               "<h2>");
     body += String(heading);
     body += F("</h2><p>");
-    body += String(message);
+    body += messageStr;
+    body += F("</p><p><a href='/'>Back to OTA page</a></p></body></html>");
+    httpServer->send(200, "text/html; charset=utf-8", body);
+}
+
+static void sendSimplePage(const __FlashStringHelper* title,
+                           const __FlashStringHelper* heading,
+                           const String& message) {
+    String body = F("<!DOCTYPE html><html><head><meta charset='utf-8'>"
+                    "<meta name='viewport' content='width=device-width,initial-scale=1'>"
+                    "<title>");
+    body += String(title);
+    body += F("</title></head>"
+              "<body style='font-family:system-ui,sans-serif;max-width:540px;"
+              "margin:2em auto;padding:0 1em;color:#222'>"
+              "<h2>");
+    body += String(heading);
+    body += F("</h2><p>");
+    body += message;
     body += F("</p><p><a href='/'>Back to OTA page</a></p></body></html>");
     httpServer->send(200, "text/html; charset=utf-8", body);
 }
@@ -292,6 +312,14 @@ static String buildRadioJson(const RuntimeStats::Snapshot& snap) {
     body += String(snap.radio.syncword);
     body += F(",\"preamble_len\":");
     body += String(snap.radio.preamble_len);
+    if (RFFrontEnd::hasHeltecV43LnaControl()) {
+        body += F(",\"heltec_v43_external_lna_enabled\":");
+        body += boolJson(RFFrontEnd::isExternalLnaEnabled());
+        body += F(",\"heltec_v43_fem_lna_bypassed\":");
+        body += boolJson(RFFrontEnd::isFemLnaBypassed());
+        body += F(",\"agc_reset_interval_sec\":");
+        body += String(RFFrontEnd::getAgcResetIntervalSec());
+    }
     body += F("}");
     return body;
 }
@@ -386,6 +414,14 @@ static String buildConfigJson(const WifiManager::Config& cfg) {
     if (WifiManager::hasWifiAntennaSwitch()) {
         body += F(",\"wifi_external_antenna\":");
         body += boolJson(cfg.wifiExternalAntenna);
+    }
+    if (RFFrontEnd::hasHeltecV43LnaControl()) {
+        body += F(",\"heltec_v43_external_lna_enabled\":");
+        body += boolJson(RFFrontEnd::isExternalLnaEnabled());
+        body += F(",\"heltec_v43_fem_lna_bypassed\":");
+        body += boolJson(RFFrontEnd::isFemLnaBypassed());
+        body += F(",\"agc_reset_interval_sec\":");
+        body += String(RFFrontEnd::getAgcResetIntervalSec());
     }
     body += F(",\"gps_enabled\":");
     body += boolJson(cfg.gpsEnabled);
@@ -526,6 +562,43 @@ static bool applyConfigPatch(JsonVariantConst root, WifiManager::Config& cfg, St
         cfg.gpsEnabled = gpsVal.as<bool>();
     }
 
+    JsonVariantConst lnaVal = obj["heltec_v43_external_lna_enabled"];
+    if (!lnaVal.isNull()) {
+        if (!RFFrontEnd::hasHeltecV43LnaControl()) {
+            error = "heltec_v43_external_lna_enabled is not supported on this board.";
+            return false;
+        }
+        if (!lnaVal.is<bool>()) {
+            error = "heltec_v43_external_lna_enabled must be true or false.";
+            return false;
+        }
+        if (!RFFrontEnd::setFemLnaBypassed(!lnaVal.as<bool>(), true)) {
+            error = "failed to save Heltec V4.3 LNA setting.";
+            return false;
+        }
+    }
+
+    JsonVariantConst agcVal = obj["agc_reset_interval_sec"];
+    if (!agcVal.isNull()) {
+        if (!RFFrontEnd::hasHeltecV43LnaControl()) {
+            error = "agc_reset_interval_sec is not supported on this board.";
+            return false;
+        }
+        if (!agcVal.is<unsigned int>()) {
+            error = "agc_reset_interval_sec must be an integer from 0 to 3600.";
+            return false;
+        }
+        uint32_t sec = agcVal.as<uint32_t>();
+        if (sec > 3600U) {
+            error = "agc_reset_interval_sec must be between 0 and 3600.";
+            return false;
+        }
+        if (!RFFrontEnd::setAgcResetIntervalSec((uint16_t)sec, true)) {
+            error = "failed to save agc.reset.interval setting.";
+            return false;
+        }
+    }
+
     JsonVariantConst networkVal = obj["network"];
     if (!networkVal.isNull()) {
         if (!networkVal.is<JsonObjectConst>()) {
@@ -560,6 +633,43 @@ static bool applyConfigPatch(JsonVariantConst root, WifiManager::Config& cfg, St
                 return false;
             }
             cfg.wifiExternalAntenna = antennaVal.as<bool>();
+        }
+
+        JsonVariantConst lnaVal = network["heltec_v43_external_lna_enabled"];
+        if (!lnaVal.isNull()) {
+            if (!RFFrontEnd::hasHeltecV43LnaControl()) {
+                error = "network.heltec_v43_external_lna_enabled is not supported on this board.";
+                return false;
+            }
+            if (!lnaVal.is<bool>()) {
+                error = "network.heltec_v43_external_lna_enabled must be true or false.";
+                return false;
+            }
+            if (!RFFrontEnd::setFemLnaBypassed(!lnaVal.as<bool>(), true)) {
+                error = "failed to save Heltec V4.3 LNA setting.";
+                return false;
+            }
+        }
+
+        JsonVariantConst agcVal = network["agc_reset_interval_sec"];
+        if (!agcVal.isNull()) {
+            if (!RFFrontEnd::hasHeltecV43LnaControl()) {
+                error = "network.agc_reset_interval_sec is not supported on this board.";
+                return false;
+            }
+            if (!agcVal.is<unsigned int>()) {
+                error = "network.agc_reset_interval_sec must be an integer from 0 to 3600.";
+                return false;
+            }
+            uint32_t sec = agcVal.as<uint32_t>();
+            if (sec > 3600U) {
+                error = "network.agc_reset_interval_sec must be between 0 and 3600.";
+                return false;
+            }
+            if (!RFFrontEnd::setAgcResetIntervalSec((uint16_t)sec, true)) {
+                error = "failed to save agc.reset.interval setting.";
+                return false;
+            }
         }
     }
 
@@ -716,6 +826,21 @@ static void handleRoot() {
     }
     body += F("<button type='submit'>Save network settings</button></form></div></details>");
 
+    if (RFFrontEnd::hasHeltecV43LnaControl()) {
+        body += F("<details open><summary>Heltec V4.3 RF Front-End</summary><div class='inside'>"
+                  "<p>Toggle the KCT8103L external RX LNA. The default/recommended setting bypasses the FEM LNA and keeps SX1262 boosted RX gain enabled for a lower noise floor.</p>"
+                  "<form method='POST' action='/rf-lna'>"
+                  "<div class='checkline'><input type='checkbox' id='v43_lna_on' name='v43_lna_on' value='1'");
+        if (RFFrontEnd::isExternalLnaEnabled()) body += F(" checked");
+        body += F("><label for='v43_lna_on'>Enable external FEM RX LNA</label></div>");
+        body += F("<label>agc.reset.interval (seconds, 0 disables)<input name='agc_reset_interval_sec' type='number' min='0' max='3600' step='1' value='");
+        body += String(RFFrontEnd::getAgcResetIntervalSec());
+        body += F("'></label>"
+                  "<p class='m'>Periodically restarts RX gain control during long idle periods to prevent strong out-of-band interference from clamping the noise floor.</p>"
+                  "<button type='submit'>Save RF front-end settings</button>"
+                  "</form><p class='m'>Settings apply immediately and persist across reboots. Unchecked LNA = GPIO5/CTX HIGH, external LNA bypassed.</p></div></details>");
+    }
+
     if (GPSManager::hasGpsPins()) {
         body += F("<details open><summary>GPS</summary><div class='inside'>"
                   "<p>Turn the onboard GPS receiver interface on only when location data is needed. Default is off to save battery.</p>"
@@ -855,6 +980,10 @@ static void handleStats() {
     if (WifiManager::hasWifiAntennaSwitch()) {
         body += "<div class='kv'><span class='k'>Wi-Fi antenna</span><span class='v'>" +
                 String(cfg.wifiExternalAntenna ? "External" : "Internal") + "</span></div>";
+    }
+    if (RFFrontEnd::hasHeltecV43LnaControl()) {
+        body += "<div class='kv'><span class='k'>Heltec V4.3 external LNA</span><span class='v'>" +
+                String(RFFrontEnd::isExternalLnaEnabled() ? "Enabled" : "Bypassed") + "</span></div>";
     }
     body += "<div class='kv'><span class='k'>Gateway</span><span class='v'>" + ((uint32_t)net.gateway != 0 ? net.gateway.toString() : String("none")) + "</span></div>";
     body += "<div class='kv'><span class='k'>Subnet</span><span class='v'>" + ((uint32_t)net.subnet != 0 ? net.subnet.toString() : String("none")) + "</span></div>";
@@ -1077,6 +1206,47 @@ static void handleGpsSave() {
                        : F("The GPS UART is disabled and the setting has been saved."));
 }
 
+
+static void handleRfLnaSave() {
+    if (!checkAuth()) return;
+
+    if (!RFFrontEnd::hasHeltecV43LnaControl()) {
+        httpServer->send(400, "text/plain", "Heltec V4.3 LNA control is not supported on this board.\n");
+        return;
+    }
+
+    bool enableExternalLna = httpServer->hasArg("v43_lna_on");
+    bool ok = RFFrontEnd::setFemLnaBypassed(!enableExternalLna, true);
+    if (!ok) {
+        httpServer->send(500, "text/plain", "Failed to save Heltec V4.3 LNA setting.\n");
+        return;
+    }
+
+    String agcRaw = httpServer->arg("agc_reset_interval_sec");
+    agcRaw.trim();
+    uint32_t agcIntervalSec = agcRaw.length() > 0 ? (uint32_t)agcRaw.toInt() : 0;
+    if (agcIntervalSec > 3600U) {
+        httpServer->send(400, "text/plain", "agc.reset.interval must be between 0 and 3600 seconds.\n");
+        return;
+    }
+    if (!RFFrontEnd::setAgcResetIntervalSec((uint16_t)agcIntervalSec, true)) {
+        httpServer->send(500, "text/plain", "Failed to save agc.reset.interval setting.\n");
+        return;
+    }
+
+    Serial.printf("[OTA] Heltec V4.3 external FEM RX LNA %s, agc.reset.interval=%lu s by %s\n",
+                  enableExternalLna ? "enabled" : "bypassed",
+                  (unsigned long)agcIntervalSec,
+                  httpServer->client().remoteIP().toString().c_str());
+
+    String detail = String(enableExternalLna
+                       ? F("The KCT8103L external RX LNA has been enabled.")
+                       : F("The KCT8103L external RX LNA has been bypassed."));
+    detail += String(F(" agc.reset.interval is ")) + String(agcIntervalSec) + F(" seconds (0 disables). Settings persist across reboots.");
+    sendSimplePage(enableExternalLna ? F("RF settings saved") : F("RF settings saved"),
+                   F("RF settings saved"), detail);
+}
+
 static void handleTokenSave() {
     if (!checkAuth()) return;
 
@@ -1246,6 +1416,7 @@ void begin(const String& hn, const String& tk) {
     httpServer->on("/hostname", HTTP_POST, handleHostnameSave);
     httpServer->on("/network", HTTP_POST, handleNetworkSave);
     httpServer->on("/gps",     HTTP_POST, handleGpsSave);
+    httpServer->on("/rf-lna",  HTTP_POST, handleRfLnaSave);
     httpServer->on("/token",  HTTP_POST, handleTokenSave);
     httpServer->on("/auth",   HTTP_POST, handleAuthSave);
     httpServer->on("/wifi-reset", HTTP_POST, handleWifiReset);

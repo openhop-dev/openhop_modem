@@ -6,7 +6,9 @@
 // V4.3 swaps the front-end to KCT8103L; recent MeshCore firmware bypasses
 // its receive LNA because the PA/FEM can raise the receive noise floor.
 // This dedicated openHop modem variant keeps SX1262 boosted RX gain enabled
-// while holding KCT8103L CTX high for FEM LNA bypass.
+// while defaulting KCT8103L CTX high for FEM LNA bypass. The device web UI can
+// toggle CTX low to enable the external RX LNA when an operator wants it, and
+// can set agc.reset.interval for periodic RX AGC resets during long idle time.
 // =============================================================
 #pragma once
 
@@ -60,7 +62,7 @@ inline const BoardConfig BOARD = {
     .use_dio3_tcxo = true,
     .tcxo_voltage  = 1.8f,
 
-    // Goal: radio.rxgain on + radio.fem.rxgain off.
+    // Goal by default: radio.rxgain on + radio.fem.rxgain off.
     .sx126x_rx_boosted_gain = true,
 
     .has_lora_radio = true,
@@ -97,7 +99,7 @@ inline const BoardConfig BOARD = {
     .static_gpios = {
         { 7, true },
         { 2, true },
-        { 5, true },
+        { 5, true },  // boot default; RFFrontEnd applies the saved web UI setting
     },
     .static_gpio_count = 3,
 };

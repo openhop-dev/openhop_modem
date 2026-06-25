@@ -96,7 +96,7 @@ Per-board highlights (full pin numbers in the headers, mDNS prefix is
 - **Heltec V3** — onboard SSD1306, bare SX1262, max 22 dBm.
 - **Heltec V4** — onboard SSD1306, SX1262 + V4.x PA/LNA front-end, native USB-CDC, max 22 dBm SX1262 command power.
 - **Heltec V4.2** — dedicated GC1109 PA/FEM build with VFEM/CSD enabled and GC1109 CPS driven high for full PA mode.
-- **Heltec V4.3** — dedicated KCT8103L PA/FEM build with SX1262 boosted RX gain enabled and FEM RX LNA bypassed for lower noise floor.
+- **Heltec V4.3** — dedicated KCT8103L PA/FEM build with SX1262 boosted RX gain enabled and FEM RX LNA bypassed by default for lower noise floor; the device web UI can toggle the external FEM RX LNA and set `agc.reset.interval` for periodic RX AGC resets during long idle periods.
 - **Heltec Wireless Tracker V2** — ESP32-S3 + SX1262 + KCT8103L PA/FEM, ST7735 TFT 160×80, native USB-CDC, max 22 dBm SX1262 command power.
 - **Ikoka Stick** — XIAO ESP32-S3 + E22P868M30S, EN-held + DIO2-as-RF-switch, max 30 dBm chip / +10 dB PA, external OLED.
 - **XIAO Wio-SX1262** — Seeed XIAO ESP32-S3 + bare SX1262, no OLED.
