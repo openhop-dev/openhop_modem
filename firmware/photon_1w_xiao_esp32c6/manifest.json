@@ -1,0 +1,24 @@
+{
+  "name": "MeshSmith Photon-1W XIAO ESP32-C6 openHop Modem",
+  "version": "v0.8.0-photon_1w_xiao_esp32c6",
+  "new_install_prompt_erase": true,
+  "builds": [
+    {
+      "chipFamily": "ESP32-C6",
+      "parts": [
+        {
+          "path": "bootloader.bin",
+          "offset": 0
+        },
+        {
+          "path": "partitions.bin",
+          "offset": 32768
+        },
+        {
+          "path": "firmware.bin",
+          "offset": 65536
+        }
+      ]
+    }
+  ]
+}
