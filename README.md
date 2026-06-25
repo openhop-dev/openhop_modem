@@ -1,4 +1,4 @@
-# openHop Modem (`pymc_modem`) — USB/TCP LoRa modem for pymc_core
+# openHop Modem (`pymc_modem`) — USB/TCP LoRa modem for openHop Core
 
 Firmware + Python driver that turns a supported ESP32 or nRF52 board
 with an SX1262 front end into a "dumb" LoRa modem controlled from a
@@ -23,7 +23,7 @@ Ethernet) wired LAN.
 | **Heltec T114**                                                                                             | nRF52840                     | bare SX1262 + TFT 135×240  | **none** — USB-CDC + UART only |
 | **Seeed XIAO nRF52840 + Wio-SX1262**                                                                        | XIAO nRF52840                | bare SX1262                | **none** — USB-CDC only |
 
-Drop-in replacement for `SX1262Radio` in pymc_core — all MeshCore logic
+Drop-in replacement for `SX1262Radio` in openHop Core — all MeshCore logic
 (routing, encryption, retransmission) runs on the RPi. The modem handles
 only the SX1262 physical layer: TX, RX, CAD, LoRa parameter configuration.
 
@@ -33,8 +33,8 @@ only the SX1262 physical layer: TX, RX, CAD, LoRa parameter configuration.
                           USB-CDC / WiFi-TCP
 Raspberry Pi                                  openHop Modem
 ┌────────────────────┐                        ┌─────────────────┐
-│ pymc_repeater      │◄ USB 921600 ────────►  │ openHop Modem FW│
-│  └─ pymc_core      │                        │  └─ SX1262      │
+│ Repeater           │◄ USB 921600 ────────►  │ openHop Modem FW│
+│  └─ openHop Core   │                        │  └─ SX1262      │
 │     ├─ USBLoRaRadio│──── OR ──────          │  └─ RadioLib    │
 │     └─ TCPLoRaRadio│◄ TCP 5055 ─────────►   │  └─ OLED / TFT  │
 │                    │                        │  └─ Wi-Fi STA*  │
@@ -59,22 +59,22 @@ Raspberry Pi                                  openHop Modem
   Adafruit DFU `firmware.zip`) live in `firmware/<env>/`.
 - **`pymc_driver/`** — Python drivers `usb_radio.py` / `tcp_radio.py` +
   shared `protocol_constants.py`. **Since 2026-05-13 these ship in
-  upstream pymc_core `dev`** ([PR #68](https://github.com/pyMC-dev/pyMC_core/pull/68));
-  newer pymc_core installs pick them up automatically. `test_modem.py`
-  is a standalone pyserial probe that runs without pymc_core.
+  upstream openHop Core `dev`** ([PR #68](https://github.com/pyMC-dev/pyMC_core/pull/68));
+  newer openHop Core installs pick them up automatically. `test_modem.py`
+  is a standalone pyserial probe that runs without openHop Core.
 - **`patches/`** — reference copies of files vendored into upstreams,
   kept here so they stay in lockstep with the firmware. Needed only
-  for pymc_core releases that predate PR #68 and for the pending
+  for openHop Core releases that predate PR #68 and for the pending
   Repeater `radio_type: pymc_tcp / pymc_usb` branch
   ([Repeater #240](https://github.com/pyMC-dev/pyMC_Repeater/pull/240)).
 - **`scripts/install.sh`** — one-shot installer; idempotent.
 - **`docker/`** + `docker-compose.yml` — Linux container running
-  pymc_repeater that talks to the modem over LAN-TCP by default.
+  Repeater that talks to the modem over LAN-TCP by default.
 
 ## Installation
 
 Native install, Docker deployment, firmware flashing (esptool / PlatformIO /
-OTA), Wi-Fi provisioning and the full pymc_core integration steps are
+OTA), Wi-Fi provisioning and the full openHop Core integration steps are
 documented in [INSTALL.md](INSTALL.md).
 
 ## Firmware asset builds
