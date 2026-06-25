@@ -22,6 +22,7 @@ Ethernet) wired LAN.
 | **RAK3112 WisMesh**                                                                                         | ESP32-S3 (module)            | SX1262 in-module           | Wi-Fi    |
 | **B&Q Consulting Station G2**                                                                                | ESP32-S3                     | SX1262 + 35 dBm PA/LNA     | Wi-Fi    |
 | **WaveShare ESP32-P4-Nano**                                                                                 | ESP32-P4 (RISC-V) + ESP32-C6 | E22 (off-board, optional)  | **Ethernet *or* Wi-Fi** — runtime auto-select: cable plugged → Ethernet wins, no link → fall back to Wi-Fi via C6 SDIO bridge. Both at once is unstable with the radio attached, see [P4-Nano notes](#porting-to-another-esp32-p4-board) |
+| **MeshSmith EtherMesh-1W**                                                                                   | ESP32-P4 (RISC-V)            | E22P/SX1262 class 1 W      | **Ethernet** |
 | **Heltec T114**                                                                                             | nRF52840                     | bare SX1262 + TFT 135×240  | **none** — USB-CDC + UART only |
 | **RAK4631 WisMesh Ethernet**                                                                                | nRF52840 (RAK4631) + RAK13800/W5100S | SX1262 in-module     | **Ethernet** (W5100S) — TCP port 5055, USB-CDC fallback |
 | **Seeed XIAO nRF52840 + Wio-SX1262**                                                                        | XIAO nRF52840                | bare SX1262                | **none** — USB-CDC only |
@@ -43,15 +44,16 @@ Raspberry Pi                                  openHop Modem
 │                    │                        │  └─ Wi-Fi / ETH  │
 └────────────────────┘                        └─────────────────┘
                                               * Wi-Fi on ESP32 boards,
-                                                Ethernet on P4-Nano
-                                                and RAK4631. No network
+                                                Ethernet on P4-Nano,
+                                                EtherMesh-1W, and RAK4631.
+                                                No network
                                                 on T114/XIAO nRF52 Wio
                                                 (USB-CDC only).
 ```
 
 - **USB mode** — cable, instant, no provisioning; ideal for single-board setups.
 - **Network TCP mode** — Wi-Fi/TCP on ESP32 boards, or Ethernet/TCP on wired
-  targets (P4-Nano, RAK4631). Wi-Fi boards are provisioned via AP portal
+  targets (P4-Nano, EtherMesh-1W, RAK4631). Wi-Fi boards are provisioned via AP portal
   (`openHop-Modem-XXXX` → `http://192.168.4.1`), USB, or their web UI; the TCP
   token defaults blank/open on fresh firmware and can be set from the web UI on
   web-enabled builds. The RAK4631 Ethernet variant has no web UI/HTTP stack, so
@@ -59,7 +61,7 @@ Raspberry Pi                                  openHop Modem
 
 ## Project layout
 
-- **`firmware/`** — PlatformIO tree, fifteen envs sharing one source.
+- **`firmware/`** — PlatformIO tree, sixteen envs sharing one source.
   Each board lives in `include/boards/<env>.h`; `platformio.ini` picks
   one via `-DBOARD_<NAME>`. Prebuilt artifacts (ESP32: `bootloader.bin
   / partitions.bin / firmware.bin`; nRF52: `firmware.hex` +

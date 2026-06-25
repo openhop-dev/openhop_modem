@@ -89,6 +89,11 @@ ENV_METADATA: dict[str, dict[str, str | bool]] = {
         # staged, but a browser-flasher manifest is deliberately skipped.
         "web_manifest": False,
     },
+    "ethermesh_1w": {
+        "name": "MeshSmith EtherMesh-1W openHop Modem",
+        "chip_family": "ESP32-P4",
+        "web_manifest": False,
+    },
     "lilygo_t3s3": {
         "name": "LilyGO T-LoRa T3-S3 openHop Modem",
         "chip_family": "ESP32-S3",
@@ -124,6 +129,7 @@ BOARD_HEADER_TO_ENV = {
     "firmware/include/boards/rak3112_wismesh.h": "rak3112_wismesh",
     "firmware/include/boards/station_g2.h": "station_g2",
     "firmware/include/boards/esp32_p4_nano.h": "esp32_p4_nano",
+    "firmware/include/boards/ethermesh_1w.h": "ethermesh_1w",
     "firmware/include/boards/lilygo_t3s3.h": "lilygo_t3s3",
     "firmware/include/boards/heltec_t114.h": "heltec_t114",
     "firmware/include/boards/xiao_nrf52_wio.h": "xiao_nrf52_wio",

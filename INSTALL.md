@@ -21,11 +21,12 @@ your board:
 | RAK3112 WisMesh | `rak3112_wismesh` | `rak3112-<mac3>.local` | Wi-Fi |
 | B&Q Consulting Station G2 | `station_g2` | `station-g2-<mac3>.local` | Wi-Fi |
 | WaveShare ESP32-P4-Nano (+ off-board E22) | `esp32_p4_nano` | `p4nano-<mac3>.local` | **Ethernet or Wi-Fi** (runtime auto-select; cable plugged → ETH, no link → WiFi fallback. Both at once is unstable with radio active — see README "Porting to another ESP32-P4 board") |
+| MeshSmith EtherMesh-1W | `ethermesh_1w` | `ethermesh-1w-<mac3>.local` | **Ethernet** |
 | Heltec T114 | `heltec_t114` | n/a | none — USB-CDC + UART only |
 | RAK4631 WisMesh Ethernet Gateway | `rak4631_wismesh_eth` | n/a (hostname is status-only) | **Ethernet** (W5100S, TCP port 5055) — no mDNS, no network OTA |
 | Seeed XIAO nRF52840 + Wio-SX1262 | `xiao_nrf52_wio` | n/a | none — USB-CDC only |
 
-The `esp32_p4_nano`, `station_g2`, and `photon_1w_xiao_esp32c6` envs use the
+The `esp32_p4_nano`, `ethermesh_1w`, `station_g2`, and `photon_1w_xiao_esp32c6` envs use the
 [pioarduino fork](https://github.com/pioarduino/platform-espressif32)
 (pinned in `platformio.ini`) for the Arduino-ESP32 3.x / ESP-IDF 5.x
 toolchain; first build will fetch the platform package once.
@@ -54,7 +55,7 @@ each:
 
 `<env>` is one of: `heltec_v3`, `heltec_v4`, `heltec_v42`, `heltec_v43`,
 `heltec_tracker_v2`, `ikoka_stick`, `xiao_wio_sx1262`, `photon_1w_xiao_esp32c6`,
-`lilygo_t3s3`, `rak3112_wismesh`, `esp32_p4_nano`, or `station_g2`.
+`lilygo_t3s3`, `rak3112_wismesh`, `esp32_p4_nano`, `ethermesh_1w`, or `station_g2`.
 
 nRF52 targets ship `firmware.hex`, `firmware.zip`, and `SHA256SUMS.txt` in
 `firmware/<env>/` after the firmware asset workflow runs. Use the ZIP with
@@ -71,7 +72,7 @@ pip install esptool
 # with the row that matches your board:
 ENV=heltec_v3      ; CHIP=esp32s3   # also for heltec_v4 / heltec_v42 / heltec_v43 / heltec_tracker_v2 / ikoka_stick / xiao_wio_sx1262 / lilygo_t3s3 / rak3112_wismesh / station_g2
 # ENV=photon_1w_xiao_esp32c6 ; CHIP=esp32c6
-# ENV=esp32_p4_nano ; CHIP=esp32p4
+# ENV=esp32_p4_nano ; CHIP=esp32p4  # also for ethermesh_1w
 
 esptool.py --chip $CHIP --port /dev/ttyUSB0 --baud 921600 write_flash \
     0x0     firmware/$ENV/bootloader.bin \
@@ -91,6 +92,10 @@ esptool.py --chip $CHIP --port /dev/ttyUSB0 --baud 921600 write_flash \
 > debug only — not for flashing. If esptool can't auto-enter download
 > mode, hold **BOOT (Key1)**, briefly press **RESET (Key2)**, release
 > RESET, release BOOT, then re-run.
+
+> **EtherMesh-1W flash port:** the ESP32-P4-ETH board uses its CH343P USB-UART
+> bridge for flashing/debug. Use the `/dev/ttyUSB*` / `/dev/cu.wchusbserial*`
+> port and `CHIP=esp32p4`.
 
 On macOS the port is usually `/dev/cu.usbmodem*` for the Ikoka (native
 USB-CDC) or `/dev/cu.usbserial-*` for the Heltec (CP2102). If the board
