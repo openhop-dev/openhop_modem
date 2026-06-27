@@ -57,6 +57,7 @@ inline const BoardConfig BOARD = {
 
     .use_dio3_tcxo = true,
     .tcxo_voltage  = 1.8f,
+    .sx126x_current_limit_ma = 140,
 
     .has_lora_radio = true,
     .has_wifi       = true,
