@@ -62,6 +62,7 @@ inline const BoardConfig BOARD = {
 
     .use_dio3_tcxo = true,
     .tcxo_voltage  = 1.8f,
+    .sx126x_current_limit_ma = 140,
 
     // Goal by default: radio.rxgain on + radio.fem.rxgain off.
     .sx126x_rx_boosted_gain = true,
