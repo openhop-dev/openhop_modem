@@ -752,7 +752,13 @@ bool applyConfig(const RadioConfig& cfg) {
     // Hardware ceiling per board (E22P868M30S = 30 dBm, bare SX1262 = 22).
     int8_t pwr = cfg.power_dbm;
     if (pwr > BOARD.max_tx_power_dbm) pwr = BOARD.max_tx_power_dbm;
+    int currentLimitBefore = (int)radio.getCurrentLimit();
     state = radio.setOutputPower(pwr);
+    int currentLimitAfter = (int)radio.getCurrentLimit();
+    LOG_R_INFO("applyConfig board=%s fw=%s pwr_req=%d pwr=%d max=%d setOutputPower=%d ocp_before=%dmA ocp_after=%dmA",
+               BOARD.name, fwVersion.c_str(), (int)cfg.power_dbm, (int)pwr,
+               (int)BOARD.max_tx_power_dbm, state, currentLimitBefore,
+               currentLimitAfter);
     if (state != RADIOLIB_ERR_NONE) return false;
 
     state = radio.setSyncWord(cfg.syncword);
@@ -1090,6 +1096,14 @@ void processHostCommand(uint8_t cmd, const uint8_t* payload, uint16_t len,
             break;
         }
         memcpy(&currentConfig, payload, sizeof(RadioConfig));
+        LOG_R_INFO("SET_CONFIG recv src=%u board=%s fw=%s freq=%lu bw=%lu sf=%u cr=%u pwr_req=%d sync=0x%04X pre=%u",
+                   (unsigned)src, BOARD.name, fwVersion.c_str(),
+                   (unsigned long)currentConfig.freq_hz,
+                   (unsigned long)currentConfig.bandwidth_hz,
+                   (unsigned)currentConfig.sf, (unsigned)currentConfig.cr,
+                   (int)currentConfig.power_dbm,
+                   (unsigned)currentConfig.syncword,
+                   (unsigned)currentConfig.preamble_len);
         if (applyConfig(currentConfig)) {
             sendFrame(CMD_CONFIG_RESP, (uint8_t*)&currentConfig, sizeof(RadioConfig), src);
             startReceive();
