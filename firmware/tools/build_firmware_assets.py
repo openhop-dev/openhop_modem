@@ -10,7 +10,7 @@ ESP32-family envs get:
   bootloader.bin, partitions.bin, firmware.bin, manifest.json, SHA256SUMS.txt
 
 nRF52 envs get:
-  firmware.hex, firmware.zip, SHA256SUMS.txt
+  firmware.hex, firmware.zip, firmware.uf2, SHA256SUMS.txt
 """
 from __future__ import annotations
 
@@ -259,6 +259,18 @@ def write_sha256s(dest: Path, files: list[Path]) -> None:
     (dest / "SHA256SUMS.txt").write_text("\n".join(lines) + "\n", encoding="utf-8")
 
 
+def write_nrf52_uf2(hex_file: Path, dest: Path, env: str) -> Path:
+    uf2conv = (Path.home() / ".platformio" / "packages" /
+               "framework-arduinoadafruitnrf52" / "tools" / "uf2conv" /
+               "uf2conv.py")
+    if not uf2conv.exists():
+        raise SystemExit(f"Expected UF2 converter missing for {env}: {uf2conv}")
+    uf2_file = dest / "firmware.uf2"
+    run([sys.executable, str(uf2conv), str(hex_file), "-c", "-f", "0xADA52840",
+         "-o", str(uf2_file)], FIRMWARE)
+    return uf2_file
+
+
 def firmware_version(env: str) -> str:
     main_cpp = FIRMWARE / "src/main.cpp"
     base = "unknown"
@@ -317,6 +329,7 @@ def collect_env(env: str) -> None:
             target = dest / source.name
             shutil.copy2(source, target)
             copied.append(target)
+        copied.append(write_nrf52_uf2(hex_file, dest, env))
         write_sha256s(dest, copied)
         print(f"Staged nRF52 artifacts in {dest.relative_to(ROOT)}")
         return
