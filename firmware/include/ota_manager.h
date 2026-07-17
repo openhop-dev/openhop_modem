@@ -1,14 +1,10 @@
 // =============================================================
-// ota_manager.h — OTA firmware update over Wi-Fi (STA mode)
+// ota_manager.h — network management service.
 //
-// Two routes, both always-on whenever a network interface is connected:
-//   - ArduinoOTA  : espota.py / pio run -t upload --upload-port <host>.local
-//   - HTTP POST   : curl -u admin:<password> -F firmware=@firmware.bin http://<host>.local/update
-//
-// Dual-bank rollback: new firmware only "stays" if it passes a sanity
-// check (SX1262 init OK + at least one valid USB/TCP frame received
-// within OTA_SANITY_TIMEOUT_MS). Otherwise bootloader auto-reverts to
-// the previous partition.
+// ESP32 builds expose the management UI, JSON API, ArduinoOTA, and HTTP
+// firmware upload. The network-capable nRF52 W5100S build implements the
+// same lifecycle interface for a lightweight management UI and status API,
+// but intentionally omits network firmware upload and rollback handling.
 // =============================================================
 #pragma once
 
@@ -17,25 +13,22 @@
 
 namespace OTAManager {
 
-// Start ArduinoOTA + HTTP /update endpoint on port 80.
-// HTTP requires Basic auth with user="admin" and an NVS-backed password
-// that defaults to "password"; the web page exposes a password-change form.
-// ArduinoOTA uses the TCP token when one is configured, otherwise the same
-// HTTP password. Must be called after Wi-Fi STA or Ethernet is up.
+// Start the platform's network management service on port 80.
+// HTTP requires Basic auth with user="admin" and a persisted password that
+// defaults to "password". ESP32 builds also start ArduinoOTA and /update;
+// nRF52 W5100S builds provide management only. Call after the network has IP.
 void begin(const String& hostname, const String& token);
 
-// Service pending OTA transactions + feed the rollback sanity watchdog.
+// Service pending management and, where supported, OTA transactions.
 // Call every loop().
 void loop();
 
-// Call once from the host-frame path when a valid frame has been processed.
-// After OTA_SANITY_TIMEOUT_MS (default 120 s) of operating without crash
-// AND this ping, the current firmware is marked valid and rollback is
-// cancelled. Cheap — safe to invoke on every frame.
+// Notify the ESP32 rollback guard that a valid host frame was processed.
+// This is a no-op on nRF52. Cheap and safe to invoke on every frame.
 void notifyValidFrame();
 
-// Current mDNS hostname ("heltec-ab12cd"), suitable for building
-// "heltec-ab12cd.local" on the host. Returns empty string before begin().
+// Current configured hostname. ESP32 builds also publish it through mDNS;
+// the W5100S nRF52 build retains it for status/configuration only.
 const char* getHostname();
 
 } // namespace OTAManager

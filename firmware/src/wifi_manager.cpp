@@ -162,9 +162,9 @@ static void refreshEffectiveHostname() {
     }
 }
 
-void saveConfig(const Config& newCfg) {
+bool saveConfig(const Config& newCfg) {
     Preferences p;
-    if (!p.begin(NVS_NAMESPACE, false)) return;
+    if (!p.begin(NVS_NAMESPACE, false)) return false;
     p.putString("ssid",  newCfg.ssid);
     p.putString("pass",  newCfg.password);
     p.putString("host",  sanitizeHostname(newCfg.hostname));
@@ -187,6 +187,7 @@ void saveConfig(const Config& newCfg) {
         cfg.wifiExternalAntenna = false;
     }
     refreshEffectiveHostname();
+    return true;
 }
 
 void factoryReset() {

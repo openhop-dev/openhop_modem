@@ -23,7 +23,7 @@ your board:
 | WaveShare ESP32-P4-Nano (+ off-board E22) | `esp32_p4_nano` | `p4nano-<mac3>.local` | **Ethernet or Wi-Fi** (runtime auto-select; cable plugged → ETH, no link → WiFi fallback. Both at once is unstable with radio active — see README "Porting to another ESP32-P4 board") |
 | MeshSmith EtherMesh-1W | `ethermesh_1w` | `ethermesh-1w-<mac3>.local` | **Ethernet** |
 | Heltec T114 | `heltec_t114` | n/a | none — USB-CDC + UART only |
-| RAK4631 WisMesh Ethernet Gateway | `rak4631_wismesh_eth` | n/a (hostname is status-only) | **Ethernet** (W5100S, TCP port 5055) — no mDNS, no network OTA |
+| RAK4631 WisMesh Ethernet Gateway | `rak4631_wismesh_eth` | n/a (hostname is status-only) | **Ethernet** (W5100S, TCP 5055 + management UI on port 80) — no mDNS, no network OTA |
 | Seeed XIAO nRF52840 + Wio-SX1262 | `xiao_nrf52_wio` | n/a | none — USB-CDC only |
 
 The `esp32_p4_nano`, `ethermesh_1w`, `station_g2`, and `photon_1w_xiao_esp32c6` envs use the
@@ -118,11 +118,12 @@ release RESET, release BOOT.
 
 ### 1d. OTA over the network (after the first flash, no cable)
 
-**Only ESP32-family targets with the OTA/HTTP stack** support network
-OTA. nRF52 targets (`heltec_t114`, `xiao_nrf52_wio`, `rak4631_wismesh_eth`)
-must be flashed via USB with `pio run -e <env> -t upload` (Adafruit
-nRF52 DFU). The `rak4631_wismesh_eth` target has Ethernet for openHop TCP
-only — it has no HTTP/OTA stack, and the `OTAManager` stub is a no-op.
+**Only ESP32-family targets support network firmware upload.** nRF52 targets
+(`heltec_t114`, `xiao_nrf52_wio`, `rak4631_wismesh_eth`) must be flashed via
+USB with `pio run -e <env> -t upload` (Adafruit nRF52 DFU), or through the
+modem protocol's OTA commands where available. The RAK4631 target does expose
+an HTTP management UI on port 80, but it deliberately does not provide
+ArduinoOTA or the `/update` upload route.
 
 Once the board is on the LAN (Wi-Fi STA or Ethernet — ESP32 only) and
 visible via mDNS:
@@ -173,20 +174,26 @@ sudo udevadm control --reload-rules && sudo udevadm trigger
 (VID/PID `10c4:ea60` matches the CP2102 on the Heltec V3; for native USB-CDC
 use `303a:1001`.)
 
-## 3. WiFi / TCP configuration (optional, for `pymc_tcp` mode)
+## 3. Network / TCP configuration (optional, for `pymc_tcp` mode)
 
 > **Security note — network TCP token:** fresh firmware defaults to an empty
 > TCP token, so port 5055 is open to anyone on the same LAN segment until
 > you set one. The firmware still filters non-RFC1918/link-local/loopback
 > source addresses, but on a shared LAN an empty token is only safe on an
-> isolated network. On web-enabled Wi-Fi firmware, set/change the TCP token
-> from the device web UI (or via USB provisioning). The RAK4631 W5100S
-> Ethernet target has no web UI/HTTP stack, so its current token default is
-> the `PYMC_ETH_TOKEN` build flag in `platformio.ini`.
+> isolated network. Set/change the TCP token from the device web UI (or via
+> USB provisioning on supported Wi-Fi targets). On RAK4631 W5100S, browse to
+> `http://<device-ip>/`; the default login is `admin` / `password`. The
+> `PYMC_ETH_TOKEN` build flag remains only the first-boot default.
 
 On first boot the modem starts an open access point `openHop-Modem-XXXX`.
 Connect a phone/laptop to that AP, open `http://192.168.4.1`, pick your
 Wi-Fi + password, hit **Save & Restart**.
+
+The RAK4631 Ethernet target does not create an access point. Connect it to
+Ethernet, find the DHCP lease in your router, and open `http://<device-ip>/`.
+From there you can switch to a static IPv4 configuration, change the openHop
+TCP port/token and HTTP password, inspect live status, or reboot the modem.
+Changes to network or TCP settings are applied after an automatic reboot.
 
 Alternatively — **provisioning over USB** (doesn't require access to the
 temporary setup AP):
