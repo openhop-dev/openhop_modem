@@ -8,7 +8,7 @@
 #include <Adafruit_GFX.h>
 #if defined(BOARD_STATION_G2)
 #include <Adafruit_SH110X.h>
-using OledDriver = Adafruit_SH1107;
+using OledDriver = Adafruit_SH1106G;
 static constexpr uint16_t OLED_WHITE = SH110X_WHITE;
 #else
 #define SSD1306_NO_SPLASH

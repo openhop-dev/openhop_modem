@@ -1,6 +1,6 @@
 // =============================================================
 // oled_display.cpp — I2C OLED status display
-// Heltec V3-class boards use SSD1306; Station G2 uses SH1107.
+// Heltec V3-class boards use SSD1306; Station G2 uses SH1106.
 // The board config provides I2C pins, optional VEXT rail, and reset line.
 // =============================================================
 #include "oled_display.h"
