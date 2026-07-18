@@ -1,7 +1,7 @@
 {
   "build": {
     "arduino": {
-      "ldscript": "nrf52840_s140_v6.ld"
+      "ldscript": "nrf52840_s140_v7.ld"
     },
     "core": "nRF5",
     "cpu": "cortex-m4",
@@ -20,8 +20,8 @@
     "softdevice": {
       "sd_flags": "-DS140",
       "sd_name": "s140",
-      "sd_version": "6.1.1",
-      "sd_fwid": "0x00B6"
+      "sd_version": "7.3.0",
+      "sd_fwid": "0x0123"
     },
     "bootloader": {
       "settings_addr": "0xFF000"
@@ -41,7 +41,7 @@
   "name": "Seeed XIAO nRF52840 + Wio-SX1262",
   "upload": {
     "maximum_ram_size": 235520,
-    "maximum_size": 815104,
+    "maximum_size": 811008,
     "speed": 115200,
     "protocol": "nrfutil",
     "protocols": [
