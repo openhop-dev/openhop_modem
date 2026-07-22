@@ -1,6 +1,6 @@
 {
   "name": "LilyGO T-LoRa T3-S3 openHop Modem",
-  "version": "v1.0.0-lilygo_t3s3",
+  "version": "v1.0.1-lilygo_t3s3",
   "new_install_prompt_erase": true,
   "builds": [
     {

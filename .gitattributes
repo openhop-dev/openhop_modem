@@ -1,2 +1,3 @@
 # Firmware images are binary even when sparse factory files begin with 0xff padding.
 *.bin binary
+*.hex binary

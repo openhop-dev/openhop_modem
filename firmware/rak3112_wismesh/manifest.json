@@ -1,6 +1,6 @@
 {
   "name": "RAK3112 WisMesh openHop Modem",
-  "version": "v1.0.0-rak3112_wismesh",
+  "version": "v1.0.1-rak3112_wismesh",
   "new_install_prompt_erase": true,
   "builds": [
     {
