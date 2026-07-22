@@ -1,6 +1,6 @@
 {
   "name": "B&Q Consulting Station G2 openHop Modem",
-  "version": "v1.0.0-station_g2",
+  "version": "v1.0.1-station_g2",
   "new_install_prompt_erase": true,
   "builds": [
     {

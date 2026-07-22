@@ -1,6 +1,6 @@
 {
   "name": "Ikoka Stick openHop Modem",
-  "version": "v1.0.0-ikoka_stick",
+  "version": "v1.0.1-ikoka_stick",
   "new_install_prompt_erase": true,
   "builds": [
     {

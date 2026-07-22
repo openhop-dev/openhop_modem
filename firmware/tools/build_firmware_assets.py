@@ -423,6 +423,14 @@ def main() -> int:
     for env in selected:
         if args.clean:
             run([pio, "run", "-e", env, "--target", "clean"], FIRMWARE)
+        # Older Espressif platforms do not manage firmware.factory.bin, so a
+        # fallback image created by an earlier run can survive an incremental
+        # rebuild. Remove it first: newer platforms regenerate it during the
+        # build, while collect_env() reconstructs it from fresh components for
+        # older platforms.
+        (FIRMWARE / ".pio/build" / env / "firmware.factory.bin").unlink(
+            missing_ok=True
+        )
         run([pio, "run", "-e", env], FIRMWARE)
         collect_env(env)
     return 0

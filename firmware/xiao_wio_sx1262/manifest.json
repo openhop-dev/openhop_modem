@@ -1,6 +1,6 @@
 {
   "name": "Seeed XIAO Wio-SX1262 openHop Modem",
-  "version": "v1.0.0-xiao_wio_sx1262",
+  "version": "v1.0.1-xiao_wio_sx1262",
   "new_install_prompt_erase": true,
   "builds": [
     {

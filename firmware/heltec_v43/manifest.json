@@ -1,6 +1,6 @@
 {
   "name": "Heltec WiFi LoRa 32 V4.3 openHop Modem",
-  "version": "v1.0.0-heltec_v43",
+  "version": "v1.0.1-heltec_v43",
   "new_install_prompt_erase": true,
   "builds": [
     {
