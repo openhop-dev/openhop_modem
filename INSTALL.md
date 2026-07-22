@@ -339,6 +339,37 @@ locally from `docker/Dockerfile`. To run the published image without
 rebuilding, drop `--build`: `docker compose pull && docker compose up
 -d` will fetch `itkeny/pymc-usb-repeater:latest` from Docker Hub.
 
+### Publishing firmware with a GitHub Release (maintainer only)
+
+Publishing a GitHub Release automatically runs
+`.github/workflows/publish-firmware-release-assets.yml`. The workflow checks
+out the release's tag, validates every tracked `firmware/<env>/SHA256SUMS.txt`,
+and attaches one ZIP per firmware environment to that existing release:
+
+- `openhop-modem-<env>-<tag>.zip` — one package containing only that ESP32 or
+  nRF52 variant's checksummed firmware files;
+- `openhop-modem-firmware-<tag>-SHA256SUMS.txt` — checksums for every uploaded
+  variant ZIP.
+
+Create or select the version tag in the GitHub **Releases** UI, write the
+release notes, and click **Publish release**. Draft releases do not run the
+workflow. The ZIPs are built from the exact tagged revision rather than from
+the current branch tip.
+
+To retry or backfill an existing release, open **Actions → Publish Firmware
+Release Assets → Run workflow** and enter its existing tag. Uploads use
+`--clobber`, so retrying replaces the generated assets without creating a
+second release. This workflow uses the repository `GITHUB_TOKEN`; no additional
+secret is required.
+
+The same package can be produced locally without uploading anything:
+
+```bash
+python3 firmware/tools/package_release_assets.py \
+    --tag v1.1.0 --output-dir /tmp/openhop-release
+(cd /tmp/openhop-release && sha256sum -c *-SHA256SUMS.txt)
+```
+
 ### Releasing a new image to Docker Hub (maintainer only)
 
 A GitHub Action at `.github/workflows/docker-publish.yml` builds
