@@ -1,6 +1,6 @@
 // =============================================================
 // compat.h — tiny cross-platform shims so main.cpp builds on both
-// the ESP32 family and the nRF52840 (Heltec T114).
+// the ESP32 family and supported nRF52840 targets.
 //
 // On ESP32 these are thin inlines around the ESP-IDF equivalents.
 // On nRF52 they fall back to FICR-based MAC and stubbed-out

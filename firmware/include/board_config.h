@@ -162,15 +162,11 @@ struct BoardConfig {
     // this disabled so no extra settings or GPIO writes appear there.
     WifiAntennaSwitchConfig wifi_antenna_switch;
 
-    // Whole-board network capability gate. ESP32-S3 / ESP32-P4 boards
-    // ship with the WifiManager + TCPServer + OTAManager + Ethernet
-    // stack (most of the firmware). The Heltec T114 is nRF52840 — it
-    // has Bluetooth and LoRa but **no WiFi or Ethernet**. The board
-    // header sets `has_network = false` so the conditional-compile
-    // arms (#ifdef ARDUINO_ARCH_ESP32 in main.cpp + the network *.cpp
-    // files) skip every IP-stack call. With `has_network = false` the
-    // protocol talks only over USB-CDC and the optional dedicated
-    // UART (`pin_protocol_uart_*`). All ESP32 boards keep this true.
+    // Whole-board network capability gate. ESP32 targets use the native
+    // Wi-Fi/Ethernet managers; the RAK4631 nRF52840 target uses a W5100S
+    // adapter that exposes the same TCP/HTTP lifecycle. USB-only nRF52840
+    // boards set `has_network = false`, so the protocol talks only over
+    // USB-CDC and the optional dedicated UART (`pin_protocol_uart_*`).
     bool has_network;
 
     // Optional dedicated UART for the binary protocol (sector-mode

@@ -17,14 +17,14 @@
 #include "frame_parser.h"
 #include "compat.h"
 #include "rf_frontend.h"
+#include "runtime_stats.h"
 #if defined(BOARD_HELTEC_T114)
 #  include "node_state.h"
 #endif
 
-// Network / OLED / OTA stack only exists on ESP32 boards. The
-// nRF52840-based Heltec T114 build excludes those .cpp files via
-// platformio.ini's build_src_filter and these headers via the
-// #ifdef below.
+// ESP32 targets use the native Wi-Fi/Ethernet/OTA stack. nRF52 targets
+// share the same WifiManager interface; the RAK4631 W5100S build also
+// provides a lightweight HTTP management server without network OTA.
 #ifdef ARDUINO_ARCH_ESP32
 #  include <WiFi.h>
 #  include <Wire.h>
@@ -40,77 +40,16 @@
 #  include "tcp_server.h"
 #  include "ota_manager.h"
 #  include "ethernet_manager.h"
-#  include "runtime_stats.h"
 #  include "gps_manager.h"
 #else
-// nRF52 builds exclude the ESP32 Wi-Fi/OTA/display managers via
-// platformio.ini's build_src_filter. Most nRF52 targets are
-// USB/UART-only; RAK4631 enables a separate W5100S Ethernet TCP
-// transport under PYMC_ETHERNET_W5100S. Provide drop-in stub
-// namespaces for the rest so call sites compile unchanged.
+// nRF52 builds exclude the ESP32 implementations via platformio.ini.
+// A small platform adapter supplies the shared configuration interface;
+// W5100S targets additionally provide Ethernet TCP and HTTP management.
 #include <IPAddress.h>
-#if defined(PYMC_ETHERNET_W5100S)
-#  ifndef PYMC_ETH_TCP_PORT
-#    define PYMC_ETH_TCP_PORT 5055
-#  endif
-#  ifndef PYMC_ETH_TOKEN
-#    define PYMC_ETH_TOKEN ""
-#  endif
-#  ifndef PYMC_ETH_HOSTNAME
-#    define PYMC_ETH_HOSTNAME "pymc-rak4631-eth"
-#  endif
-#endif
-namespace WifiManager {
-    enum class Mode : uint8_t { OFFLINE = 0, STA_CONNECTING = 1,
-                                STA_CONNECTED = 2, AP_CONFIG = 3 };
-    struct Config {
-        String   ssid;
-        String   password;
-        String   hostname;
-        bool     useStaticIP = false;
-        IPAddress staticIP;
-        IPAddress gateway;
-        IPAddress subnet;
-        IPAddress dns1;
-        IPAddress dns2;
-        String   tcpToken;
-        uint16_t tcpPort = 0;
-        bool     wifiExternalAntenna = false;
-        bool     gpsEnabled = false;
-    };
-    inline void  checkResetButton()  {}
-    inline void  begin()             {}
-    inline void  loop()              {}
-    inline void  loadConfigOnly()    {}
-    inline bool  isSTAConnected()    { return false; }
-    inline bool  isAPActive()        { return false; }
-    inline bool  hasWifiAntennaSwitch() { return false; }
-    inline void  applyWifiAntennaSwitch() {}
-    inline const char* getSSID()     { return "---"; }
-    inline const char* getIPString() { return "---"; }
-#if defined(PYMC_ETHERNET_W5100S)
-    inline const char* getHostname() { return PYMC_ETH_HOSTNAME; }
-#else
-    inline const char* getHostname() { return "---"; }
-#endif
-    inline Mode  getMode()           { return Mode::OFFLINE; }
-    inline const Config& getConfig() {
-        static Config c = []() {
-            Config cfg;
-#if defined(PYMC_ETHERNET_W5100S)
-            cfg.hostname = PYMC_ETH_HOSTNAME;
-            cfg.tcpToken = PYMC_ETH_TOKEN;
-            cfg.tcpPort = PYMC_ETH_TCP_PORT;
-#endif
-            return cfg;
-        }();
-        return c;
-    }
-    inline void  saveConfig(const Config&) {}
-    inline void  factoryReset()      {}
-}
+#include "wifi_manager.h"
 #if defined(PYMC_ETHERNET_W5100S)
 #  include "w5100s_ethernet_transport.h"
+#  include "ota_manager.h"
 #else
 namespace TCPServer {
     inline void begin(uint16_t, const String&) {}
@@ -120,13 +59,12 @@ namespace TCPServer {
     inline void write(const uint8_t*, size_t) {}
     inline String getClientIP() { return String(); }
 }
-#endif
 namespace OTAManager {
     inline void begin(const String&, const String&) {}
     inline void loop() {}
     inline void notifyValidFrame() {}
+    inline const char* getHostname() { return "---"; }
 }
-#if !defined(PYMC_ETHERNET_W5100S)
 namespace EthernetManager {
     inline void begin(const char* = nullptr,
                       bool = false,
@@ -383,29 +321,38 @@ static bool readBatteryChargeRatePctPerHour(float& pctPerHour) {
     return true;
 }
 
+#endif
+
 namespace RuntimeStats {
 Snapshot capture() {
     Snapshot snap = {};
     snap.status = status;
     snap.status.uptime_sec = millis() / 1000;
     snap.status.radio_state = radioStandby ? 2 : (isTxActive ? 1 : 0);
-    snap.status.temp_c = (int8_t)temperatureRead();
     snap.status.noise_floor_x10 = (int16_t)(noiseFloor * 10.0f);
+#ifdef ARDUINO_ARCH_ESP32
+    snap.status.temp_c = (int8_t)temperatureRead();
     snap.status.battery_mv = readBatteryMilliVolts();
+#else
+    snap.status.temp_c = INT8_MIN;
+    snap.status.battery_mv = 0xFFFF;
+#endif
     snap.radio = currentConfig;
     snap.firmwareVersion = fwVersion;
     snap.radioStandby = radioStandby;
     snap.autoCadEnabled = autoCadEnabled;
+#ifdef ARDUINO_ARCH_ESP32
     snap.hasBatteryChargeRatePctPerHour = BOARD.battery.fuel_gauge_i2c_addr != 0 &&
         BOARD.battery.fuel_gauge_crate_reg != 0;
     if (snap.hasBatteryChargeRatePctPerHour) {
         snap.batteryChargeRatePctPerHourValid = readBatteryChargeRatePctPerHour(
             snap.batteryChargeRatePctPerHour);
     }
+#endif
     return snap;
 }
 }
-#endif
+
 
 // ─── ISR callback ────────────────────────────────────────────
 #if defined(ESP32)
@@ -686,8 +633,8 @@ static uint16_t buildWifiStatusPayload(uint8_t* out) {
 // Layout: ssid_len(1) ssid(N) pass_len(1) pass(M) port(2,LE)
 //         tok_len(1) tok(K) [host_len(1) host(H)]
 // Only meaningful when the firmware actually has a Wi-Fi stack;
-// the nRF52 build (Heltec T114) doesn't, so the parser is gone
-// from the binary entirely.
+// nRF52 targets use Ethernet or USB-only transports, so this parser
+// is omitted from their binaries.
 #ifdef ARDUINO_ARCH_ESP32
 static bool parseSetWifi(const uint8_t* p, uint16_t len, WifiManager::Config& out) {
     out = WifiManager::getConfig();   // preserve static IP settings by default

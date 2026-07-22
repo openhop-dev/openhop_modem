@@ -24,7 +24,7 @@ Ethernet) wired LAN.
 | **WaveShare ESP32-P4-Nano**                                                                                 | ESP32-P4 (RISC-V) + ESP32-C6 | E22 (off-board, optional)  | **Ethernet *or* Wi-Fi** — runtime auto-select: cable plugged → Ethernet wins, no link → fall back to Wi-Fi via C6 SDIO bridge. Both at once is unstable with the radio attached, see [P4-Nano notes](#porting-to-another-esp32-p4-board) |
 | **MeshSmith EtherMesh-1W**                                                                                   | ESP32-P4 (RISC-V)            | E22P/SX1262 class 1 W      | **Ethernet** |
 | **Heltec T114**                                                                                             | nRF52840                     | bare SX1262 + TFT 135×240  | **none** — USB-CDC + UART only |
-| **RAK4631 WisMesh Ethernet**                                                                                | nRF52840 (RAK4631) + RAK13800/W5100S | SX1262 in-module     | **Ethernet** (W5100S) — TCP port 5055, USB-CDC fallback |
+| **RAK4631 WisMesh Ethernet**                                                                                | nRF52840 (RAK4631) + RAK13800/W5100S | SX1262 in-module     | **Ethernet** (W5100S) — TCP 5055 + management UI 80, USB-CDC fallback |
 | **Seeed XIAO nRF52840 + Wio-SX1262**                                                                        | XIAO nRF52840                | bare SX1262                | **none** — USB-CDC only |
 
 Drop-in replacement for `SX1262Radio` in openHop Core — all MeshCore logic
@@ -54,10 +54,10 @@ Raspberry Pi                                  openHop Modem
 - **USB mode** — cable, instant, no provisioning; ideal for single-board setups.
 - **Network TCP mode** — Wi-Fi/TCP on ESP32 boards, or Ethernet/TCP on wired
   targets (P4-Nano, EtherMesh-1W, RAK4631). Wi-Fi boards are provisioned via AP portal
-  (`openHop-Modem-XXXX` → `http://192.168.4.1`), USB, or their web UI; the TCP
-  token defaults blank/open on fresh firmware and can be set from the web UI on
-  web-enabled builds. The RAK4631 Ethernet variant has no web UI/HTTP stack, so
-  its W5100S TCP defaults live in `PYMC_ETH_*` build flags.
+  (`openHop-Modem-XXXX` → `http://192.168.4.1`), USB, or their web UI. The RAK4631
+  Ethernet variant exposes its management UI directly on `http://<device-ip>/`.
+  Fresh network firmware defaults to an open TCP token; set one from the web UI
+  before using the modem on a shared LAN.
 
 ## Project layout
 
@@ -116,7 +116,7 @@ Per-board highlights (full pin numbers in the headers, mDNS prefix is
 - **Station G2** — SX1262 + high-power PA/LNA, SH1106 display, max SX1262 drive capped at 19 dBm.
 - **WaveShare ESP32-P4-Nano** — RISC-V P4 + C6 + IP101GRI Ethernet PHY + off-board E22, runtime ETH-or-Wi-Fi (never both, see below).
 - **Heltec T114** — nRF52840 + bare SX1262 + ST7789 TFT 135×240, **no Wi-Fi/TCP/network OTA**; USB-CDC + UART transport only, OTA via Adafruit nRF52 DFU (USB) or in-app `CMD_OTA_*` over the protocol transport.
-- **RAK4631 WisMesh Ethernet** — RAK4631 nRF52840 core module + RAK13800 W5100S Ethernet on the WisBlock IO slot. It has its own PlatformIO board JSON and product-specific variant under `firmware/variants/RAK4631_WisMesh_Ethernet/`, separate SPIM instances for Ethernet (SPIM3) and LoRa (SPIM2), no display, no Wi-Fi, and no network OTA (flash via USB/DFU). The TCP server on port 5055 is the primary transport; USB-CDC is available as a fallback. The TCP token defaults blank/open, matching other fresh network firmware. On web-enabled ESP32 builds the token can be changed in the device web UI; this nRF52 Ethernet-only target has no web UI/HTTP stack, so its W5100S TCP token, port, and hostname are currently set by `PYMC_ETH_*` build flags. The hostname is stored for status reporting only — the W5100S library does not support DHCP option 12. Commands that persist state (standby, auto-CAD, display name) are accepted but volatile — there is no LittleFS/NodeState on this target, so they reset on reboot. Display commands (SET_DISPLAY_NAME) succeed as no-op stubs.
+- **RAK4631 WisMesh Ethernet** — RAK4631 nRF52840 core module + RAK13800 W5100S Ethernet on the WisBlock IO slot. It has its own PlatformIO board JSON and product-specific variant under `firmware/variants/RAK4631_WisMesh_Ethernet/`, separate SPIM instances for Ethernet (SPIM3) and LoRa (SPIM2), no display, and no Wi-Fi. The TCP server on port 5055 is the primary transport; USB-CDC is available as a fallback. A lightweight LAN-only management UI runs on port 80 with HTTP Basic Auth (`admin` / `password` by default) and exposes live status, DHCP/static IPv4 settings, TCP port/token, password change, reboot, and `GET /api/stats`. Network, TCP, and HTTP-auth settings are stored as one CRC-protected record in internal LittleFS; `PYMC_ETH_*` build flags remain the first-boot defaults. The configured hostname is retained for status/configuration only because the W5100S library does not publish it through DHCP option 12 or mDNS. Network firmware upload is intentionally unavailable; flash via USB/DFU or the in-protocol OTA commands. Commands that persist standby, auto-CAD, and display name remain volatile on this target. Display commands (SET_DISPLAY_NAME) succeed as no-op stubs.
 - **Seeed XIAO nRF52840 + Wio-SX1262** (SKU 102010710) — XIAO nRF52840 + bare SX1262 on the Wio-SX1262 carrier, BLE 5.0 hardware unused, **no Wi-Fi/TCP/network OTA**, no display; native USB-CDC transport only, OTA via Adafruit nRF52 DFU (UF2 disk on double-click reset) or in-app `CMD_OTA_*`.
 
 ### E22P RF switch (Ikoka, P4-Nano + E22P)
@@ -176,29 +176,32 @@ remote access run a VPN whose tunnel address (WireGuard / Tailscale
 in 100.64/10 → Tailscale subnet route, or any `10/8` overlay) is
 inside the LAN range from the modem's point of view.
 
-T114 has no IP stack at all — the only paths in are USB-CDC and the
-secondary UART, and updates are either Adafruit DFU over USB or the
-in-app `OTA_*` commands carried over the same transport.
+The T114 and XIAO nRF52 targets have no IP stack — their only paths are
+USB-CDC and, on T114, the secondary UART. Updates use Adafruit DFU over
+USB or the in-app `OTA_*` commands carried over an available protocol
+transport. The Ethernet-equipped RAK4631 is the nRF52 exception and exposes
+the management page plus `/api/stats`, but not network firmware upload.
 
 ### Web UI / OTA / JSON API authentication (v0.8+)
 
-From v0.8 the HTTP surface (web management page, OTA `/update`, and
-the `/api/*` JSON endpoints) is gated by HTTP Basic Auth. Defaults on
-first boot:
+The HTTP surface is gated by HTTP Basic Auth. On ESP32 it covers the web
+management page, OTA `/update`, and `/api/*`; on RAK4631 it covers the
+management page and `/api/stats`. Defaults on first boot:
 
 - **user:** `admin`
 - **password:** `password`
 
-Change the password via the **Change HTTP password** form in the web
-UI; it is persisted in NVS under `http_pass`. ArduinoOTA (espota) uses
-the same password as its `--auth` token. Examples:
+Change the password via the **Change HTTP password** form in the web UI.
+ESP32 stores it in NVS under `http_pass`; RAK4631 stores it together with
+its Ethernet/TCP settings in internal LittleFS. ArduinoOTA (espota) exists
+only on ESP32 and uses the same password as its `--auth` token. Examples:
 
 ```bash
 # Open the web UI (browser)         → http://<host>/         (admin / password)
 # Pull live stats                   → curl -u admin:password http://<host>/api/stats
-# Flash a new firmware over HTTP    → curl -u admin:password \
+# ESP32 only: flash over HTTP       → curl -u admin:password \
 #       -F firmware=@firmware/<env>/firmware.bin http://<host>/update
-# Flash over espota via PlatformIO  → pio run -e <env> -t upload \
+# ESP32 only: flash over espota      → pio run -e <env> -t upload \
 #       --upload-port <host> --upload-flags="--auth=password"
 ```
 

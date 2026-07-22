@@ -1,6 +1,7 @@
 // =============================================================
-// wifi_manager.h — Wi-Fi STA + AP-fallback manager for Heltec V3
-// NVS-backed config (Preferences), PRG button factory reset.
+// wifi_manager.h — shared network configuration interface.
+// ESP32 builds manage Wi-Fi/AP fallback with NVS. nRF52 W5100S builds use
+// the same Config type for persisted Ethernet/TCP settings.
 // =============================================================
 #pragma once
 
@@ -32,19 +33,17 @@ struct Config {
     bool      gpsEnabled; // default off; applies to any board with GPS UART pins
 };
 
-// Poll PRG button at boot; if held >= 3s, wipe NVS and reboot. Call from setup().
+// Poll the platform reset gesture where supported. Call from setup().
 void checkResetButton();
 
-// Load NVS config without bringing the radio up. Useful on boards where
-// has_wifi = false (e.g. ESP32-P4-Nano in diagnostic mode) so the rest of
-// the firmware can still read the saved tcpPort/tcpToken.
+// Load persisted network/TCP config without bringing the interface up.
 void loadConfigOnly();
 
-// Load NVS config, try STA connect; on failure or empty config, start AP mode with
-// on-device configuration web UI. Blocks up to ~30s during STA attempt.
+// Bring up Wi-Fi on ESP32. On nRF52 this only ensures config is loaded;
+// Ethernet itself is started by EthernetManager.
 void begin();
 
-// Service background WiFi state transitions and config portal. Call every loop().
+// Service platform network-manager state. Call every loop().
 void loop();
 
 Mode        getMode();
@@ -57,9 +56,9 @@ bool        hasWifiAntennaSwitch();
 void        applyWifiAntennaSwitch();
 
 const Config& getConfig();
-void          saveConfig(const Config& cfg);
+bool          saveConfig(const Config& cfg);
 
-// Clear NVS Wi-Fi config and restart device. Does not return.
+// Clear persisted network config and restart where supported.
 void factoryReset();
 
 } // namespace WifiManager

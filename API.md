@@ -2,7 +2,12 @@
 
 This firmware exposes a small HTTP API alongside the web UI.
 
-All API routes:
+ESP32 builds expose every endpoint documented below. The RAK4631 W5100S
+nRF52 build intentionally keeps the HTTP implementation small and exposes
+only `GET /api/stats`; configuration is handled by the HTML forms on `/`.
+It does not provide network firmware upload.
+
+All available API routes:
 - are LAN-only
 - use the same HTTP Basic Auth as the web UI
 - use username `admin`
@@ -10,7 +15,9 @@ All API routes:
 
 Base URL examples:
 - `http://192.168.1.42`
-- `http://heltec-ab12cd.local`
+- `http://heltec-ab12cd.local` (mDNS-capable ESP32 builds)
+
+The RAK4631 hostname is status-only; use its IPv4 address.
 
 Example auth:
 
@@ -111,8 +118,10 @@ Example:
 ### `GET /api/stats`
 
 Returns the combined system, radio, counters, and network state in one response.
+On RAK4631 this is the only JSON endpoint and uses a compact nRF52-specific
+shape with `board`, `firmware`, `uptime_sec`, `network`, and `radio` keys.
 
-Top-level keys:
+ESP32 `/api/stats` top-level keys:
 - `system` — board, firmware, hostname, uptime, die temperature, and battery voltage only when the board variant defines battery sensing (`battery_voltage_mv`, `battery_voltage_v`; otherwise `null`)
 - `radio`
 - `counters`
