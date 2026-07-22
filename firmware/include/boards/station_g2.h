@@ -33,7 +33,7 @@ inline const BoardConfig BOARD = {
         .dio2_as_rf_switch = true,
     },
 
-    // Built-in OLED is SH1107 on the Station G2/G3 shared I2C bus.
+    // Built-in OLED is SH1106 on the Station G2/G3 shared I2C bus.
     .pin_i2c_sda      = 5,
     .pin_i2c_scl      = 6,
     .pin_i2c_oled_rst = -1,
