@@ -63,8 +63,9 @@ Raspberry Pi                                  openHop Modem
 
 - **`firmware/`** — PlatformIO tree, sixteen envs sharing one source.
   Each board lives in `include/boards/<env>.h`; `platformio.ini` picks
-  one via `-DBOARD_<NAME>`. Prebuilt artifacts (ESP32: `bootloader.bin
-  / partitions.bin / firmware.bin`; nRF52: `firmware.hex` +
+  one via `-DBOARD_<NAME>`. Prebuilt artifacts (ESP32: combined
+  `firmware.factory.bin` plus `bootloader.bin / partitions.bin / firmware.bin`;
+  nRF52: `firmware.hex` +
   Adafruit DFU `firmware.zip`) live in `firmware/<env>/`.
 - **`pymc_driver/`** — repo-local Python probe/debug helpers and shared
   protocol constants. Repeater and openHop Core already include the modem

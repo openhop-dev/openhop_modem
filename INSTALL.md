@@ -44,14 +44,21 @@ that is not yet published in the flasher.
 
 ### 1b. Prebuilt firmware binaries (no PlatformIO)
 
-ESP32-family `firmware/<env>/` subdirectories ship three flashable artefacts
-each:
+ESP32-family `firmware/<env>/` subdirectories ship a combined factory image
+for first installs and the individual build images used by browser flashing
+and app-only updates:
 
-| Path                              | Offset | Size  |
-|-----------------------------------|--------|-------|
-| `firmware/<env>/bootloader.bin`   | `0x0`     | ~15 kB |
-| `firmware/<env>/partitions.bin`   | `0x8000`  | 3 kB   |
-| `firmware/<env>/firmware.bin`     | `0x10000` | ~830 kB|
+| Path                                  | Flash use |
+|---------------------------------------|-----------|
+| `firmware/<env>/firmware.factory.bin` | Complete first install/recovery image at `0x0` |
+| `firmware/<env>/bootloader.bin`       | Bootloader component; offset is chip-specific |
+| `firmware/<env>/partitions.bin`       | Partition-table component |
+| `firmware/<env>/firmware.bin`         | App-only USB/OTA update at `0x10000` |
+
+The factory image includes the bootloader, partition table, OTA initialization
+data, and application at the offsets selected by the target's PlatformIO
+toolchain. In particular, ESP32-P4 bootloaders start at `0x2000`, so do not use
+a generic hand-written multi-image command for a fresh P4 install.
 
 `<env>` is one of: `heltec_v3`, `heltec_v4`, `heltec_v42`, `heltec_v43`,
 `heltec_tracker_v2`, `ikoka_stick`, `xiao_wio_sx1262`, `photon_1w_xiao_esp32c6`,
@@ -75,9 +82,7 @@ ENV=heltec_v3      ; CHIP=esp32s3   # also for heltec_v4 / heltec_v42 / heltec_v
 # ENV=esp32_p4_nano ; CHIP=esp32p4  # also for ethermesh_1w
 
 esptool.py --chip $CHIP --port /dev/ttyUSB0 --baud 921600 write_flash \
-    0x0     firmware/$ENV/bootloader.bin \
-    0x8000  firmware/$ENV/partitions.bin \
-    0x10000 firmware/$ENV/firmware.bin
+    0x0 firmware/$ENV/firmware.factory.bin
 
 # App-only update (board that already has a matching bootloader):
 esptool.py --chip $CHIP --port /dev/ttyUSB0 --baud 921600 write_flash \

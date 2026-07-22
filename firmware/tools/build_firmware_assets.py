@@ -7,7 +7,8 @@ firmware/platformio.ini, optionally narrows the build set from git changes,
 builds each selected env, then copies artifacts into firmware/<env>/.
 
 ESP32-family envs get:
-  bootloader.bin, partitions.bin, firmware.bin, manifest.json, SHA256SUMS.txt
+  bootloader.bin, partitions.bin, firmware.bin, firmware.factory.bin,
+  manifest.json, SHA256SUMS.txt
 
 nRF52 envs get:
   firmware.hex, firmware.zip, firmware.uf2, SHA256SUMS.txt
@@ -311,6 +312,49 @@ def write_esp_manifest(env: str, dest: Path) -> Path | None:
     return out
 
 
+def ensure_esp_factory(env: str, out_dir: Path) -> Path:
+    """Return PlatformIO's factory image, creating it for older platforms."""
+    factory = out_dir / "firmware.factory.bin"
+    if factory.exists():
+        return factory
+
+    # Recent pioarduino platforms generate this image themselves. Older
+    # platforms used by several ESP32-S3/C6 envs do not, so reproduce the
+    # same sparse, 0xff-padded layout without rebuilding or altering images.
+    chip_family = str(ENV_METADATA.get(env, {}).get("chip_family", "ESP32"))
+    bootloader_offset = {
+        "ESP32": 0x1000,
+        "ESP32-S2": 0x1000,
+        "ESP32-P4": 0x2000,
+    }.get(chip_family, 0x0000)
+    core_dir = Path(os.environ.get("PLATFORMIO_CORE_DIR", Path.home() / ".platformio"))
+    boot_app0 = (core_dir / "packages" / "framework-arduinoespressif32" /
+                 "tools" / "partitions" / "boot_app0.bin")
+    images = [
+        (bootloader_offset, out_dir / "bootloader.bin"),
+        (0x8000, out_dir / "partitions.bin"),
+        (0xE000, boot_app0),
+        (0x10000, out_dir / "firmware.bin"),
+    ]
+    for _, image in images:
+        if not image.exists():
+            raise SystemExit(f"Expected factory image component missing for {env}: {image}")
+
+    previous_end = 0
+    for offset, image in sorted(images):
+        if offset < previous_end:
+            raise SystemExit(f"Factory image components overlap for {env} at 0x{offset:x}")
+        previous_end = offset + image.stat().st_size
+
+    merged = bytearray(b"\xff" * previous_end)
+    for offset, image in images:
+        data = image.read_bytes()
+        merged[offset:offset + len(data)] = data
+    factory.write_bytes(merged)
+    print(f"Created combined factory image for {env}: bootloader at 0x{bootloader_offset:x}")
+    return factory
+
+
 def collect_env(env: str) -> None:
     out_dir = FIRMWARE / ".pio/build" / env
     dest = FIRMWARE / env
@@ -334,7 +378,14 @@ def collect_env(env: str) -> None:
         print(f"Staged nRF52 artifacts in {dest.relative_to(ROOT)}")
         return
 
-    for name in ("bootloader.bin", "partitions.bin", "firmware.bin"):
+    ensure_esp_factory(env, out_dir)
+
+    # PlatformIO's pioarduino builder creates firmware.factory.bin with the
+    # chip-specific bootloader offset and boot_app0 image included; the helper
+    # above supplies an identical image for older platform releases. Preserve
+    # individual images for browser flashing and app-only OTA as well.
+    for name in ("bootloader.bin", "partitions.bin", "firmware.bin",
+                 "firmware.factory.bin"):
         source = out_dir / name
         if not source.exists():
             raise SystemExit(f"Expected artifact missing for {env}: {source}")
