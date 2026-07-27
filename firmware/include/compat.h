@@ -22,6 +22,7 @@ inline int      compatResetReason()  { return (int)esp_reset_reason(); }
 inline void     compatGetMac(uint8_t mac[6]) { esp_efuse_mac_get_default(mac); }
 inline uint32_t compatFreeHeap()     { return (uint32_t)ESP.getFreeHeap(); }
 inline uint32_t compatMinFreeHeap()  { return (uint32_t)ESP.getMinFreeHeap(); }
+inline float    compatReadCpuTemperature() { return temperatureRead(); }
 
 #else  // nRF52 / non-ESP32
 
@@ -50,5 +51,12 @@ inline void     compatGetMac(uint8_t mac[6]) {
 }
 inline uint32_t compatFreeHeap()     { return 0; }
 inline uint32_t compatMinFreeHeap()  { return 0; }
+inline float    compatReadCpuTemperature() {
+#if defined(NRF52_SERIES) || defined(ARDUINO_ARCH_NRF52) || defined(ARDUINO_NRF52_ADAFRUIT)
+    return readCPUTemperature();
+#else
+    return __builtin_nanf("");
+#endif
+}
 
 #endif  // ARDUINO_ARCH_ESP32

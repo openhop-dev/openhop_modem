@@ -61,10 +61,22 @@ struct BatterySenseConfig {
     int8_t pin;                 // ADC pin, -1 when no battery sense exists
     int8_t enable_pin;          // optional divider/ADC gate, -1 when always on
     bool   enable_active_high;
-    float  multiplier;          // raw pin voltage -> pack voltage
+    float  multiplier;          // ESP calibrated pin millivolts -> pack millivolts
     uint8_t fuel_gauge_i2c_addr = 0;      // MAX17048-style fuel gauge, 0=none
     uint8_t fuel_gauge_vcell_reg = 0x02;  // VCELL register (78.125 uV/LSB)
     uint8_t fuel_gauge_crate_reg = 0;     // CRATE register, 0=not exposed
+
+    // Raw-ADC conversion for platforms without analogReadMilliVolts(). A zero
+    // field leaves this path unsupported. Divider values form an exact rational
+    // scale, avoiding host/firmware floating-point drift.
+    uint32_t adc_reference_mv = 0;
+    uint8_t adc_resolution_bits = 0;
+    uint32_t adc_divider_numerator = 0;
+    uint32_t adc_divider_denominator = 0;
+    uint8_t sample_count = 0;
+    uint16_t minimum_plausible_mv = 0;
+    uint16_t maximum_plausible_mv = 0;
+    uint8_t minimum_valid_samples = 0;
 };
 
 struct WifiAntennaSwitchConfig {

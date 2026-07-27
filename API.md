@@ -139,6 +139,13 @@ Example:
 }
 ```
 
+RAK4631 WisMesh Ethernet security differences:
+
+- `tcp_token` is never returned. The response contains `tcp_token_set` instead.
+- When serial GPS support is explicitly compiled in, the response also contains
+  `gps_enabled` and `gps_available`. Ordinary RAK builds leave GPS unavailable.
+- The HTTP password is never returned on any platform.
+
 ### `POST /api/config`
 
 Updates saved config and reboots the modem.
@@ -149,6 +156,7 @@ Accepted top-level fields:
 - `tcp_port`
 - `use_static_ip`
 - `network`
+- `gps_enabled` on RAK builds where GPS support was explicitly compiled in
 
 `network` fields:
 - `use_static_ip`
@@ -164,6 +172,9 @@ Notes:
 - set `tcp_token` to `""` to clear the openHop token
 - if `use_static_ip` is `true`, `static_ip`, `subnet`, and `gateway` must be valid
 - a successful request always reboots the modem
+- RAK rejects unsupported Wi-Fi antenna, Heltec LNA, GPIO, and GPS-mode fields
+  instead of silently discarding them
+- RAK responses report only `tcp_token_set`; they never echo the submitted token
 
 Example:
 
@@ -212,7 +223,7 @@ Reboots the modem immediately.
 Example:
 
 ```bash
-curl -u admin:YOUR_PASSWORD -X POST http://192.168.1.42/api/reboot
+curl -u admin:YOUR_PASSWORD -X POST -d '' http://192.168.1.42/api/reboot
 ```
 
 Response:

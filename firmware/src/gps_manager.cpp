@@ -10,14 +10,16 @@ namespace GPSManager {
 
 static Snapshot current;
 static String line;
+static constexpr size_t CONFIG_COMMAND_COUNT = 2;
+static size_t nextConfigCommand = CONFIG_COMMAND_COUNT;
+#ifdef ARDUINO_ARCH_ESP32
 static constexpr unsigned long CONFIG_SETTLE_MS = 250;
 static constexpr unsigned long COMMAND_DELAY_MS = 40;
-static constexpr size_t CONFIG_COMMAND_COUNT = 2;
 static unsigned long nextConfigCommandAtMs = 0;
-static size_t nextConfigCommand = CONFIG_COMMAND_COUNT;
+#endif
 
-#ifdef ARDUINO_ARCH_ESP32
-static HardwareSerial& gpsSerial = Serial1;
+#if defined(ARDUINO_ARCH_ESP32) || defined(ARDUINO_ARCH_NRF52)
+static auto& gpsSerial = Serial1;
 
 static int gpsActiveLevel(bool activeHigh) {
     return activeHigh ? HIGH : LOW;
@@ -180,12 +182,16 @@ static String formatUtcTime(const String& raw) {
 
 static String formatDate(const String& raw) {
     if (raw.length() != 6) return String();
-    int day = raw.substring(0, 2).toInt();
-    int month = raw.substring(2, 4).toInt();
-    int yy = raw.substring(4, 6).toInt();
-    int year = yy < 80 ? 2000 + yy : 1900 + yy;
+    for (size_t i = 0; i < 6; ++i) {
+        if (raw[i] < '0' || raw[i] > '9') return String();
+    }
+    const unsigned day = static_cast<unsigned>(raw.substring(0, 2).toInt());
+    const unsigned month = static_cast<unsigned>(raw.substring(2, 4).toInt());
+    const unsigned yy = static_cast<unsigned>(raw.substring(4, 6).toInt());
+    if (day < 1 || day > 31 || month < 1 || month > 12) return String();
+    const unsigned year = yy < 80 ? 2000U + yy : 1900U + yy;
     char buf[16];
-    snprintf(buf, sizeof(buf), "%04d-%02d-%02d", year, month, day);
+    snprintf(buf, sizeof(buf), "%04u-%02u-%02u", year, month, day);
     return String(buf);
 }
 
@@ -322,7 +328,7 @@ void begin(bool enabled) {
     current = Snapshot{};
     current.available = hasGpsPins();
     line.reserve(128);
-#ifdef ARDUINO_ARCH_ESP32
+#if defined(ARDUINO_ARCH_ESP32) || defined(ARDUINO_ARCH_NRF52)
     setEnabled(enabled);
 #else
     current.enabled = false;
@@ -330,7 +336,7 @@ void begin(bool enabled) {
 }
 
 void setEnabled(bool enabled) {
-#ifdef ARDUINO_ARCH_ESP32
+#if defined(ARDUINO_ARCH_ESP32) || defined(ARDUINO_ARCH_NRF52)
     bool available = hasGpsPins();
     if (!available) {
         current.available = false;
@@ -347,17 +353,27 @@ void setEnabled(bool enabled) {
         releaseGpsReset();
         pulseGpsReset();
         delay(50);
-        gpsSerial.begin(BOARD.gps_uart_baud, SERIAL_8N1, BOARD.pin_gps_uart_rx, BOARD.pin_gps_uart_tx);
+#if defined(ARDUINO_ARCH_ESP32)
+        gpsSerial.begin(BOARD.gps_uart_baud, SERIAL_8N1,
+                        BOARD.pin_gps_uart_rx, BOARD.pin_gps_uart_tx);
+#else
+        // nRF52 Serial1 pins are fixed by the selected board variant.
+        gpsSerial.begin(BOARD.gps_uart_baud);
+#endif
         current.enabled = true;
         Serial.printf("[GPS] UART GPS enabled on RX=%d TX=%d baud=%lu EN=%d RST=%d\n",
                       BOARD.pin_gps_uart_rx, BOARD.pin_gps_uart_tx,
                       (unsigned long)BOARD.gps_uart_baud,
                       BOARD.pin_gps_enable, BOARD.pin_gps_reset);
+#ifdef ARDUINO_ARCH_ESP32
         if (BOARD.gps_send_casic_config) {
             scheduleAtgm336hConfig();
         } else {
             nextConfigCommand = CONFIG_COMMAND_COUNT;
         }
+#else
+        nextConfigCommand = CONFIG_COMMAND_COUNT;
+#endif
     } else {
         gpsSerial.end();
         current.enabled = false;
@@ -375,7 +391,7 @@ void setEnabled(bool enabled) {
 }
 
 void loop() {
-#ifdef ARDUINO_ARCH_ESP32
+#if defined(ARDUINO_ARCH_ESP32) || defined(ARDUINO_ARCH_NRF52)
     if (!current.enabled) return;
     while (gpsSerial.available()) {
         char c = (char)gpsSerial.read();
@@ -391,7 +407,9 @@ void loop() {
             }
         }
     }
+#ifdef ARDUINO_ARCH_ESP32
     runAtgm336hConfig();
+#endif
 #endif
 }
 

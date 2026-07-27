@@ -11,6 +11,7 @@
 #include "runtime_stats.h"
 #include "tcp_server.h"
 #include "wifi_manager.h"
+#include "webui_shared.h"
 
 #include <ArduinoJson.h>
 #include <ArduinoOTA.h>
@@ -192,6 +193,133 @@ static const char* radioStateLabel(const RuntimeStats::Snapshot& snap) {
         case 2: return "Error";
         default: return "RX/Idle";
     }
+}
+
+static WebUiShared::Model buildWebUiModel() {
+    const auto& cfg = WifiManager::getConfig();
+    const RuntimeStats::Snapshot snap = RuntimeStats::capture();
+    const NetworkSnapshot net = getNetworkSnapshot();
+    const GPSManager::Snapshot gps = GPSManager::snapshot();
+
+    WebUiShared::Model model;
+    model.board = BOARD.name;
+    model.firmware = snap.firmwareVersion.c_str();
+    model.hostname = hostname.c_str();
+    model.connectedClientIp = TCPServer::getClientIP().c_str();
+    model.uptimeSec = snap.status.uptime_sec;
+    model.dieTemperatureC = snap.status.temp_c;
+    model.capabilities.wifi = BOARD.has_wifi;
+    model.capabilities.ethernet = BOARD.ethernet.enabled;
+    model.capabilities.mdns = true;
+    model.capabilities.wifiReset = BOARD.has_wifi;
+    model.capabilities.wifiAntennaSelection = WifiManager::hasWifiAntennaSwitch();
+    model.capabilities.heltecV43Controls = RFFrontEnd::hasHeltecV43LnaControl();
+    model.capabilities.gps = GPSManager::hasGpsPins();
+    model.capabilities.battery = BOARD.battery.pin >= 0 || BOARD.battery.fuel_gauge_i2c_addr != 0;
+    model.capabilities.radio = true;
+    model.capabilities.updateAvailable = true;
+    model.capabilities.httpFirmwareUpload = true;
+    model.capabilities.writableManagement = true;
+    model.capabilities.exposeTcpToken = true;
+
+    model.network.interfaceName = net.iface;
+    model.network.live = net.live;
+    model.network.currentIp = currentIPString().c_str();
+    model.network.subnet = (uint32_t)net.subnet ? net.subnet.toString().c_str() : "";
+    model.network.gateway = (uint32_t)net.gateway ? net.gateway.toString().c_str() : "";
+    model.network.dns1 = (uint32_t)net.dns1 ? net.dns1.toString().c_str() : "";
+    model.network.dns2 = (uint32_t)net.dns2 ? net.dns2.toString().c_str() : "";
+    model.network.hasWifiRssi = net.has_wifi_rssi;
+    model.network.wifiRssiDbm = net.wifi_rssi_dbm;
+    if (model.capabilities.ethernet) {
+        model.network.linkState = EthernetManager::isLinkUp() ? "up" : "down";
+        model.network.mac = EthernetManager::getMACString();
+        model.network.tcpStatus = model.connectedClientIp.empty() ? "listening" : "connected";
+    }
+
+    model.config.hostname = cfg.hostname.c_str();
+    model.config.useStaticIp = cfg.useStaticIP;
+    model.config.staticIp = (uint32_t)cfg.staticIP ? cfg.staticIP.toString().c_str() : "";
+    model.config.subnet = (uint32_t)cfg.subnet ? cfg.subnet.toString().c_str() : "";
+    model.config.gateway = (uint32_t)cfg.gateway ? cfg.gateway.toString().c_str() : "";
+    model.config.dns1 = (uint32_t)cfg.dns1 ? cfg.dns1.toString().c_str() : "";
+    model.config.dns2 = (uint32_t)cfg.dns2 ? cfg.dns2.toString().c_str() : "";
+    model.config.tcpPort = cfg.tcpPort;
+    model.config.tcpTokenSet = cfg.tcpToken.length() > 0;
+    model.config.tcpToken = cfg.tcpToken.c_str();
+    model.config.wifiExternalAntenna = cfg.wifiExternalAntenna;
+    model.config.gpsEnabled = cfg.gpsEnabled;
+    model.config.heltecV43ExternalLnaEnabled = RFFrontEnd::isExternalLnaEnabled();
+    model.config.heltecV43FemLnaBypassed = RFFrontEnd::isFemLnaBypassed();
+    model.config.agcResetIntervalSec = RFFrontEnd::getAgcResetIntervalSec();
+
+    model.battery.available = model.capabilities.battery;
+    model.battery.voltageValid = snap.status.battery_mv != 0xFFFF;
+    model.battery.voltageMv = model.battery.voltageValid ? snap.status.battery_mv : 0;
+    model.battery.chargeRateAvailable = snap.hasBatteryChargeRatePctPerHour;
+    model.battery.chargeRateValid = snap.batteryChargeRatePctPerHourValid;
+    model.battery.chargeRatePctPerHour = snap.batteryChargeRatePctPerHour;
+
+    model.gps.available = gps.available;
+    model.gps.enabled = gps.enabled;
+    model.gps.seen = gps.seen;
+    model.gps.fixValid = gps.fixValid;
+    model.gps.fixQuality = gps.fixQuality;
+    model.gps.satellitesUsed = gps.satellitesUsed;
+    model.gps.satellitesInView = gps.satellitesInViewCount;
+    model.gps.latitude = gps.latitude;
+    model.gps.longitude = gps.longitude;
+    model.gps.altitudeValid = gps.hasAltitude;
+    model.gps.altitudeM = gps.altitudeM;
+    model.gps.speedValid = gps.hasSpeed;
+    model.gps.speedKmh = gps.speedKmh;
+    model.gps.courseValid = gps.hasCourse;
+    model.gps.courseDegrees = gps.courseDegrees;
+    model.gps.utcTime = gps.utcTime.c_str();
+    model.gps.date = gps.date.c_str();
+    model.gps.datetimeUtc = gps.datetimeUtc.c_str();
+    model.gps.lastSentenceType = gps.lastSentenceType.c_str();
+    model.gps.validSentenceCount = gps.validSentenceCount;
+    model.gps.invalidChecksumCount = gps.invalidChecksumCount;
+    model.gps.rawByteCount = gps.rawByteCount;
+    model.gps.configCommandCount = gps.configCommandCount;
+    model.gps.uartRxPin = BOARD.pin_gps_uart_rx;
+    model.gps.uartTxPin = BOARD.pin_gps_uart_tx;
+    model.gps.uartBaud = BOARD.gps_uart_baud;
+    model.gps.enablePin = BOARD.pin_gps_enable;
+    model.gps.resetPin = BOARD.pin_gps_reset;
+    model.gps.ageValid = gps.lastUpdateMs != 0;
+    model.gps.ageMs = model.gps.ageValid ? (uint32_t)(millis() - gps.lastUpdateMs) : 0;
+    for (uint8_t i = 0; i < gps.satellitesInViewStored; ++i) {
+        WebUiShared::GpsSatelliteModel satellite;
+        satellite.prn = gps.satellitesInView[i].prn.c_str();
+        satellite.elevationValid = gps.satellitesInView[i].elevationDegrees >= 0;
+        satellite.elevationDegrees = gps.satellitesInView[i].elevationDegrees;
+        satellite.azimuthValid = gps.satellitesInView[i].azimuthDegrees >= 0;
+        satellite.azimuthDegrees = gps.satellitesInView[i].azimuthDegrees;
+        satellite.snrValid = gps.satellitesInView[i].hasSnr;
+        satellite.snrDb = gps.satellitesInView[i].snrDb;
+        model.gps.satellites.push_back(satellite);
+    }
+
+    model.radio.available = true;
+    model.radio.state = radioStateLabel(snap);
+    model.radio.standby = snap.radioStandby;
+    model.radio.autoCadEnabled = snap.autoCadEnabled;
+    model.radio.frequencyHz = snap.radio.freq_hz;
+    model.radio.bandwidthHz = snap.radio.bandwidth_hz;
+    model.radio.spreadingFactor = snap.radio.sf;
+    model.radio.codingRate = snap.radio.cr;
+    model.radio.txPowerDbm = snap.radio.power_dbm;
+    model.radio.syncword = snap.radio.syncword;
+    model.radio.preambleLength = snap.radio.preamble_len;
+    model.counters.rxPackets = snap.status.rx_count;
+    model.counters.txPackets = snap.status.tx_count;
+    model.counters.crcErrors = snap.status.crc_errors;
+    model.counters.lastRssiDbm = snap.status.last_rssi;
+    model.counters.lastSnrDb = snap.status.last_snr / 10.0f;
+    model.counters.noiseFloorDbm = snap.status.noise_floor_x10 / 10.0f;
+    return model;
 }
 
 static String htmlEscape(const String& value) {
@@ -737,6 +865,12 @@ static bool checkAuth() {
 
 static void handleRoot() {
     if (!checkAuth()) return;
+    const std::string rendered = WebUiShared::renderRootPage(buildWebUiModel());
+    httpServer->send(200, "text/html; charset=utf-8", rendered.c_str());
+}
+
+[[maybe_unused]] static void handleRootLegacy() {
+    if (!checkAuth()) return;
     String title = modemTitle();
     const auto& cfg = WifiManager::getConfig();
     String clientIP = TCPServer::getClientIP();
@@ -890,6 +1024,12 @@ static void handleRoot() {
 }
 
 static void handleStats() {
+    if (!checkAuth()) return;
+    const std::string rendered = WebUiShared::renderStatsPage(buildWebUiModel());
+    httpServer->send(200, "text/html; charset=utf-8", rendered.c_str());
+}
+
+[[maybe_unused]] static void handleStatsLegacy() {
     if (!checkAuth()) return;
 
     const auto& cfg = WifiManager::getConfig();

@@ -23,7 +23,7 @@ your board:
 | WaveShare ESP32-P4-Nano (+ off-board E22) | `esp32_p4_nano` | `p4nano-<mac3>.local` | **Ethernet or Wi-Fi** (runtime auto-select; cable plugged → ETH, no link → WiFi fallback. Both at once is unstable with radio active — see README "Porting to another ESP32-P4 board") |
 | MeshSmith EtherMesh-1W | `ethermesh_1w` | `ethermesh-1w-<mac3>.local` | **Ethernet** |
 | Heltec T114 | `heltec_t114` | n/a | none — USB-CDC + UART only |
-| RAK4631 WisMesh Ethernet Gateway | `rak4631_wismesh_eth` | n/a (hostname is status-only) | **Ethernet** (W5100S, TCP port 5055) — no mDNS, no network OTA |
+| RAK4631 WisMesh Ethernet Gateway | `rak4631_wismesh_eth` | n/a (use DHCP lease/IP) | **Ethernet** (W5100S, TCP 5055 + WebUI/API 80) — no mDNS; Ethernet OTA disabled; RAK13800 path is hardware-test/alpha until physically validated |
 | Seeed XIAO nRF52840 + Wio-SX1262 | `xiao_nrf52_wio` | n/a | none — USB-CDC only |
 
 The `esp32_p4_nano`, `ethermesh_1w`, `station_g2`, and `photon_1w_xiao_esp32c6` envs use the
@@ -33,14 +33,18 @@ toolchain; first build will fetch the platform package once.
 
 ### 1a. Browser flasher (recommended)
 
-Use the openHop browser flasher for supported ESP32-family boards:
+Use the openHop browser flasher for supported modem boards:
 
 <https://flasher.openhop.dev/>
 
-Pick your board, connect it over USB, and choose **Install** / **Update** from
-the browser. Use the manual esptool, PlatformIO, or nRF52 DFU flows below when
-you are building local firmware, recovering a board manually, or using a target
-that is not yet published in the flasher.
+Pick your board, connect it over USB, and flash from the browser. For a local
+RAK4631 test build, choose **Custom Firmware** and select
+`firmware/rak4631_wismesh_eth/firmware.zip`. Stop anything using the serial
+port, click **Enter DFU mode**, and select the application port. Then click
+**Flash** and select the newly appearing `WisBlock RAK4631` bootloader port. If
+the DFU button does nothing, quickly press RESET twice; do not hold it. Use the
+manual esptool, PlatformIO, or nRF52 DFU flows below for recovery or targets not
+published in the flasher.
 
 ### 1b. Prebuilt firmware binaries (no PlatformIO)
 
@@ -66,6 +70,9 @@ a generic hand-written multi-image command for a fresh P4 install.
 
 nRF52 targets ship `firmware.hex`, `firmware.zip`, `firmware.uf2`, and
 `SHA256SUMS.txt` in `firmware/<env>/` after the firmware asset workflow runs.
+The RAK target also includes `firmware.ota` for the currently disabled staged
+Ethernet OTA design; use `firmware.zip`, not `firmware.ota`, with the browser
+flasher.
 Use the ZIP with Adafruit nRF52 DFU, or double-click reset and use the board
 bootloader flow; there are no ESP32-style bootloader/partition offsets for
 these targets.
@@ -127,11 +134,13 @@ release RESET, release BOOT.
 
 ### 1d. OTA over the network (after the first flash, no cable)
 
-**Only ESP32-family targets with the OTA/HTTP stack** support network
+**Only ESP32-family targets with the enabled OTA stack** support network
 OTA. nRF52 targets (`heltec_t114`, `xiao_nrf52_wio`, `rak4631_wismesh_eth`)
 must be flashed via USB with `pio run -e <env> -t upload` (Adafruit
-nRF52 DFU). The `rak4631_wismesh_eth` target has Ethernet for openHop TCP
-only — it has no HTTP/OTA stack, and the `OTAManager` stub is a no-op.
+nRF52 DFU). The RAK4631 does have an authenticated HTTP management stack,
+but `/update` is absent. Its generated `firmware.ota` is validation/staging
+groundwork only and is not installable until the exact bootloader and recovery
+contract pass hardware testing.
 
 Once the board is on the LAN (Wi-Fi STA or Ethernet — ESP32 only) and
 visible via mDNS:
@@ -151,6 +160,20 @@ The HTTP OTA page uses Basic Auth with username `admin` and default
 password `password`; change it from the OTA page after first network boot.
 Rollback is **not** automatic on a broken image — keep the USB cable
 as a recovery fallback.
+
+For the RAK4631, find the assigned address in the DHCP lease table and open
+`http://<rak-ip>/`. The initial HTTP credentials are `admin` / `password`.
+Change the HTTP password and openHop TCP token from the page. Hostname,
+DHCP/static networking, TCP port/token, and optional compile-gated GPS settings
+are stored atomically; the page states when reboot is required. Port 80 is
+reserved for management. BLE DFU entry remains hidden until a real bootloader
+BLE DFU session and interrupted-transfer recovery are validated on the installed
+bootloader; use USB serial DFU recovery in the meantime. A tested
+RAK4630/RAK19003 proxy exposed only CDC in bootloader mode, not a UF2 disk, so
+do not assume UF2 mass storage on the production gateway without checking it.
+On that proxy, MeshCore's application-mode `RAK4631_OTA` service successfully
+handed off to a connectable bootloader target named `AdaDFU`; no image data was
+sent, and a reset returned to the unchanged repeater application.
 
 ### Adding a new board
 
@@ -188,10 +211,9 @@ use `303a:1001`.)
 > TCP token, so port 5055 is open to anyone on the same LAN segment until
 > you set one. The firmware still filters non-RFC1918/link-local/loopback
 > source addresses, but on a shared LAN an empty token is only safe on an
-> isolated network. On web-enabled Wi-Fi firmware, set/change the TCP token
-> from the device web UI (or via USB provisioning). The RAK4631 W5100S
-> Ethernet target has no web UI/HTTP stack, so its current token default is
-> the `PYMC_ETH_TOKEN` build flag in `platformio.ini`.
+> isolated network. On web-enabled firmware, including the RAK4631 W5100S
+> Ethernet target, set/change the TCP token from the authenticated device web
+> UI. RAK JSON responses expose only whether a token is set, never its value.
 
 On first boot the modem starts an open access point `openHop-Modem-XXXX`.
 Connect a phone/laptop to that AP, open `http://192.168.4.1`, pick your

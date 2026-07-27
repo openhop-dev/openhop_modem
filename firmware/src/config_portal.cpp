@@ -4,6 +4,7 @@
 #include "config_portal.h"
 #include "rf_frontend.h"
 #include "wifi_manager.h"
+#include "webui_shared.h"
 
 #include <WebServer.h>
 #include <WiFi.h>
@@ -12,23 +13,6 @@ namespace ConfigPortal {
 
 static WebServer* server = nullptr;
 static bool       active = false;
-
-static String htmlEscape(const String& s) {
-    String out;
-    out.reserve(s.length() + 8);
-    for (size_t i = 0; i < s.length(); i++) {
-        char c = s[i];
-        switch (c) {
-            case '<':  out += "&lt;";   break;
-            case '>':  out += "&gt;";   break;
-            case '&':  out += "&amp;";  break;
-            case '"':  out += "&quot;"; break;
-            case '\'': out += "&#39;";  break;
-            default:   out += c;
-        }
-    }
-    return out;
-}
 
 static void handleRoot() {
     const auto& cfg = WifiManager::getConfig();
@@ -67,89 +51,29 @@ static void handleRoot() {
         }
     }
 
-    String html;
-    html.reserve(6144);
-    html += F("<!DOCTYPE html><html><head><meta charset='utf-8'>"
-              "<meta name='viewport' content='width=device-width,initial-scale=1'>"
-              "<title>openHop Modem Setup</title>"
-              "<style>"
-              "body{font-family:system-ui,sans-serif;max-width:480px;margin:1em auto;padding:0 1em;color:#222}"
-              "h1{font-size:1.3em}"
-              "label{display:block;margin-top:1em;font-weight:600}"
-              "input,select{width:100%;padding:.5em;box-sizing:border-box;font-size:1em}"
-              "input[type=checkbox]{width:auto;margin-right:.5em}"
-              "button{margin-top:1.5em;padding:.75em;width:100%;background:#3a7;color:#fff;border:0;font-size:1em;border-radius:4px}"
-              ".hint{color:#666;font-size:.85em;font-weight:400}"
-              "hr{margin:2em 0;border:0;border-top:1px solid #ddd}"
-              "</style></head><body>");
-    html += F("<h1>openHop Modem Setup</h1>");
-    html += F("<form method='POST' action='/save'>");
-
-    html += F("<label>Wi-Fi SSID</label>");
-    html += F("<select name='ssid'>");
-    html += F("<option value=''>-- select --</option>");
+    WebUiShared::SetupModel model;
+    model.savedSsid = cfg.ssid.c_str();
+    model.password = cfg.password.c_str();
     for (int i = 0; i < uniq_count; i++) {
-        html += "<option value='";
-        html += htmlEscape(uniq_ssid[i]);
-        html += "'";
-        if (uniq_ssid[i] == cfg.ssid) html += " selected";
-        html += ">";
-        html += htmlEscape(uniq_ssid[i]);
-        html += " (";
-        html += String(uniq_rssi[i]);
-        html += " dBm)</option>";
+        model.networks.push_back({uniq_ssid[i].c_str(), uniq_rssi[i]});
     }
-    html += F("</select>");
+    model.wifiAntennaSelection = WifiManager::hasWifiAntennaSwitch();
+    model.wifiExternalAntenna = cfg.wifiExternalAntenna;
+    model.heltecV43Controls = RFFrontEnd::hasHeltecV43LnaControl();
+    model.heltecV43ExternalLnaEnabled = RFFrontEnd::isExternalLnaEnabled();
+    model.agcResetIntervalSec = RFFrontEnd::getAgcResetIntervalSec();
+    model.useStaticIp = cfg.useStaticIP;
+    model.staticIp = cfg.staticIP.toString().c_str();
+    model.gateway = cfg.gateway.toString().c_str();
+    model.subnet = cfg.subnet.toString().c_str();
+    model.dns1 = cfg.dns1.toString().c_str();
+    model.dns2 = cfg.dns2.toString().c_str();
+    model.hostname = cfg.hostname.c_str();
+    model.tcpPort = cfg.tcpPort;
+    model.tcpToken = cfg.tcpToken.c_str();
 
-    html += F("<label>or manual SSID <span class='hint'>(overrides dropdown)</span></label>");
-    html += F("<input type='text' name='ssid_manual' autocomplete='off'>");
-
-    html += F("<label>Wi-Fi password</label>");
-    html += "<input type='password' name='password' value='" + htmlEscape(cfg.password) + "'>";
-
-    if (WifiManager::hasWifiAntennaSwitch()) {
-        html += F("<label><input type='checkbox' name='wifi_ant_ext' value='1'");
-        if (cfg.wifiExternalAntenna) html += F(" checked");
-        html += F("> Use external Wi-Fi antenna</label>");
-    }
-
-    if (RFFrontEnd::hasHeltecV43LnaControl()) {
-        html += F("<label><input type='checkbox' name='v43_lna_on' value='1'");
-        if (RFFrontEnd::isExternalLnaEnabled()) html += F(" checked");
-        html += F("> Enable Heltec V4.3 external FEM RX LNA <span class='hint'>(RX only; TX always bypasses LNA)</span></label>");
-        html += F("<label>agc.reset.interval seconds <span class='hint'>(0 disables; periodically resets AGC during long idle periods)</span><input name='agc_reset_interval_sec' type='number' min='0' max='3600' step='1' value='");
-        html += String(RFFrontEnd::getAgcResetIntervalSec());
-        html += F("'></label>");
-    }
-
-    html += F("<label><input type='checkbox' name='static' value='1'");
-    if (cfg.useStaticIP) html += F(" checked");
-    html += F("> Use static IP (otherwise DHCP)</label>");
-
-    html += F("<label>Static IP</label>");
-    html += "<input type='text' name='ip' value='" + cfg.staticIP.toString() + "' placeholder='192.168.1.42'>";
-    html += F("<label>Gateway</label>");
-    html += "<input type='text' name='gw' value='" + cfg.gateway.toString() + "' placeholder='192.168.1.1'>";
-    html += F("<label>Subnet mask</label>");
-    html += "<input type='text' name='sn' value='" + cfg.subnet.toString() + "' placeholder='255.255.255.0'>";
-    html += F("<label>DNS 1</label>");
-    html += "<input type='text' name='dns1' value='" + cfg.dns1.toString() + "' placeholder='1.1.1.1'>";
-    html += F("<label>DNS 2</label>");
-    html += "<input type='text' name='dns2' value='" + cfg.dns2.toString() + "' placeholder='8.8.8.8'>";
-
-    html += F("<hr>");
-    html += F("<label>Hostname <span class='hint'>(optional; blank = default mDNS name)</span></label>");
-    html += "<input type='text' name='hostname' autocomplete='off' maxlength='32' value='" +
-            htmlEscape(cfg.hostname) + "' placeholder='ethermesh-1w'>";
-    html += F("<label>TCP port</label>");
-    html += "<input type='number' name='port' min='1' max='65535' value='" + String(cfg.tcpPort) + "'>";
-    html += F("<label>TCP auth token <span class='hint'>(optional; empty = no auth)</span></label>");
-    html += "<input type='text' name='token' autocomplete='off' value='" + htmlEscape(cfg.tcpToken) + "'>";
-
-    html += F("<button type='submit'>Save &amp; Restart</button>");
-    html += F("</form></body></html>");
-
-    server->send(200, "text/html; charset=utf-8", html);
+    const std::string html = WebUiShared::renderSetupPage(model);
+    server->send(200, "text/html; charset=utf-8", html.c_str());
     WiFi.scanDelete();
 }
 
@@ -219,7 +143,7 @@ static void handleSave() {
     String body = F("<!DOCTYPE html><html><body style='font-family:system-ui,sans-serif;text-align:center;margin-top:3em'>"
                     "<h2>Saved. Rebooting…</h2>"
                     "<p>Device will attempt to join <b>");
-    body += htmlEscape(newCfg.ssid);
+    body += WebUiShared::htmlEscape(newCfg.ssid.c_str()).c_str();
     body += F("</b>.</p></body></html>");
     server->send(200, "text/html; charset=utf-8", body);
 

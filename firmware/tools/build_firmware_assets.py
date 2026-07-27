@@ -12,6 +12,8 @@ ESP32-family envs get:
 
 nRF52 envs get:
   firmware.hex, firmware.zip, firmware.uf2, SHA256SUMS.txt
+
+The rak4631_wismesh_eth env additionally gets its board-specific firmware.ota.
 """
 from __future__ import annotations
 
@@ -23,9 +25,17 @@ import os
 import shutil
 import subprocess
 import sys
+import zipfile
 from pathlib import Path
 
+from nrf52_flash_layout import validate_rak4631_board, validate_rak4631_size
 from nrf52_uf2 import uf2_conversion_command
+from package_nrf52_ota import (
+    create_package_bytes,
+    firmware_version_from_source,
+    read_dfu_payload,
+    validate_package_matches_dfu,
+)
 
 ROOT = Path(__file__).resolve().parents[2]
 FIRMWARE = ROOT / "firmware"
@@ -274,6 +284,22 @@ def write_nrf52_uf2(hex_file: Path, dest: Path, env: str) -> Path:
     return uf2_file
 
 
+def validate_nrf52_build(env: str, artifact: Path) -> None:
+    """Enforce board-specific nRF52 size/layout contracts before staging."""
+    if env != "rak4631_wismesh_eth":
+        return
+    validate_rak4631_board(FIRMWARE / "boards/rak4631_wismesh_eth.json")
+    if artifact.suffix == ".zip":
+        with zipfile.ZipFile(artifact) as archive:
+            try:
+                size = archive.getinfo("firmware.bin").file_size
+            except KeyError as exc:
+                raise ValueError(f"RAK4631 DFU package lacks firmware.bin: {artifact}") from exc
+        validate_rak4631_size(size, f"{artifact}:firmware.bin")
+    else:
+        validate_rak4631_size(artifact.stat().st_size, str(artifact))
+
+
 def firmware_version(env: str) -> str:
     main_cpp = FIRMWARE / "src/main.cpp"
     base = "unknown"
@@ -372,10 +398,23 @@ def collect_env(env: str) -> None:
         for source in (hex_file, zip_file):
             if not source.exists():
                 raise SystemExit(f"Expected artifact missing for {env}: {source}")
+        validate_nrf52_build(env, zip_file)
+        for source in (hex_file, zip_file):
             target = dest / source.name
             shutil.copy2(source, target)
             copied.append(target)
         copied.append(write_nrf52_uf2(hex_file, dest, env))
+        if env == "rak4631_wismesh_eth":
+            ota_file = out_dir / "firmware.ota"
+            version = firmware_version_from_source(
+                FIRMWARE / "src/main.cpp",
+                FIRMWARE / "include/boards/rak4631_wismesh_eth.h",
+            )
+            create_package_bytes(read_dfu_payload(zip_file), ota_file, version)
+            validate_package_matches_dfu(ota_file, zip_file, version)
+            ota_target = dest / ota_file.name
+            shutil.copy2(ota_file, ota_target)
+            copied.append(ota_target)
         write_sha256s(dest, copied)
         print(f"Staged nRF52 artifacts in {dest.relative_to(ROOT)}")
         return

@@ -15,9 +15,12 @@
 #include "net_filter.h"
 #include "compat.h"
 #include "board_config.h"
-
+#include <Arduino.h>
 #include <SPI.h>
 #include <RAK13800_W5100S.h>
+#include <Dhcp.h>
+#include <new>
+#include <w5100.h>
 #if defined(ARDUINO_ARCH_NRF52) || defined(NRF52_SERIES) || defined(ARDUINO_NRF52_ADAFRUIT)
 #  include "nrf_gpio.h"
 #endif
@@ -29,7 +32,7 @@
 #  define PYMC_ETH_TOKEN ""
 #endif
 #ifndef PYMC_ETH_HOSTNAME
-#  define PYMC_ETH_HOSTNAME "pymc-rak4631-eth"
+#  define PYMC_ETH_HOSTNAME "openhop-rak4631-eth"
 #endif
 #ifndef PYMC_ETH_USE_DHCP
 #  define PYMC_ETH_USE_DHCP 1
@@ -42,6 +45,12 @@
 #endif
 #ifndef PYMC_ETH_DHCP_RETRY_MS
 #  define PYMC_ETH_DHCP_RETRY_MS 30000UL
+#endif
+#ifndef PYMC_ETH_DHCP_RETRY_TIMEOUT_MS
+#  define PYMC_ETH_DHCP_RETRY_TIMEOUT_MS 250UL
+#endif
+#ifndef PYMC_ETH_DHCP_RETRY_RESPONSE_TIMEOUT_MS
+#  define PYMC_ETH_DHCP_RETRY_RESPONSE_TIMEOUT_MS 100UL
 #endif
 #ifndef PYMC_ETH_STATIC_FALLBACK_ON_DHCP_FAIL
 // Avoid claiming a hard-coded address on an unknown production LAN unless the
@@ -136,15 +145,25 @@ namespace EthernetManager {
     static char ipString[16] = "---";
     static uint32_t lastMaintainMs = 0;
     static uint32_t lastDhcpAttemptMs = 0;
+    static bool lastLinkUp = false;
+    static bool dhcpLeaseValid = false;
     static byte mac[6] = {0x02, 0x50, 0x59, 0x4d, 0x43, 0x00};
-    static char hostnameString[64] = PYMC_ETH_HOSTNAME;
+    static char hostnameString[65] = PYMC_ETH_HOSTNAME;
+
+    LinkState getLinkState() {
+        if (!started) return LinkState::UNKNOWN;
+        auto s = Ethernet.linkStatus();
+        if (s == LinkON) return LinkState::UP;
+        if (s == LinkOFF) return LinkState::DOWN;
+        return LinkState::UNKNOWN;
+    }
 
     static const char* linkStatusString() {
-        auto s = Ethernet.linkStatus();
-        if (s == LinkON) return "up";
-        if (s == LinkOFF) return "down";
-        if (s == Unknown) return "unknown";
-        return "?";
+        switch (getLinkState()) {
+            case LinkState::UP: return "up";
+            case LinkState::DOWN: return "down";
+            default: return "unknown";
+        }
     }
 
     static bool linkStatusIsUp() {
@@ -166,7 +185,7 @@ namespace EthernetManager {
         // A cached/static localIP is not a usable TCP path if the cable/link is
         // down. Gate hasIP()/status on link state so the TCP server is not
         // started against a stale address after unplug/replug or DHCP failure.
-        if (!linkStatusIsUp()) {
+        if (!linkStatusIsUp() || (dhcpMode && !dhcpLeaseValid)) {
             clearIPString();
             return;
         }
@@ -182,19 +201,21 @@ namespace EthernetManager {
     }
 
 #if PYMC_ETH_USE_DHCP
-    static bool tryDhcp(const char* reason) {
+    static bool tryDhcp(const char* reason,
+                        unsigned long timeoutMs = PYMC_ETH_DHCP_TIMEOUT_MS,
+                        unsigned long responseTimeoutMs = PYMC_ETH_DHCP_RESPONSE_TIMEOUT_MS) {
         lastDhcpAttemptMs = millis();
         Serial.printf("[ETH] DHCP %s timeout=%lums response=%lums\n",
                       reason ? reason : "attempt",
-                      (unsigned long)PYMC_ETH_DHCP_TIMEOUT_MS,
-                      (unsigned long)PYMC_ETH_DHCP_RESPONSE_TIMEOUT_MS);
-        int ok = Ethernet.begin(mac, PYMC_ETH_DHCP_TIMEOUT_MS,
-                                PYMC_ETH_DHCP_RESPONSE_TIMEOUT_MS);
+                      timeoutMs, responseTimeoutMs);
+        int ok = Ethernet.begin(mac, timeoutMs, responseTimeoutMs);
+        dhcpLeaseValid = ok != 0;
         refreshIPString();
         if (ok != 0 && gotIP) {
             Serial.printf("[ETH] DHCP lease %s\n", ipString);
             return true;
         }
+        dhcpLeaseValid = false;
         clearIPString();
         Serial.println("[ETH] DHCP failed; transport remains offline until retry/static config");
         return false;
@@ -269,14 +290,16 @@ namespace EthernetManager {
         Ethernet.init(SPI, PYMC_ETH_CS_PIN);
 #endif
 
+        started = true;
+        lastLinkUp = linkStatusIsUp();
         Serial.printf("[ETH] W5100S init host=%s cs=%d pwr=%d rst=%d mac=%02X:%02X:%02X:%02X:%02X:%02X link=%s\n",
                       hostnameString, (int)PYMC_ETH_CS_PIN,
                       (int)PYMC_ETH_POWER_PIN, (int)PYMC_ETH_RESET_PIN,
                       mac[0], mac[1], mac[2], mac[3], mac[4], mac[5],
                       linkStatusString());
 
-        started = true;
         dhcpMode = false;
+        dhcpLeaseValid = false;
         clearIPString();
 
 #if PYMC_ETH_USE_DHCP
@@ -322,6 +345,8 @@ namespace EthernetManager {
         dhcpMode = false;
         lastMaintainMs = 0;
         lastDhcpAttemptMs = 0;
+        lastLinkUp = false;
+        dhcpLeaseValid = false;
         clearIPString();
     }
 
@@ -330,9 +355,24 @@ namespace EthernetManager {
         uint32_t now = millis();
         if (now - lastMaintainMs >= 1000) {
             lastMaintainMs = now;
+            const bool linkUp = linkStatusIsUp();
+            if (linkUp != lastLinkUp) {
+                lastLinkUp = linkUp;
+                if (dhcpMode) {
+                    // A lease cached by the W5100S is not proof that it is valid
+                    // after reconnecting to the same or a different LAN.
+                    dhcpLeaseValid = false;
+                    lastDhcpAttemptMs = 0;
+                    clearIPString();
+                }
+            }
 #if PYMC_ETH_USE_DHCP
-            if (dhcpMode && linkStatusIsUp()) {
-                Ethernet.maintain();
+            if (dhcpMode && dhcpLeaseValid && linkUp) {
+                const int maintainResult = Ethernet.maintain();
+                if (maintainResult == DHCP_CHECK_REBIND_FAIL) {
+                    dhcpLeaseValid = false;
+                    clearIPString();
+                }
             }
 #endif
             refreshIPString();
@@ -341,7 +381,10 @@ namespace EthernetManager {
 #if PYMC_ETH_USE_DHCP
         if (dhcpMode && !gotIP && linkStatusIsUp() &&
             (lastDhcpAttemptMs == 0 || now - lastDhcpAttemptMs >= PYMC_ETH_DHCP_RETRY_MS)) {
-            tryDhcp("retry");
+            // The library API is synchronous; bound reconnect work tightly so
+            // radio/USB/TCP service is not paused for the five-second boot timeout.
+            tryDhcp("retry", PYMC_ETH_DHCP_RETRY_TIMEOUT_MS,
+                    PYMC_ETH_DHCP_RETRY_RESPONSE_TIMEOUT_MS);
         }
 #endif
     }
@@ -361,9 +404,68 @@ namespace EthernetManager {
         if (started) refreshIPString();
         return ipString;
     }
+
+    bool isDhcpMode() {
+        return started && dhcpMode;
+    }
+
+    IPAddress getLocalIP() {
+        return hasIP() ? Ethernet.localIP() : IPAddress((uint32_t)0);
+    }
+
+    IPAddress getSubnet() {
+        return hasIP() ? Ethernet.subnetMask() : IPAddress((uint32_t)0);
+    }
+
+    IPAddress getGateway() {
+        return hasIP() ? Ethernet.gatewayIP() : IPAddress((uint32_t)0);
+    }
+
+    IPAddress getDns1() {
+        return hasIP() ? Ethernet.dnsServerIP() : IPAddress((uint32_t)0);
+    }
+
+    IPAddress getDns2() {
+        // RAK13800-W5100S 1.0.2 stores only one live DNS server.
+        return IPAddress((uint32_t)0);
+    }
+
+    const char* getHostname() {
+        return hostnameString;
+    }
+
+    void getMac(uint8_t out[6]) {
+        if (!out) return;
+        memcpy(out, mac, sizeof(mac));
+    }
+
+    Snapshot getSnapshot() {
+        Snapshot snap;
+        snap.started = started;
+        snap.linkState = getLinkState();
+        snap.hasIP = hasIP();
+        snap.useDhcp = isDhcpMode();
+        if (snap.hasIP) {
+            snap.localIP = Ethernet.localIP();
+            snap.subnet = Ethernet.subnetMask();
+            snap.gateway = Ethernet.gatewayIP();
+            snap.dns1 = Ethernet.dnsServerIP();
+        }
+        snap.dns2 = getDns2();
+        strncpy(snap.hostname, hostnameString, sizeof(snap.hostname));
+        snap.hostname[sizeof(snap.hostname) - 1] = '\0';
+        getMac(snap.mac);
+        return snap;
+    }
 }
 
 namespace TCPServer {
+    enum class SendState : uint8_t { IDLE, COMMAND_PENDING, ACK_PENDING };
+    constexpr size_t TX_CHUNK_BYTES = 256;
+    constexpr size_t RX_BYTES_PER_LOOP = 256;
+    constexpr uint32_t TX_DEADLINE_MS = 5000;
+
+    alignas(EthernetServer) static uint8_t serverStorage[sizeof(EthernetServer)];
     static EthernetServer* server = nullptr;
     static EthernetClient client;
     static String requiredToken;
@@ -372,32 +474,176 @@ namespace TCPServer {
     static uint32_t acceptedCount = 0;
     static uint32_t frameCount = 0;
     static bool lastIpUsable = false;
+    static uint16_t listenerPort = 0;
+    static uint8_t txBuffer[MAX_FRAME_SIZE];
+    static size_t txLength = 0;
+    static size_t txOffset = 0;
+    static size_t txSendLength = 0;
+    static uint32_t txStartedMs = 0;
+    static SendState sendState = SendState::IDLE;
+    static bool closeAfterTx = false;
+
+    static void closeListenerSockets() {
+        if (listenerPort == 0) return;
+        W5100.getSPI()->beginTransaction(SPI_ETHERNET_SETTINGS);
+        for (uint8_t socket = 0; socket < MAX_SOCK_NUM; ++socket) {
+            if (EthernetServer::server_port[socket] != listenerPort) continue;
+            W5100.writeSnCR(socket, Sock_CLOSE);
+            EthernetServer::server_port[socket] = 0;
+        }
+        W5100.getSPI()->endTransaction();
+    }
 
     static bool requiresAuth() {
         return requiredToken.length() > 0;
     }
 
+    static void disconnectClient();
+
+    static bool txBusy() {
+        return txLength != 0 || sendState != SendState::IDLE;
+    }
+
+    static void resetTx() {
+        txLength = 0;
+        txOffset = 0;
+        txSendLength = 0;
+        txStartedMs = 0;
+        sendState = SendState::IDLE;
+        closeAfterTx = false;
+    }
+
+    static bool queueRaw(const uint8_t* data, size_t len) {
+        if (!data || len == 0 || len > sizeof(txBuffer) || txBusy()) return false;
+        memcpy(txBuffer, data, len);
+        txLength = len;
+        txOffset = 0;
+        txStartedMs = millis();
+        return true;
+    }
+
     static void sendToClient(uint8_t cmd, const uint8_t* payload, uint16_t len) {
         if (!client || !client.connected()) return;
-        uint8_t buf[MAX_FRAME_SIZE];
+        if (txBusy()) {
+            Serial.println("[TCP/ETH] TX queue busy; closing client");
+            disconnectClient();
+            return;
+        }
         uint16_t flen = 0;
-        buildFrame(buf, flen, cmd, payload, len);
-        client.write(buf, flen);
+        buildFrame(txBuffer, flen, cmd, payload, len);
+        txLength = flen;
+        txOffset = 0;
+        txStartedMs = millis();
     }
 
     static void sendErrorToClient(uint8_t err) {
         sendToClient(CMD_ERROR, &err, 1);
     }
 
+    static void boundedClose(EthernetClient& target) {
+        const uint8_t socket = target.getSocketNumber();
+        if (socket < MAX_SOCK_NUM) {
+            W5100.getSPI()->beginTransaction(SPI_ETHERNET_SETTINGS);
+            W5100.writeSnCR(socket, Sock_CLOSE);
+            W5100.getSPI()->endTransaction();
+        }
+        target = EthernetClient();
+    }
+
     static void disconnectClient() {
         if (client) {
             Serial.printf("[TCP/ETH] disconnect auth=%u frames=%lu\n",
                           authenticated ? 1U : 0U, (unsigned long)frameCount);
-            client.stop();
+            boundedClose(client);
         }
         authenticated = false;
         frameCount = 0;
         parser.reset();
+        resetTx();
+    }
+
+    static void writeOneChunk() {
+        if (!txBusy()) return;
+        if (!client || !client.connected() ||
+            static_cast<uint32_t>(millis() - txStartedMs) >= TX_DEADLINE_MS) {
+            disconnectClient();
+            return;
+        }
+        const uint8_t socket = client.getSocketNumber();
+        if (socket >= MAX_SOCK_NUM) {
+            disconnectClient();
+            return;
+        }
+
+        // EthernetClient::write() in the pinned RAK driver can wait forever
+        // for TX space or SEND_OK. Poll one W5100S state transition per loop.
+        if (sendState != SendState::IDLE) {
+            W5100.getSPI()->beginTransaction(SPI_ETHERNET_SETTINGS);
+            const uint8_t status = W5100.readSnSR(socket);
+            if (status != SnSR::ESTABLISHED && status != SnSR::CLOSE_WAIT) {
+                W5100.getSPI()->endTransaction();
+                disconnectClient();
+                return;
+            }
+            if (sendState == SendState::COMMAND_PENDING) {
+                if (W5100.readSnCR(socket) == 0) sendState = SendState::ACK_PENDING;
+                W5100.getSPI()->endTransaction();
+                return;
+            }
+            const uint8_t interrupts = W5100.readSnIR(socket);
+            if (interrupts & SnIR::TIMEOUT) {
+                W5100.writeSnIR(socket, SnIR::TIMEOUT);
+                W5100.getSPI()->endTransaction();
+                disconnectClient();
+                return;
+            }
+            if (!(interrupts & SnIR::SEND_OK)) {
+                W5100.getSPI()->endTransaction();
+                return;
+            }
+            W5100.writeSnIR(socket, SnIR::SEND_OK);
+            W5100.getSPI()->endTransaction();
+            txOffset += txSendLength;
+            txSendLength = 0;
+            sendState = SendState::IDLE;
+            if (txOffset == txLength) {
+                const bool shouldClose = closeAfterTx;
+                resetTx();
+                if (shouldClose) disconnectClient();
+            }
+            return;
+        }
+
+        const size_t remaining = txLength - txOffset;
+        const size_t amount = remaining < TX_CHUNK_BYTES ? remaining : TX_CHUNK_BYTES;
+        W5100.getSPI()->beginTransaction(SPI_ETHERNET_SETTINGS);
+        const uint8_t status = W5100.readSnSR(socket);
+        const uint16_t freeBytes = W5100.readSnTX_FSR(socket);
+        if ((status != SnSR::ESTABLISHED && status != SnSR::CLOSE_WAIT) ||
+            freeBytes < amount) {
+            W5100.getSPI()->endTransaction();
+            if (status != SnSR::ESTABLISHED && status != SnSR::CLOSE_WAIT)
+                disconnectClient();
+            return;
+        }
+        uint16_t pointer = W5100.readSnTX_WR(socket);
+        const uint16_t offset = pointer & W5100.SMASK;
+        const uint16_t destination = offset + W5100.SBASE(socket);
+        const uint8_t* data = txBuffer + txOffset;
+        if (W5100.hasOffsetAddressMapping() || offset + amount <= W5100.SSIZE) {
+            W5100.write(destination, data, amount);
+        } else {
+            const uint16_t first = W5100.SSIZE - offset;
+            W5100.write(destination, data, first);
+            W5100.write(W5100.SBASE(socket), data + first, amount - first);
+        }
+        pointer += amount;
+        W5100.writeSnTX_WR(socket, pointer);
+        W5100.writeSnIR(socket, SnIR::SEND_OK | SnIR::TIMEOUT);
+        W5100.writeSnCR(socket, Sock_SEND);
+        W5100.getSPI()->endTransaction();
+        txSendLength = amount;
+        sendState = SendState::COMMAND_PENDING;
     }
 
     static void onFrameOk(uint8_t cmd, const uint8_t* payload, uint16_t len, TransportSource src) {
@@ -415,13 +661,11 @@ namespace TCPServer {
                 } else {
                     Serial.println("[TCP/ETH] auth rejected");
                     sendErrorToClient(ERR_UNAUTHORIZED);
-                    delay(5);
-                    disconnectClient();
+                    closeAfterTx = true;
                 }
             } else {
                 sendErrorToClient(ERR_UNAUTHORIZED);
-                delay(5);
-                disconnectClient();
+                closeAfterTx = true;
             }
             return;
         }
@@ -446,7 +690,8 @@ namespace TCPServer {
         requiredToken = token;
         authenticated = false;
         parser.reset();
-        server = new EthernetServer(port ? port : PYMC_ETH_TCP_PORT);
+        listenerPort = port ? port : PYMC_ETH_TCP_PORT;
+        server = new (serverStorage) EthernetServer(listenerPort);
         server->begin();
         lastIpUsable = EthernetManager::hasIP();
         Serial.printf("[TCP/ETH] listening on %u auth=%s\n",
@@ -457,9 +702,11 @@ namespace TCPServer {
     void end() {
         disconnectClient();
         if (server) {
-            delete server;
+            closeListenerSockets();
+            server->~EthernetServer();
             server = nullptr;
         }
+        listenerPort = 0;
         lastIpUsable = false;
     }
 
@@ -468,7 +715,8 @@ namespace TCPServer {
 
         const bool ipUsable = EthernetManager::hasIP();
         if (!ipUsable) {
-            if (client) disconnectClient();
+            if (client || txBusy()) disconnectClient();
+            if (lastIpUsable) closeListenerSockets();
             lastIpUsable = false;
             return;
         }
@@ -483,18 +731,19 @@ namespace TCPServer {
         }
 
         if (!client || !client.connected()) {
-            if (client) disconnectClient();
+            if (client || txBusy()) disconnectClient();
             EthernetClient incoming = server->accept();
             if (incoming) {
                 IPAddress addr = incoming.remoteIP();
                 if (!isLanAddress(addr)) {
                     Serial.printf("[TCP/ETH] rejecting non-LAN client %u.%u.%u.%u\n",
                                   addr[0], addr[1], addr[2], addr[3]);
-                    incoming.stop();
+                    boundedClose(incoming);
                     return;
                 }
                 client = incoming;
                 parser.reset();
+                resetTx();
                 authenticated = false;
                 frameCount = 0;
                 acceptedCount++;
@@ -506,10 +755,13 @@ namespace TCPServer {
         }
 
         if (client && client.connected()) {
-            while (client.available()) {
+            size_t processed = 0;
+            while (processed < RX_BYTES_PER_LOOP && client.available() && !txBusy()) {
                 uint8_t b = (uint8_t)client.read();
                 frameparser_feed(parser, b, TransportSource::TCP, onFrameOk, onFrameErr);
+                ++processed;
             }
+            writeOneChunk();
         }
     }
 
@@ -531,7 +783,10 @@ namespace TCPServer {
     void write(const uint8_t* data, size_t len) {
         if (!EthernetManager::hasIP()) return;
         if (!client || !client.connected()) return;
-        client.write(data, len);
+        if (!queueRaw(data, len)) {
+            Serial.println("[TCP/ETH] TX queue overflow; closing client");
+            disconnectClient();
+        }
     }
 }
 

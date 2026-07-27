@@ -2,6 +2,7 @@
 
 #include <Arduino.h>
 #include "protocol.h"
+#include "runtime_stats_values.h"
 
 namespace RuntimeStats {
 

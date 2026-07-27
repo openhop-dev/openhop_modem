@@ -398,7 +398,7 @@ class TCPLoRaRadio(_RadioBase):
                 "last_rssi": fields[4],
                 "last_snr": fields[5] / 10.0,
                 "noise_floor": fields[6] / 10.0,
-                "temp_c": fields[7],
+                "temp_c": None if fields[7] == -128 else fields[7],
                 "radio_state": ["idle/rx", "tx", "error"][min(fields[8], 2)],
             }
         return None

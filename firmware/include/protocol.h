@@ -167,7 +167,7 @@ struct __attribute__((packed)) StatusResp {
     int16_t  last_rssi;
     int16_t  last_snr;         // × 10
     int16_t  noise_floor_x10;  // averaged noise floor in dBm × 10
-    int8_t   temp_c;           // ESP32 die temperature
+    int8_t   temp_c;           // die temperature, INT8_MIN when unavailable
     uint8_t  radio_state;      // 0=idle/rx, 1=tx, 2=error
     uint16_t battery_mv;       // millivolts, 0xFFFF when unavailable
 };

@@ -14,9 +14,13 @@
 #include <stdarg.h>
 #include "protocol.h"
 #include "board_config.h"
+#include "bootloader_manager.h"
 #include "frame_parser.h"
 #include "compat.h"
 #include "rf_frontend.h"
+#include "runtime_stats.h"
+#include "battery_monitor.h"
+#include "gps_manager.h"
 #if defined(BOARD_HELTEC_T114)
 #  include "node_state.h"
 #endif
@@ -40,8 +44,6 @@
 #  include "tcp_server.h"
 #  include "ota_manager.h"
 #  include "ethernet_manager.h"
-#  include "runtime_stats.h"
-#  include "gps_manager.h"
 #else
 // nRF52 builds exclude the ESP32 Wi-Fi/OTA/display managers via
 // platformio.ini's build_src_filter. Most nRF52 targets are
@@ -57,9 +59,105 @@
 #    define PYMC_ETH_TOKEN ""
 #  endif
 #  ifndef PYMC_ETH_HOSTNAME
-#    define PYMC_ETH_HOSTNAME "pymc-rak4631-eth"
+#    define PYMC_ETH_HOSTNAME "openhop-rak4631-eth"
 #  endif
 #endif
+#if defined(PYMC_ETHERNET_W5100S)
+#  include "rak4631_config.h"
+namespace WifiManager {
+    enum class Mode : uint8_t { OFFLINE = 0, STA_CONNECTING = 1,
+                                STA_CONNECTED = 2, AP_CONFIG = 3 };
+    struct Config {
+        String   ssid;
+        String   password;
+        String   hostname;
+        bool     useStaticIP = false;
+        IPAddress staticIP;
+        IPAddress gateway;
+        IPAddress subnet;
+        IPAddress dns1;
+        IPAddress dns2;
+        String   tcpToken;
+        uint16_t tcpPort = 0;
+        bool     wifiExternalAntenna = false;
+        bool     gpsEnabled = false;
+        String   httpPassword;
+    };
+
+    inline IPAddress toIPAddress(const Rak4631Config::IPv4Address& address) {
+        return IPAddress(address.octets[0], address.octets[1],
+                         address.octets[2], address.octets[3]);
+    }
+
+    inline Rak4631Config::IPv4Address fromIPAddress(const IPAddress& address) {
+        return Rak4631Config::IPv4Address{{address[0], address[1], address[2], address[3]}};
+    }
+
+    inline Config& activeConfig() {
+        static Config config;
+        return config;
+    }
+
+    inline void loadConfigOnly() {
+        Rak4631Config::begin();
+        const auto& stored = Rak4631Config::getConfig();
+        Config& config = activeConfig();
+        config.hostname = stored.hostname;
+        config.useStaticIP = stored.useStaticIP;
+        config.staticIP = toIPAddress(stored.staticIP);
+        config.gateway = toIPAddress(stored.gateway);
+        config.subnet = toIPAddress(stored.subnet);
+        config.dns1 = toIPAddress(stored.dns1);
+        config.dns2 = toIPAddress(stored.dns2);
+        config.tcpToken = stored.tcpToken;
+        config.tcpPort = stored.tcpPort;
+        config.gpsEnabled = stored.gpsEnabled;
+        config.httpPassword = stored.httpPassword;
+    }
+
+    inline void  checkResetButton()  {}
+    inline void  begin()             { loadConfigOnly(); }
+    inline void  loop()              {}
+    inline bool  isSTAConnected()    { return false; }
+    inline bool  isAPActive()        { return false; }
+    inline bool  hasWifiAntennaSwitch() { return false; }
+    inline void  applyWifiAntennaSwitch() {}
+    inline const char* getSSID()     { return "---"; }
+    inline const char* getIPString() { return "---"; }
+    inline const char* getHostname() { return Rak4631Config::getEffectiveHostname(); }
+    inline Mode  getMode()           { return Mode::OFFLINE; }
+    inline const Config& getConfig() { return activeConfig(); }
+
+    inline bool saveConfig(const Config& config) {
+        if (config.hostname.length() > Rak4631Config::MAX_TEXT_LENGTH ||
+            config.tcpToken.length() > Rak4631Config::MAX_TEXT_LENGTH ||
+            config.httpPassword.length() > Rak4631Config::MAX_TEXT_LENGTH) {
+            return false;
+        }
+        Rak4631Config::Config stored = Rak4631Config::getConfig();
+        snprintf(stored.hostname, sizeof(stored.hostname), "%s", config.hostname.c_str());
+        stored.useStaticIP = config.useStaticIP;
+        stored.staticIP = fromIPAddress(config.staticIP);
+        stored.gateway = fromIPAddress(config.gateway);
+        stored.subnet = fromIPAddress(config.subnet);
+        stored.dns1 = fromIPAddress(config.dns1);
+        stored.dns2 = fromIPAddress(config.dns2);
+        stored.tcpPort = config.tcpPort;
+        snprintf(stored.tcpToken, sizeof(stored.tcpToken), "%s", config.tcpToken.c_str());
+        snprintf(stored.httpPassword, sizeof(stored.httpPassword), "%s",
+                 config.httpPassword.c_str());
+        stored.gpsEnabled = config.gpsEnabled;
+        return Rak4631Config::saveConfig(stored);
+    }
+    inline void factoryReset() {
+        if (Rak4631Config::factoryReset()) {
+            delay(200);
+            NVIC_SystemReset();
+        }
+    }
+}
+#else
+// Keep USB-only nRF52 targets on their existing no-op network stub.
 namespace WifiManager {
     enum class Mode : uint8_t { OFFLINE = 0, STA_CONNECTING = 1,
                                 STA_CONNECTED = 2, AP_CONFIG = 3 };
@@ -109,8 +207,10 @@ namespace WifiManager {
     inline void  saveConfig(const Config&) {}
     inline void  factoryReset()      {}
 }
+#endif
 #if defined(PYMC_ETHERNET_W5100S)
 #  include "w5100s_ethernet_transport.h"
+#  include "w5100s_http_server.h"
 #else
 namespace TCPServer {
     inline void begin(uint16_t, const String&) {}
@@ -308,90 +408,18 @@ static uint32_t maxLoopUs = 0;
 // frame that parsed cleanly. 0 = no frame yet since boot.
 static uint32_t lastUsbCmdMs = 0;
 
-#ifdef ARDUINO_ARCH_ESP32
-static bool readFuelGaugeRegister(uint8_t address, uint8_t reg, uint16_t& value) {
-    Wire.setTimeOut(50);
-    Wire.beginTransmission(address);
-    Wire.write(reg);
-    // Use a STOP between the register select and read.  The MAX17048 accepts
-    // this, and it avoids the ESP32-C6 Arduino core's repeated-start recovery
-    // path, which can wedge long enough to trip our loop watchdog when the
-    // Photon I2C bus/fuel gauge is absent or not pulled up.
-    if (Wire.endTransmission(true) != 0) {
-        return false;
-    }
-    if (Wire.requestFrom(address, (uint8_t)2) != 2) {
-        return false;
-    }
-    value = ((uint16_t)Wire.read() << 8) | Wire.read();
-    return true;
-}
-
-static uint16_t readBatteryMilliVolts() {
-    if (BOARD.battery.fuel_gauge_i2c_addr != 0) {
-        uint16_t vcell = 0;
-        if (readFuelGaugeRegister(BOARD.battery.fuel_gauge_i2c_addr,
-                                  BOARD.battery.fuel_gauge_vcell_reg,
-                                  vcell)) {
-            // MAX17048 VCELL uses 78.125 uV/LSB units, same conversion as
-            // the original MeshCore Photon firmware: vcell * 5 / 64 mV.
-            uint32_t mv = ((uint32_t)vcell * 5U) / 64U;
-            return mv > 65534U ? 65534U : (uint16_t)mv;
-        }
-        return 0xFFFF;
-    }
-
-    if (BOARD.battery.pin < 0 || BOARD.battery.multiplier <= 0.0f) {
-        return 0xFFFF;
-    }
-
-    if (BOARD.battery.enable_pin >= 0) {
-        pinMode(BOARD.battery.enable_pin, OUTPUT);
-        digitalWrite(BOARD.battery.enable_pin,
-                     BOARD.battery.enable_active_high ? HIGH : LOW);
-        delay(5);
-    }
-
-    uint32_t totalMv = 0;
-    constexpr uint8_t samples = 8;
-    for (uint8_t i = 0; i < samples; ++i) {
-        totalMv += analogReadMilliVolts(BOARD.battery.pin);
-        delay(1);
-    }
-    float packMv = (totalMv / (float)samples) * BOARD.battery.multiplier;
-    if (packMv < 0.0f) return 0;
-    if (packMv > 65534.0f) return 65534;
-    return (uint16_t)(packMv + 0.5f);
-}
-
-static bool readBatteryChargeRatePctPerHour(float& pctPerHour) {
-    if (BOARD.battery.fuel_gauge_i2c_addr == 0 ||
-        BOARD.battery.fuel_gauge_crate_reg == 0) {
-        return false;
-    }
-
-    uint16_t crate = 0;
-    if (!readFuelGaugeRegister(BOARD.battery.fuel_gauge_i2c_addr,
-                               BOARD.battery.fuel_gauge_crate_reg,
-                               crate)) {
-        return false;
-    }
-
-    // MAX17048 CRATE is signed, 0.208 %/hr per LSB. MeshCore surfaced this
-    // as current; on Photon it is actually the battery charge/discharge rate.
-    pctPerHour = (float)((int16_t)crate) * 0.208f;
-    return true;
-}
-
 namespace RuntimeStats {
 Snapshot capture() {
     Snapshot snap = {};
     snap.status = status;
     snap.status.uptime_sec = millis() / 1000;
-    snap.status.radio_state = radioStandby ? 2 : (isTxActive ? 1 : 0);
-    snap.status.temp_c = (int8_t)temperatureRead();
+    // StatusResp reserves state 2 for errors; standby remains a healthy idle
+    // state and is exposed separately in this richer runtime snapshot.
+    snap.status.radio_state = isTxActive ? 1 : 0;
+    snap.status.temp_c = RuntimeStatsValues::cpuTemperatureC(
+        compatReadCpuTemperature());
     snap.status.noise_floor_x10 = (int16_t)(noiseFloor * 10.0f);
-    snap.status.battery_mv = readBatteryMilliVolts();
+    snap.status.battery_mv = BatteryMonitor::readMilliVolts(BOARD.battery);
     snap.radio = currentConfig;
     snap.firmwareVersion = fwVersion;
     snap.radioStandby = radioStandby;
@@ -399,13 +427,13 @@ Snapshot capture() {
     snap.hasBatteryChargeRatePctPerHour = BOARD.battery.fuel_gauge_i2c_addr != 0 &&
         BOARD.battery.fuel_gauge_crate_reg != 0;
     if (snap.hasBatteryChargeRatePctPerHour) {
-        snap.batteryChargeRatePctPerHourValid = readBatteryChargeRatePctPerHour(
-            snap.batteryChargeRatePctPerHour);
+        snap.batteryChargeRatePctPerHourValid =
+            BatteryMonitor::readChargeRatePctPerHour(
+                BOARD.battery, snap.batteryChargeRatePctPerHour);
     }
     return snap;
 }
 }
-#endif
 
 // ─── ISR callback ────────────────────────────────────────────
 #if defined(ESP32)
@@ -1119,16 +1147,8 @@ void processHostCommand(uint8_t cmd, const uint8_t* payload, uint16_t len,
     }
 
     case CMD_STATUS_REQ: {
-        status.uptime_sec = millis() / 1000;
-        status.radio_state = isTxActive ? 1 : 0;
-#ifdef ARDUINO_ARCH_ESP32
-        status.temp_c = (int8_t)temperatureRead();
-        status.battery_mv = readBatteryMilliVolts();
-#else
-        status.temp_c = 0;   // nRF52 has its own temperature sensor — TODO
-        status.battery_mv = 0xFFFF;
-#endif
-        status.noise_floor_x10 = (int16_t)(noiseFloor * 10.0f);
+        const RuntimeStats::Snapshot live = RuntimeStats::capture();
+        status = live.status;
         sendFrame(CMD_STATUS_RESP, (uint8_t*)&status, sizeof(StatusResp), src);
         break;
     }
@@ -1260,23 +1280,15 @@ void processHostCommand(uint8_t cmd, const uint8_t* payload, uint16_t len,
         break;
     }
     case CMD_ENTER_BOOTLOADER: {
-        // Triggers Adafruit nRF52 DFU mode without touching the
-        // reset button: write the magic value to GPREGRET (bootloader
-        // checks it on startup and enters DFU instead of jumping to
-        // the app), ack the host, then NVIC_SystemReset().
-        // After reboot the operator finalises the flash by plugging
-        // USB locally — full UART OTA is the next step (CMD_OTA_*).
-        // No-op on ESP32 (no equivalent path; CDC + esptool_py is
-        // already trivial there).
-        sendFrame(CMD_PONG, nullptr, 0, src);
-        LOG_R_INFO("ENTER_BOOTLOADER requested — resetting into DFU");
 #ifdef NRF52_SERIES
-        // 0x57 = OTA_DFU magic from Adafruit nRF52 BSP
-        // (variants/<board>/dfu/usb_desc.h notwithstanding —
-        // bootloader matches on the value, not symbolic name).
-        NRF_POWER->GPREGRET = 0x57;
+        // Preserve the protocol command's established Adafruit USB bootloader
+        // transition (GPREGRET 0x57), but let the BSP perform the shutdown and
+        // reset sequence rather than writing GPREGRET directly. The tested RAK
+        // bootloader exposes serial DFU, not a UF2 mass-storage disk.
+        sendFrame(CMD_PONG, nullptr, 0, src);
+        LOG_R_INFO("ENTER_BOOTLOADER requested — entering USB serial DFU bootloader");
         delay(100);
-        NVIC_SystemReset();
+        BootloaderManager::enterUf2Dfu();
 #else
         sendError(ERR_INVALID_CMD, src);
 #endif
@@ -1542,6 +1554,12 @@ void setup() {
     const auto& netCfg = WifiManager::getConfig();
     bool useEthernet = false;
     if (BOARD.ethernet.enabled) {
+#if defined(PYMC_ETHERNET_W5100S)
+        // Start from a clean, independent HTTP socket lifecycle. begin() is
+        // safe before DHCP succeeds; its loop restarts port 80 when the
+        // W5100S path becomes usable after a cable/DHCP transition.
+        W5100sHttpServer::end();
+#endif
         EthernetManager::begin(WifiManager::getHostname(),
                                netCfg.useStaticIP,
                                netCfg.staticIP,
@@ -1549,6 +1567,9 @@ void setup() {
                                netCfg.subnet,
                                netCfg.dns1,
                                netCfg.dns2);   // waits up to 5 s for link + DHCP
+#if defined(PYMC_ETHERNET_W5100S)
+        W5100sHttpServer::begin();
+#endif
         if (EthernetManager::isLinkUp()) {
             useEthernet = true;
             Serial.println("[NET] Ethernet link up — Wi-Fi will be skipped");
@@ -1610,7 +1631,8 @@ void setup() {
     oledWakeUntil = millis() + OLED_WAKE_DURATION_MS;
     lastAutoCycleMs = millis();   // first auto-cycle fires SCREEN_AUTO_CYCLE_MS after splash
 
-#ifdef ARDUINO_ARCH_ESP32
+#if defined(ARDUINO_ARCH_ESP32) || \
+    (defined(PYMC_RAK4631_GPS_SERIAL_ENABLE) && PYMC_RAK4631_GPS_SERIAL_ENABLE)
     GPSManager::begin(WifiManager::getConfig().gpsEnabled);
 #endif
 
@@ -1732,8 +1754,12 @@ void loop() {
     }
 
     if (tcpStarted) TCPServer::loop();
+#if defined(PYMC_ETHERNET_W5100S)
+    W5100sHttpServer::loop();
+#endif
     if (otaStarted) OTAManager::loop();
-#ifdef ARDUINO_ARCH_ESP32
+#if defined(ARDUINO_ARCH_ESP32) || \
+    (defined(PYMC_RAK4631_GPS_SERIAL_ENABLE) && PYMC_RAK4631_GPS_SERIAL_ENABLE)
     GPSManager::loop();
 #endif
 
@@ -1741,6 +1767,7 @@ void loop() {
     maybeResetAgc();
     if (BOARD.has_wifi) WifiManager::loop();
     EthernetManager::loop();
+    BatteryMonitor::loop(BOARD.battery);
 
     // Lazy TCP + OTA start if STA or Ethernet came up after boot.
     bool netUp = WifiManager::isSTAConnected() || EthernetManager::hasIP();
@@ -1849,11 +1876,8 @@ void loop() {
                     ssid     = BOARD.has_wifi ? WifiManager::getSSID()    : "---";
                     ip       = BOARD.has_wifi ? WifiManager::getIPString(): "---";
                 }
-                uint16_t batteryMv = 0xFFFF;
-#ifdef ARDUINO_ARCH_ESP32
-                batteryMv = readBatteryMilliVolts();
+                uint16_t batteryMv = BatteryMonitor::readMilliVolts(BOARD.battery);
                 status.battery_mv = batteryMv;
-#endif
                 oled.showStatus(status.rx_count, status.tx_count,
                                 ssid, ip, stateTag, fwVersion.c_str(), batteryMv);
             } else if (currentScreen == Screen::RADIO) {
