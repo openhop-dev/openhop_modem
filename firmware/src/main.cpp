@@ -78,6 +78,9 @@ namespace WifiManager {
         uint16_t tcpPort = 0;
         bool     wifiExternalAntenna = false;
         bool     gpsEnabled = false;
+        uint32_t rxSlotMs = 100;
+        uint32_t activityHoldMs = 2000;
+        uint32_t txEchoHoldMultiplier = 1;
     };
     inline void  checkResetButton()  {}
     inline void  begin()             {}
@@ -114,7 +117,7 @@ namespace WifiManager {
 #  include "w5100s_ethernet_transport.h"
 #else
 namespace TCPServer {
-    inline void begin(uint16_t, const String&) {}
+    inline bool begin(uint16_t, const String&) { return true; }
     inline void loop() {}
     inline void end()  {}
     inline bool isClientReady() { return false; }
@@ -141,6 +144,16 @@ namespace EthernetManager {
     inline bool isLinkUp() { return false; }
     inline bool hasIP()    { return false; }
     inline const char* getIPString() { return "---"; }
+}
+#endif
+#if !defined(ARDUINO_ARCH_ESP32) && !defined(PYMC_ETHERNET_W5100S)
+namespace TCPServer {
+    inline uint8_t currentCommandSlot() { return 0xFF; }
+    inline uint8_t activeSlot() { return 0xFF; }
+    inline bool isSlotReady(uint8_t) { return false; }
+    inline uint32_t getSlotGeneration(uint8_t) { return 0; }
+    inline String getSlotIP(uint8_t) { return String(); }
+    inline void writeToSlot(uint8_t, const uint8_t*, size_t) {}
 }
 #endif
 // Per-board display driver on nRF52 boards. T114 ships with an
@@ -225,12 +238,101 @@ static RadioConfig currentConfig = {
     .preamble_len = 16
 };
 
+// TCP keeps wire compatibility by giving each virtual modem its own port.
+// Profiles live here, not in the transport, so Wi-Fi and W5100S scheduling
+// share exactly the same radio policy. Slot 0 remains the legacy 5055 port.
+static constexpr uint8_t VIRTUAL_SLOT_COUNT = 4;
+static constexpr uint8_t INVALID_VIRTUAL_SLOT = 0xFF;
+static bool radioStandby = false;
+static RadioConfig virtualConfigs[VIRTUAL_SLOT_COUNT];
+static bool virtualConfigsInitialized = false;
+static bool virtualStandby[VIRTUAL_SLOT_COUNT] = {};
+static uint8_t activeVirtualSlot = INVALID_VIRTUAL_SLOT;
+static uint32_t activeVirtualGeneration = 0;
+
+// A packet echoed by one of the virtual-radio clients can be received again
+// while the scheduler is visiting another matching slot.  Keep a short-lived
+// exact-payload cache so that an RF echo is treated as the same packet rather
+// than as a new packet to mirror to every client again.
+static constexpr uint8_t RECENT_RX_PACKET_CACHE_SIZE = 8;
+static constexpr uint32_t RECENT_RX_PACKET_TTL_MS = 5000;
+struct RecentRxPacket {
+    bool valid = false;
+    uint16_t len = 0;
+    uint32_t seenMs = 0;
+    uint8_t data[MAX_LORA_PAYLOAD] = {};
+    uint32_t freq_hz = 0;
+    uint32_t bandwidth_hz = 0;
+    uint8_t sf = 0;
+    uint8_t cr = 0;
+    uint16_t syncword = 0;
+    uint8_t deliveredSlots = 0;
+    uint32_t deliveredGenerations[VIRTUAL_SLOT_COUNT] = {};
+};
+static RecentRxPacket recentRxPackets[RECENT_RX_PACKET_CACHE_SIZE];
+static uint8_t recentRxPacketCursor = 0;
+
+struct LastTransmittedPacket {
+    bool valid = false;
+    uint16_t len = 0;
+    uint32_t completedMs = 0;
+    uint8_t data[MAX_LORA_PAYLOAD] = {};
+};
+static LastTransmittedPacket lastTransmittedPacket;
+
+static constexpr uint32_t DEFAULT_RX_SLOT_MS = 100;
+static constexpr uint32_t MIN_RX_SLOT_MS = 5;
+static constexpr uint32_t DEFAULT_ACTIVITY_HOLD_MS = 2000;
+#ifndef PYMC_RX_SLOT_MS
+#  define PYMC_RX_SLOT_MS DEFAULT_RX_SLOT_MS
+#endif
+#ifndef PYMC_ACTIVITY_HOLD_MS
+#  define PYMC_ACTIVITY_HOLD_MS DEFAULT_ACTIVITY_HOLD_MS
+#endif
+static uint32_t rxSlotDurationMs =
+    (PYMC_RX_SLOT_MS < MIN_RX_SLOT_MS) ? MIN_RX_SLOT_MS : (uint32_t)PYMC_RX_SLOT_MS;
+static uint32_t activityHoldMs = (uint32_t)PYMC_ACTIVITY_HOLD_MS;
+static uint32_t txEchoHoldMultiplier = 1;
+static uint32_t rxSlotStartedMs = 0;
+static uint32_t activityHoldUntilMs = 0;
+static uint8_t nextVirtualSlot = 0;
+
+struct PendingVirtualTx {
+    bool pending = false;
+    uint16_t len = 0;
+    uint8_t data[MAX_LORA_PAYLOAD] = {};
+};
+static PendingVirtualTx virtualTx[VIRTUAL_SLOT_COUNT];
+static uint32_t virtualTxGeneration[VIRTUAL_SLOT_COUNT] = {};
+static uint8_t nextTxSlot = 0;
+static uint8_t txOwnerSlot = INVALID_VIRTUAL_SLOT;
+static uint32_t txOwnerGeneration = 0;
+static uint32_t txStartedMs = 0;
+
+enum class VirtualRadioOperation : uint8_t {
+    RX_SLOT,
+    CAD_FOR_SLOT,
+    CAD_FOR_HOST,
+    CAD_FOR_TX,
+    TX
+};
+enum class VirtualCadStartResult : uint8_t {
+    STARTED,
+    BUSY,
+    FAILED
+};
+static VirtualRadioOperation virtualRadioOperation = VirtualRadioOperation::RX_SLOT;
+static uint8_t cadOwnerSlot = INVALID_VIRTUAL_SLOT;
+static uint32_t cadOwnerGeneration = 0;
+static uint32_t cadStartedMs = 0;
+static bool cadResponsePending = false;
+
 static StatusResp  status        = {};
+static uint32_t suppressedRxCount = 0;
 // Hard-standby flag set by CMD_RADIO_STANDBY. While true, loop()
 // will NOT call startReceive() after a TX/CAD/RX completion, and
 // the radio sits in idle. Cleared by CMD_RADIO_RESUME (which
 // re-applies the config and re-enters RX).
-static bool radioStandby  = false;
 static bool autoCadEnabled = false;   // pre-TX CAD; enabled via CMD_SET_AUTO_CAD, persisted in NodeState
 
 // Single DIO1 ISR flag — interpreted as RX_DONE when !isTxActive, otherwise as TX_DONE.
@@ -258,6 +360,26 @@ static uint8_t cadSymNum   = 0x01;  // RADIOLIB_SX126X_CAD_ON_2_SYMB — matches
 static uint8_t cadDetPeak  = 22;    // pymc_core default for SF7-SF8
 static uint8_t cadDetMin   = 10;    // AN1200.48 recommendation
 static uint8_t cadExitMode = 0x00;  // RADIOLIB_SX126X_CAD_GOTO_STDBY
+static bool    virtualCadCustom[VIRTUAL_SLOT_COUNT] = {};
+static uint8_t virtualCadSymNum[VIRTUAL_SLOT_COUNT] = {};
+static uint8_t virtualCadDetPeak[VIRTUAL_SLOT_COUNT] = {};
+static uint8_t virtualCadDetMin[VIRTUAL_SLOT_COUNT] = {};
+static uint8_t virtualCadExitMode[VIRTUAL_SLOT_COUNT] = {};
+
+static bool radioConfigsMatch(const RadioConfig& lhs, const RadioConfig& rhs);
+
+static void initializeVirtualConfigs() {
+    if (virtualConfigsInitialized) return;
+    for (uint8_t i = 0; i < VIRTUAL_SLOT_COUNT; ++i) {
+        virtualConfigs[i] = currentConfig;
+        virtualCadCustom[i] = cadCustom;
+        virtualCadSymNum[i] = cadSymNum;
+        virtualCadDetPeak[i] = cadDetPeak;
+        virtualCadDetMin[i] = cadDetMin;
+        virtualCadExitMode[i] = cadExitMode;
+    }
+    virtualConfigsInitialized = true;
+}
 
 // ─── Transport state ─────────────────────────────────────────
 static FrameParser serialParser;
@@ -388,12 +510,58 @@ namespace RuntimeStats {
 Snapshot capture() {
     Snapshot snap = {};
     snap.status = status;
+    snap.suppressedRxCount = suppressedRxCount;
     snap.status.uptime_sec = millis() / 1000;
     snap.status.radio_state = radioStandby ? 2 : (isTxActive ? 1 : 0);
     snap.status.temp_c = (int8_t)temperatureRead();
     snap.status.noise_floor_x10 = (int16_t)(noiseFloor * 10.0f);
     snap.status.battery_mv = readBatteryMilliVolts();
+    if (TCPServer::isClientReady()) initializeVirtualConfigs();
     snap.radio = currentConfig;
+    snap.virtualSlotCount = 0;
+    for (uint8_t i = 0; i < VIRTUAL_SLOT_COUNT; ++i) {
+        if (!TCPServer::isSlotReady(i)) continue;
+
+        VirtualSlotSnapshot& virtualSlot = snap.virtualSlots[snap.virtualSlotCount++];
+        virtualSlot.slot = i;
+        virtualSlot.port = (uint16_t)(WifiManager::getConfig().tcpPort + i);
+        virtualSlot.active = true;
+        virtualSlot.onAir = activeVirtualSlot == i;
+        virtualSlot.standby = virtualStandby[i];
+        virtualSlot.autoCadEnabled = autoCadEnabled;
+        virtualSlot.cadCustom = virtualCadCustom[i];
+        virtualSlot.cadSymNum = virtualCadSymNum[i] ? virtualCadSymNum[i] : 0x01;
+        virtualSlot.cadDetPeak = virtualCadDetPeak[i] ? virtualCadDetPeak[i] : 22;
+        virtualSlot.cadDetMin = virtualCadDetMin[i] ? virtualCadDetMin[i] : 10;
+        virtualSlot.cadExitMode = virtualCadExitMode[i];
+        virtualSlot.radio = virtualConfigs[i];
+        virtualSlot.clientIP = TCPServer::getSlotIP(i);
+        virtualSlot.receiveMirroringCount = 0;
+
+        // Keep the legacy single-radio fields useful for API consumers that
+        // have not learned about radio.slots yet: report the on-air
+        // profile, or the first connected profile while the scheduler starts.
+        if (virtualSlot.onAir || snap.virtualSlotCount == 1) {
+            snap.radio = virtualSlot.radio;
+        }
+    }
+
+    // A packet received while one profile is on air is fanned out to every
+    // ready, non-standby slot with the same receive parameters.  TX-only
+    // settings and connection/UI state are deliberately excluded from this
+    // relationship; they do not affect whether a slot can receive the packet.
+    for (uint8_t i = 0; i < snap.virtualSlotCount; ++i) {
+        VirtualSlotSnapshot& slot = snap.virtualSlots[i];
+
+        for (uint8_t j = 0; j < snap.virtualSlotCount; ++j) {
+            const VirtualSlotSnapshot& other = snap.virtualSlots[j];
+            if (i == j || slot.standby || other.standby ||
+                !radioConfigsMatch(slot.radio, other.radio)) {
+                continue;
+            }
+            slot.receiveMirroring[slot.receiveMirroringCount++] = other.slot;
+        }
+    }
     snap.firmwareVersion = fwVersion;
     snap.radioStandby = radioStandby;
     snap.autoCadEnabled = autoCadEnabled;
@@ -793,6 +961,575 @@ bool startReceive() {
     return radio.startReceive() == RADIOLIB_ERR_NONE;
 }
 
+static uint8_t tcpCommandSlot() {
+    uint8_t slot = TCPServer::currentCommandSlot();
+    return slot < VIRTUAL_SLOT_COUNT ? slot : INVALID_VIRTUAL_SLOT;
+}
+
+static bool virtualTcpReady() {
+    for (uint8_t slot = 0; slot < VIRTUAL_SLOT_COUNT; ++slot) {
+        if (TCPServer::isSlotReady(slot)) return true;
+    }
+    return false;
+}
+
+// A listener is not a radio session.  Only an established, authorized TCP
+// connection may participate in receive rotation; otherwise the modem would
+// spend a dwell on every configured port even when most virtual radios are
+// unused.  Keep this check in one helper so every scheduler entry point uses
+// the same eligibility policy.
+static bool virtualSlotEligible(uint8_t slot) {
+    return slot < VIRTUAL_SLOT_COUNT &&
+           !virtualStandby[slot] &&
+           TCPServer::isSlotReady(slot);
+}
+
+static bool virtualSessionCurrent(uint8_t slot, uint32_t generation) {
+    return slot < VIRTUAL_SLOT_COUNT &&
+           TCPServer::isSlotReady(slot) &&
+           TCPServer::getSlotGeneration(slot) == generation;
+}
+
+static bool radioConfigsMatch(const RadioConfig& lhs, const RadioConfig& rhs) {
+    // Compare only receive-relevant fields.  CAD settings, TX power, and
+    // preamble length are intentionally ignored: they do not change the
+    // receive profile used for RX packet mirroring.
+    return lhs.freq_hz == rhs.freq_hz &&
+           lhs.bandwidth_hz == rhs.bandwidth_hz &&
+           lhs.sf == rhs.sf &&
+           lhs.cr == rhs.cr &&
+           lhs.syncword == rhs.syncword;
+}
+
+static bool virtualRadioOwnershipCommand(uint8_t cmd) {
+    switch (cmd) {
+    case CMD_TX_REQUEST:
+    case CMD_CAD_REQUEST:
+    case CMD_RX_START:
+    case CMD_SET_CONFIG:
+    case CMD_SET_CAD_PARAMS:
+    case CMD_SET_AUTO_CAD:
+        return true;
+    default:
+        return false;
+    }
+}
+
+static bool beginVirtualProfile(uint8_t slot) {
+    if (radioStandby || !virtualSlotEligible(slot)) return false;
+    if (!virtualConfigsInitialized) {
+        for (uint8_t i = 0; i < VIRTUAL_SLOT_COUNT; ++i) {
+            virtualConfigs[i] = currentConfig;
+            virtualCadCustom[i] = cadCustom;
+            virtualCadSymNum[i] = cadSymNum;
+            virtualCadDetPeak[i] = cadDetPeak;
+            virtualCadDetMin[i] = cadDetMin;
+            virtualCadExitMode[i] = cadExitMode;
+        }
+        virtualConfigsInitialized = true;
+    }
+    if (activeVirtualSlot == slot) {
+        activeVirtualGeneration = TCPServer::getSlotGeneration(slot);
+        return true;
+    }
+    cadCustom = virtualCadCustom[slot];
+    cadSymNum = virtualCadSymNum[slot] ? virtualCadSymNum[slot] : 0x01;
+    cadDetPeak = virtualCadDetPeak[slot] ? virtualCadDetPeak[slot] : 22;
+    cadDetMin = virtualCadDetMin[slot] ? virtualCadDetMin[slot] : 10;
+    cadExitMode = virtualCadExitMode[slot];
+    if (!applyConfig(virtualConfigs[slot])) return false;
+    activeVirtualSlot = slot;
+    activeVirtualGeneration = TCPServer::getSlotGeneration(slot);
+    rxSlotStartedMs = millis();
+    activityHoldUntilMs = 0;
+    virtualRadioOperation = VirtualRadioOperation::RX_SLOT;
+    return startReceive();
+}
+
+static void sendFrameToVirtualSlot(uint8_t slot, uint8_t cmd,
+                                   const uint8_t* payload, uint16_t len) {
+    if (slot >= VIRTUAL_SLOT_COUNT || !TCPServer::isSlotReady(slot)) return;
+    uint8_t buf[MAX_FRAME_SIZE];
+    uint16_t i = 0;
+    buf[i++] = PROTO_SYNC;
+    buf[i++] = cmd;
+    buf[i++] = len & 0xFF;
+    buf[i++] = (len >> 8) & 0xFF;
+    if (len && payload) {
+        memcpy(buf + i, payload, len);
+        i += len;
+    }
+    uint16_t crc = crc16_ccitt(buf + 1, 3 + len);
+    buf[i++] = crc & 0xFF;
+    buf[i++] = (crc >> 8) & 0xFF;
+    TCPServer::writeToSlot(slot, buf, i);
+}
+
+static void sendFrameToVirtualSlotGeneration(uint8_t slot, uint32_t generation,
+                                               uint8_t cmd, const uint8_t* payload,
+                                               uint16_t len) {
+    if (slot >= VIRTUAL_SLOT_COUNT ||
+        TCPServer::getSlotGeneration(slot) != generation) return;
+    sendFrameToVirtualSlot(slot, cmd, payload, len);
+}
+
+static bool sendRxPacketToMatchingVirtualSlots(const uint8_t* payload,
+                                                uint16_t len) {
+    if (activeVirtualSlot >= VIRTUAL_SLOT_COUNT ||
+        !virtualSessionCurrent(activeVirtualSlot, activeVirtualGeneration) ||
+        !payload || len < 6 || len - 6 > MAX_LORA_PAYLOAD) {
+        return false;
+    }
+
+    const RadioConfig& activeConfig = virtualConfigs[activeVirtualSlot];
+    uint8_t matchingSlots = 0;
+    for (uint8_t slot = 0; slot < VIRTUAL_SLOT_COUNT; ++slot) {
+        if (!virtualSlotEligible(slot) ||
+            !radioConfigsMatch(virtualConfigs[slot], activeConfig)) {
+            continue;
+        }
+        matchingSlots |= (uint8_t)(1U << slot);
+    }
+    if (matchingSlots == 0) return false;
+
+    // One physical packet is delivered once to the source slot and once to
+    // each matching partner. Exact RF payload bytes and receive profile form
+    // the duplicate key; the modem does not interpret the mesh packet format.
+    const uint8_t* loraPayload = payload + 6;
+    const uint16_t loraLen = len - 6;
+    const uint32_t now = millis();
+    RecentRxPacket* recentMatch = nullptr;
+    for (uint8_t i = 0; i < RECENT_RX_PACKET_CACHE_SIZE; ++i) {
+        RecentRxPacket& recent = recentRxPackets[i];
+        if (!recent.valid || recent.len != loraLen ||
+            (uint32_t)(now - recent.seenMs) >= RECENT_RX_PACKET_TTL_MS ||
+            recent.freq_hz != activeConfig.freq_hz ||
+            recent.bandwidth_hz != activeConfig.bandwidth_hz ||
+            recent.sf != activeConfig.sf || recent.cr != activeConfig.cr ||
+            recent.syncword != activeConfig.syncword ||
+            memcmp(recent.data, loraPayload, loraLen) != 0) {
+            continue;
+        }
+        recentMatch = &recent;
+        break;
+    }
+
+    if (!recentMatch) {
+        recentMatch = &recentRxPackets[recentRxPacketCursor];
+        recentMatch->valid = true;
+        recentMatch->len = loraLen;
+        memcpy(recentMatch->data, loraPayload, loraLen);
+        recentMatch->freq_hz = activeConfig.freq_hz;
+        recentMatch->bandwidth_hz = activeConfig.bandwidth_hz;
+        recentMatch->sf = activeConfig.sf;
+        recentMatch->cr = activeConfig.cr;
+        recentMatch->syncword = activeConfig.syncword;
+        recentMatch->seenMs = now;
+        recentMatch->deliveredSlots = 0;
+        for (uint8_t slot = 0; slot < VIRTUAL_SLOT_COUNT; ++slot) {
+            recentMatch->deliveredGenerations[slot] = 0;
+        }
+        recentRxPacketCursor = (uint8_t)((recentRxPacketCursor + 1) %
+                                         RECENT_RX_PACKET_CACHE_SIZE);
+    }
+    // Use a sliding expiry. Continuous echoes keep this entry alive and can
+    // never restart the fan-out; a genuinely repeated packet is accepted only
+    // after the channel has been quiet for the full suppression interval.
+    recentMatch->seenMs = now;
+    uint8_t undeliveredSlots = 0;
+    for (uint8_t slot = 0; slot < VIRTUAL_SLOT_COUNT; ++slot) {
+        const uint8_t bit = (uint8_t)(1U << slot);
+        if ((matchingSlots & bit) != 0 &&
+            ((recentMatch->deliveredSlots & bit) == 0 ||
+             recentMatch->deliveredGenerations[slot] !=
+                 TCPServer::getSlotGeneration(slot))) {
+            undeliveredSlots |= bit;
+        }
+    }
+    for (uint8_t slot = 0; slot < VIRTUAL_SLOT_COUNT; ++slot) {
+        if ((undeliveredSlots & (uint8_t)(1U << slot)) == 0) continue;
+        sendFrameToVirtualSlot(slot, CMD_RX_PACKET, payload, len);
+        recentMatch->deliveredSlots |= (uint8_t)(1U << slot);
+        recentMatch->deliveredGenerations[slot] = TCPServer::getSlotGeneration(slot);
+    }
+    // Returning true even when every matching slot already received this
+    // packet prevents handleLoRaRx() from falling back to a TCP broadcast.
+    return true;
+}
+
+static int8_t nextReadyVirtualSlot(uint8_t start) {
+    for (uint8_t n = 0; n < VIRTUAL_SLOT_COUNT; ++n) {
+        uint8_t slot = (uint8_t)((start + n) % VIRTUAL_SLOT_COUNT);
+        if (virtualSlotEligible(slot)) return (int8_t)slot;
+    }
+    return -1;
+}
+
+static void rememberTransmittedPacket(const uint8_t* payload, uint16_t len) {
+    if (!payload || len == 0 || len > MAX_LORA_PAYLOAD) return;
+    lastTransmittedPacket.valid = true;
+    lastTransmittedPacket.len = len;
+    lastTransmittedPacket.completedMs = millis();
+    memcpy(lastTransmittedPacket.data, payload, len);
+}
+
+static bool isRecentTransmittedPacket(const uint8_t* payload, uint16_t len) {
+    if (!lastTransmittedPacket.valid || !payload ||
+        len != lastTransmittedPacket.len || activityHoldMs == 0 ||
+        txEchoHoldMultiplier == 0 ||
+        memcmp(lastTransmittedPacket.data, payload, len) != 0) {
+        return false;
+    }
+
+    uint64_t window = (uint64_t)activityHoldMs * txEchoHoldMultiplier;
+    if (window > UINT32_MAX) window = UINT32_MAX;
+    return (uint32_t)(millis() - lastTransmittedPacket.completedMs) <
+           (uint32_t)window;
+}
+
+static void discardStaleVirtualTx() {
+    for (uint8_t slot = 0; slot < VIRTUAL_SLOT_COUNT; ++slot) {
+        const bool activeOwner =
+            (slot == txOwnerSlot && virtualRadioOperation == VirtualRadioOperation::TX) ||
+            (slot == cadOwnerSlot && virtualRadioOperation == VirtualRadioOperation::CAD_FOR_TX);
+        if (virtualTx[slot].pending && !activeOwner &&
+            !virtualSessionCurrent(slot, virtualTxGeneration[slot])) {
+            virtualTx[slot].pending = false;
+        }
+    }
+}
+
+static void resumeVirtualRx() {
+    virtualRadioOperation = VirtualRadioOperation::RX_SLOT;
+    cadOwnerSlot = INVALID_VIRTUAL_SLOT;
+    cadOwnerGeneration = 0;
+    activeVirtualSlot = INVALID_VIRTUAL_SLOT;
+    activeVirtualGeneration = 0;
+    int8_t next = nextReadyVirtualSlot(nextVirtualSlot);
+    if (next >= 0) {
+        nextVirtualSlot = (uint8_t)((next + 1) % VIRTUAL_SLOT_COUNT);
+        beginVirtualProfile((uint8_t)next);
+    } else {
+        radio.standby();
+    }
+}
+
+static VirtualCadStartResult startVirtualCad(VirtualRadioOperation operation,
+                                             uint8_t owner) {
+    if (radioStandby || !virtualSlotEligible(owner)) return VirtualCadStartResult::FAILED;
+    if (virtualRadioOperation != VirtualRadioOperation::RX_SLOT) {
+        return VirtualCadStartResult::BUSY;
+    }
+    radio.standby();
+    delay(1);
+    ChannelScanConfig_t cfg = {};
+    cfg.cad.symNum = cadSymNum;
+    cfg.cad.detPeak = cadDetPeak;
+    cfg.cad.detMin = cadDetMin;
+    cfg.cad.exitMode = cadExitMode;
+    cfg.cad.irqFlags = RADIOLIB_IRQ_CAD_DEFAULT_FLAGS;
+    cfg.cad.irqMask = RADIOLIB_IRQ_CAD_DEFAULT_MASK;
+    dio1Flag = false;
+    const int state = cadCustom
+        ? radio.startChannelScan(cfg)
+        : radio.startChannelScan();
+    if (state != RADIOLIB_ERR_NONE) {
+        startReceive();
+        return VirtualCadStartResult::FAILED;
+    }
+    virtualRadioOperation = operation;
+    cadOwnerSlot = owner;
+    cadOwnerGeneration = TCPServer::getSlotGeneration(owner);
+    cadStartedMs = millis();
+    cadResponsePending = operation == VirtualRadioOperation::CAD_FOR_HOST;
+    return VirtualCadStartResult::STARTED;
+}
+
+static bool enqueueVirtualTx(uint8_t slot, const uint8_t* payload, uint16_t len) {
+    if (slot >= VIRTUAL_SLOT_COUNT || virtualStandby[slot] ||
+        len == 0 || len > MAX_LORA_PAYLOAD) return false;
+    PendingVirtualTx& tx = virtualTx[slot];
+    const bool activeOwner =
+        (virtualRadioOperation == VirtualRadioOperation::TX &&
+         txOwnerSlot == slot) ||
+        (virtualRadioOperation == VirtualRadioOperation::CAD_FOR_TX &&
+         cadOwnerSlot == slot);
+    if (activeOwner) return false;
+    if (tx.pending &&
+        virtualTxGeneration[slot] != TCPServer::getSlotGeneration(slot)) {
+        tx.pending = false;
+    }
+    if (tx.pending) return false;
+    tx.len = len;
+    memcpy(tx.data, payload, len);
+    virtualTxGeneration[slot] = TCPServer::getSlotGeneration(slot);
+    tx.pending = true;
+    return true;
+}
+
+static int8_t nextPendingVirtualTx() {
+    for (uint8_t n = 0; n < VIRTUAL_SLOT_COUNT; ++n) {
+        uint8_t slot = (uint8_t)((nextTxSlot + n) % VIRTUAL_SLOT_COUNT);
+        if (!virtualTx[slot].pending) continue;
+        if (virtualStandby[slot]) continue;
+        if (virtualSessionCurrent(slot, virtualTxGeneration[slot])) {
+            return (int8_t)slot;
+        }
+        virtualTx[slot].pending = false;
+    }
+    return -1;
+}
+
+static bool virtualActivityHoldActive() {
+    return activeVirtualSlot < VIRTUAL_SLOT_COUNT &&
+           virtualSessionCurrent(activeVirtualSlot, activeVirtualGeneration) &&
+           activityHoldUntilMs != 0 &&
+           (int32_t)(millis() - activityHoldUntilMs) < 0;
+}
+
+static void serviceVirtualRadio() {
+    if (!radioReady) return;
+    discardStaleVirtualTx();
+    if (activeVirtualSlot < VIRTUAL_SLOT_COUNT &&
+        !virtualSessionCurrent(activeVirtualSlot, activeVirtualGeneration)) {
+        activeVirtualSlot = INVALID_VIRTUAL_SLOT;
+        activeVirtualGeneration = 0;
+    }
+    if (radioStandby) {
+        if (virtualRadioOperation == VirtualRadioOperation::TX) {
+            radio.standby();
+            radio.finishTransmit();
+            setTxLed(false);
+            isTxActive = false;
+        } else if (virtualRadioOperation != VirtualRadioOperation::RX_SLOT) {
+            radio.standby();
+        }
+        virtualRadioOperation = VirtualRadioOperation::RX_SLOT;
+        txOwnerSlot = INVALID_VIRTUAL_SLOT;
+        txOwnerGeneration = 0;
+        cadOwnerSlot = INVALID_VIRTUAL_SLOT;
+        cadOwnerGeneration = 0;
+        cadResponsePending = false;
+        activeVirtualSlot = INVALID_VIRTUAL_SLOT;
+        activeVirtualGeneration = 0;
+        dio1Flag = false;
+        return;
+    }
+
+    // TX owns radio immediately, but sockets remain serviced later in loop().
+    if (virtualRadioOperation == VirtualRadioOperation::TX) {
+        if (dio1Flag) {
+            dio1Flag = false;
+            bool ok = true;
+            radio.finishTransmit();
+            setTxLed(false);
+            isTxActive = false;
+            if (ok) {
+                uint32_t airtime = radio.getTimeOnAir(virtualTx[txOwnerSlot].len);
+                uint8_t resp[4] = {
+                    (uint8_t)(airtime & 0xFF), (uint8_t)((airtime >> 8) & 0xFF),
+                    (uint8_t)((airtime >> 16) & 0xFF), (uint8_t)((airtime >> 24) & 0xFF)
+                };
+                sendFrameToVirtualSlotGeneration(txOwnerSlot, txOwnerGeneration,
+                                                  CMD_TX_DONE, resp, sizeof(resp));
+                rememberTransmittedPacket(virtualTx[txOwnerSlot].data,
+                                          virtualTx[txOwnerSlot].len);
+                status.tx_count++;
+            }
+            virtualTx[txOwnerSlot].pending = false;
+            nextTxSlot = (uint8_t)((txOwnerSlot + 1) % VIRTUAL_SLOT_COUNT);
+            txOwnerSlot = INVALID_VIRTUAL_SLOT;
+            txOwnerGeneration = 0;
+            virtualRadioOperation = VirtualRadioOperation::RX_SLOT;
+            activeVirtualSlot = INVALID_VIRTUAL_SLOT;
+            activeVirtualGeneration = 0;
+            int8_t next = nextReadyVirtualSlot(nextVirtualSlot);
+            if (next >= 0) {
+                nextVirtualSlot = (uint8_t)((next + 1) % VIRTUAL_SLOT_COUNT);
+                beginVirtualProfile((uint8_t)next);
+            } else {
+                startReceive();
+            }
+        } else if ((uint32_t)(millis() - txStartedMs) > 4500) {
+            radio.standby();
+            radio.finishTransmit();
+            setTxLed(false);
+            isTxActive = false;
+            uint8_t error = ERR_TX_TIMEOUT;
+            sendFrameToVirtualSlotGeneration(txOwnerSlot, txOwnerGeneration,
+                                              CMD_ERROR, &error, 1);
+            virtualTx[txOwnerSlot].pending = false;
+            nextTxSlot = (uint8_t)((txOwnerSlot + 1) % VIRTUAL_SLOT_COUNT);
+            txOwnerSlot = INVALID_VIRTUAL_SLOT;
+            txOwnerGeneration = 0;
+            virtualRadioOperation = VirtualRadioOperation::RX_SLOT;
+            activeVirtualSlot = INVALID_VIRTUAL_SLOT;
+            activeVirtualGeneration = 0;
+        }
+        return;
+    }
+
+    if (virtualRadioOperation == VirtualRadioOperation::CAD_FOR_HOST ||
+        virtualRadioOperation == VirtualRadioOperation::CAD_FOR_TX ||
+        virtualRadioOperation == VirtualRadioOperation::CAD_FOR_SLOT) {
+        if (!dio1Flag && (uint32_t)(millis() - cadStartedMs) < 500) return;
+        uint16_t irq = radio.getIrqFlags();
+        radio.clearIrqFlags(RADIOLIB_IRQ_CAD_DEFAULT_FLAGS);
+        bool timedOut = !dio1Flag;
+        dio1Flag = false;
+        bool busy = !timedOut && ((irq & RADIOLIB_SX126X_IRQ_CAD_DETECTED) != 0);
+        VirtualRadioOperation operation = virtualRadioOperation;
+        uint8_t owner = cadOwnerSlot;
+        uint32_t ownerGeneration = cadOwnerGeneration;
+        virtualRadioOperation = VirtualRadioOperation::RX_SLOT;
+        cadOwnerSlot = INVALID_VIRTUAL_SLOT;
+        cadOwnerGeneration = 0;
+        if (operation == VirtualRadioOperation::CAD_FOR_HOST) {
+            if (timedOut) {
+                uint8_t error = ERR_CAD_FAILED;
+                sendFrameToVirtualSlotGeneration(owner, ownerGeneration,
+                                                  CMD_ERROR, &error, 1);
+            } else {
+                uint8_t result = busy ? 1 : 0;
+                sendFrameToVirtualSlotGeneration(owner, ownerGeneration,
+                                                  CMD_CAD_RESP, &result, 1);
+            }
+            if (activeVirtualSlot < VIRTUAL_SLOT_COUNT) startReceive();
+            return;
+        }
+        if (operation == VirtualRadioOperation::CAD_FOR_TX) {
+            if (!virtualSessionCurrent(owner, ownerGeneration)) {
+                virtualTx[owner].pending = false;
+                nextTxSlot = (uint8_t)((owner + 1) % VIRTUAL_SLOT_COUNT);
+                resumeVirtualRx();
+                return;
+            }
+            if (timedOut || busy) {
+                uint8_t error = timedOut ? ERR_CAD_FAILED : ERR_CHANNEL_BUSY;
+                sendFrameToVirtualSlotGeneration(owner, ownerGeneration,
+                                                  CMD_ERROR, &error, 1);
+                virtualTx[owner].pending = false;
+                nextTxSlot = (uint8_t)((owner + 1) % VIRTUAL_SLOT_COUNT);
+                resumeVirtualRx();
+                return;
+            }
+            radio.standby();
+            RFFrontEnd::prepareTransmit();
+            dio1Flag = false;
+            txOwnerSlot = owner;
+            txOwnerGeneration = virtualTxGeneration[owner];
+            txStartedMs = millis();
+            isTxActive = true;
+            setTxLed(true);
+            int state = radio.startTransmit(virtualTx[owner].data, virtualTx[owner].len);
+            if (state != RADIOLIB_ERR_NONE) {
+                isTxActive = false;
+                setTxLed(false);
+                uint8_t error = ERR_TX_TIMEOUT;
+                sendFrameToVirtualSlotGeneration(owner, virtualTxGeneration[owner],
+                                                  CMD_ERROR, &error, 1);
+                virtualTx[owner].pending = false;
+                virtualRadioOperation = VirtualRadioOperation::RX_SLOT;
+                txOwnerSlot = INVALID_VIRTUAL_SLOT;
+                txOwnerGeneration = 0;
+                resumeVirtualRx();
+            } else {
+                virtualRadioOperation = VirtualRadioOperation::TX;
+            }
+            return;
+        }
+        // Slot CAD is advisory: keep RX on detected activity for bounded hold.
+        if (busy) activityHoldUntilMs = millis() + activityHoldMs;
+        if (operation == VirtualRadioOperation::CAD_FOR_SLOT) {
+            rxSlotStartedMs = millis();
+            if (!busy) {
+                int8_t next = nextReadyVirtualSlot(nextVirtualSlot);
+                if (next >= 0) {
+                    nextVirtualSlot = (uint8_t)((next + 1) % VIRTUAL_SLOT_COUNT);
+                    beginVirtualProfile((uint8_t)next);
+                }
+            }
+        }
+        if (activeVirtualSlot < VIRTUAL_SLOT_COUNT) startReceive();
+        return;
+    }
+
+    // A queued forward must not preempt the receive profile while CAD or a
+    // completed RX packet is holding detected activity. Keep servicing the
+    // sockets and leave the request queued until the hold deadline expires.
+    if (virtualActivityHoldActive()) return;
+
+    int8_t pending = nextPendingVirtualTx();
+    if (pending >= 0) {
+        uint8_t owner = (uint8_t)pending;
+        nextTxSlot = (uint8_t)((owner + 1) % VIRTUAL_SLOT_COUNT);
+        if (!beginVirtualProfile(owner)) {
+            uint8_t error = ERR_INVALID_CONFIG;
+            sendFrameToVirtualSlot(owner, CMD_ERROR, &error, 1);
+            virtualTx[owner].pending = false;
+        } else if (autoCadEnabled) {
+            VirtualCadStartResult result =
+                startVirtualCad(VirtualRadioOperation::CAD_FOR_TX, owner);
+            if (result == VirtualCadStartResult::FAILED) {
+                uint8_t error = ERR_CAD_FAILED;
+                sendFrameToVirtualSlotGeneration(owner, virtualTxGeneration[owner],
+                                                  CMD_ERROR, &error, 1);
+                virtualTx[owner].pending = false;
+                resumeVirtualRx();
+            }
+        } else {
+            radio.standby();
+            RFFrontEnd::prepareTransmit();
+            dio1Flag = false;
+            txOwnerSlot = owner;
+            txOwnerGeneration = virtualTxGeneration[owner];
+            txStartedMs = millis();
+            isTxActive = true;
+            setTxLed(true);
+            int state = radio.startTransmit(virtualTx[owner].data, virtualTx[owner].len);
+            virtualRadioOperation = state == RADIOLIB_ERR_NONE
+                ? VirtualRadioOperation::TX : VirtualRadioOperation::RX_SLOT;
+            if (state != RADIOLIB_ERR_NONE) {
+                isTxActive = false;
+                setTxLed(false);
+                uint8_t error = ERR_TX_TIMEOUT;
+                sendFrameToVirtualSlotGeneration(owner, virtualTxGeneration[owner],
+                                                  CMD_ERROR, &error, 1);
+                virtualTx[owner].pending = false;
+                txOwnerSlot = INVALID_VIRTUAL_SLOT;
+                txOwnerGeneration = 0;
+                resumeVirtualRx();
+            }
+        }
+        return;
+    }
+
+    if (!virtualTcpReady()) return;
+    if (activeVirtualSlot >= VIRTUAL_SLOT_COUNT) {
+        int8_t next = nextReadyVirtualSlot(nextVirtualSlot);
+        if (next >= 0) {
+            nextVirtualSlot = (uint8_t)((next + 1) % VIRTUAL_SLOT_COUNT);
+            beginVirtualProfile((uint8_t)next);
+        }
+        return;
+    }
+    if ((uint32_t)(millis() - rxSlotStartedMs) < rxSlotDurationMs) return;
+
+    int8_t next = nextReadyVirtualSlot(nextVirtualSlot);
+    if (next < 0) return;
+    nextVirtualSlot = (uint8_t)((next + 1) % VIRTUAL_SLOT_COUNT);
+    // CAD is skipped for very short slots; profile switch remains bounded and
+    // measured by rxSlotStartedMs, so 5 ms is a lower scheduling request, not
+    // a promise that every radio operation fits inside 5 ms.
+    if (rxSlotDurationMs >= 20) {
+        if (startVirtualCad(VirtualRadioOperation::CAD_FOR_SLOT,
+                            activeVirtualSlot) == VirtualCadStartResult::STARTED) {
+            return;
+        }
+    }
+    beginVirtualProfile((uint8_t)next);
+}
+
 // ─── Handle received LoRa packet ────────────────────────────
 void handleLoRaRx() {
     int len = radio.getPacketLength();
@@ -809,6 +1546,15 @@ void handleLoRaRx() {
         return;
     }
 
+    // Suppress an exact RF reflection of the most recently completed TX before
+    // it reaches counters, activity hold, or virtual-slot fan-out.
+    if (isRecentTransmittedPacket(rxBuf, (uint16_t)len)) {
+        suppressedRxCount++;
+        lastPacketTime = millis();
+        startReceive();
+        return;
+    }
+
     int16_t rssi = (int16_t)radio.getRSSI();
     int16_t snr  = (int16_t)(radio.getSNR() * 10.0f);
     int16_t signal_rssi = rssi;
@@ -816,6 +1562,13 @@ void handleLoRaRx() {
     status.rx_count++;
     status.last_rssi = rssi;
     status.last_snr  = snr;
+
+    // Receiving a packet is definitive channel activity. Preserve this RX
+    // profile for the configured hold interval and defer queued virtual TX
+    // requests rather than letting a forwarding client immediately take over.
+    if (activeVirtualSlot < VIRTUAL_SLOT_COUNT && activityHoldMs > 0) {
+        activityHoldUntilMs = millis() + activityHoldMs;
+    }
 
     // TFT cache — display the freshest received-packet quality
     // alongside the rest of the radio state on the next status
@@ -834,7 +1587,17 @@ void handleLoRaRx() {
     rxPayload[5] = (signal_rssi >> 8) & 0xFF;
     memcpy(rxPayload + 6, rxBuf, len);
 
-    broadcastFrame(CMD_RX_PACKET, rxPayload, 6 + len);
+    if (sendRxPacketToMatchingVirtualSlots(rxPayload, 6 + len)) {
+        // TCP virtual-radio routing must not suppress the legacy USB/UART
+        // event stream used by local controllers and diagnostics.
+        writeFrame(CMD_RX_PACKET, rxPayload, 6 + len,
+                   /*toSerial=*/true, /*toTCP=*/false, /*toUart=*/uartEnabled);
+    } else if (virtualTcpReady()) {
+        writeFrame(CMD_RX_PACKET, rxPayload, 6 + len,
+                   /*toSerial=*/true, /*toTCP=*/false, /*toUart=*/uartEnabled);
+    } else {
+        broadcastFrame(CMD_RX_PACKET, rxPayload, 6 + len);
+    }
     lastPacketTime = millis();
     startReceive();
 }
@@ -844,6 +1607,21 @@ void processHostCommand(uint8_t cmd, const uint8_t* payload, uint16_t len,
                         TransportSource src) {
     // Any successfully-processed host frame counts toward OTA sanity.
     OTAManager::notifyValidFrame();
+
+    const uint8_t requestSlot = tcpCommandSlot();
+    const bool virtualTcpCommand = src == TransportSource::TCP &&
+                                   requestSlot < VIRTUAL_SLOT_COUNT;
+    if (virtualTcpCommand) initializeVirtualConfigs();
+
+    // Once a TCP virtual-radio session is ready, it owns the SX1262. USB/UART
+    // must not reconfigure, scan, or transmit through the physical radio
+    // behind the scheduler's back. Global standby/resume remains allowed so
+    // an operator can deliberately stop and restart the multiplexed radio.
+    if (src != TransportSource::TCP && virtualTcpReady() &&
+        virtualRadioOwnershipCommand(cmd)) {
+        sendError(ERR_RADIO_BUSY, src);
+        return;
+    }
 
     // Boards without a LoRa radio, or boards where SX1262 init failed,
     // ack the non-radio commands (PING, GET_VERSION, GET_WIFI, AUTH, …)
@@ -866,6 +1644,13 @@ void processHostCommand(uint8_t cmd, const uint8_t* payload, uint16_t len,
     case CMD_TX_REQUEST: {
         if (len == 0 || len > MAX_LORA_PAYLOAD) {
             sendError(ERR_PAYLOAD_TOO_BIG, src);
+            break;
+        }
+        if (virtualTcpCommand) {
+            if (!enqueueVirtualTx(requestSlot, payload, len)) {
+                uint8_t error = ERR_RADIO_BUSY;
+                sendFrameToVirtualSlot(requestSlot, CMD_ERROR, &error, 1);
+            }
             break;
         }
         // v0.5.7: non-blocking TX with our own timeout.
@@ -966,6 +1751,7 @@ void processHostCommand(uint8_t cmd, const uint8_t* payload, uint16_t len,
         lastPacketTime = millis();
 
         if (txOk) {
+            rememberTransmittedPacket(payload, len);
             status.tx_count++;
             uint32_t airtime_us = radio.getTimeOnAir(len);
             uint8_t resp[4];
@@ -991,6 +1777,21 @@ void processHostCommand(uint8_t cmd, const uint8_t* payload, uint16_t len,
     }
 
     case CMD_CAD_REQUEST: {
+        if (virtualTcpCommand) {
+            if (activeVirtualSlot != requestSlot && !beginVirtualProfile(requestSlot)) {
+                uint8_t error = ERR_INVALID_CONFIG;
+                sendFrameToVirtualSlot(requestSlot, CMD_ERROR, &error, 1);
+                break;
+            }
+            VirtualCadStartResult cadResult =
+                startVirtualCad(VirtualRadioOperation::CAD_FOR_HOST, requestSlot);
+            if (cadResult != VirtualCadStartResult::STARTED) {
+                uint8_t error = cadResult == VirtualCadStartResult::BUSY
+                    ? ERR_RADIO_BUSY : ERR_CAD_FAILED;
+                sendFrameToVirtualSlot(requestSlot, CMD_ERROR, &error, 1);
+            }
+            break;
+        }
         // v0.5.8: non-blocking CAD with our own timeout.
         // The previous radio.scanChannel() was synchronous and would block
         // until CAD_DONE IRQ arrived. When SX1262 dropped that IRQ (first
@@ -1068,6 +1869,28 @@ void processHostCommand(uint8_t cmd, const uint8_t* payload, uint16_t len,
             sendError(ERR_INVALID_CONFIG, src);
             break;
         }
+        if (virtualTcpCommand) {
+            if (activeVirtualSlot == requestSlot &&
+                virtualRadioOperation != VirtualRadioOperation::RX_SLOT) {
+                uint8_t error = ERR_RADIO_BUSY;
+                sendFrameToVirtualSlot(requestSlot, CMD_ERROR, &error, 1);
+                break;
+            }
+            virtualCadSymNum[requestSlot] = payload[0];
+            virtualCadDetPeak[requestSlot] = payload[1];
+            virtualCadDetMin[requestSlot] = payload[2];
+            virtualCadExitMode[requestSlot] = payload[3];
+            virtualCadCustom[requestSlot] = true;
+            if (activeVirtualSlot == requestSlot) {
+                cadSymNum = payload[0];
+                cadDetPeak = payload[1];
+                cadDetMin = payload[2];
+                cadExitMode = payload[3];
+                cadCustom = true;
+            }
+            sendFrame(CMD_CAD_PARAMS_RESP, payload, 4, src);
+            break;
+        }
         cadSymNum   = payload[0];
         cadDetPeak  = payload[1];
         cadDetMin   = payload[2];
@@ -1086,7 +1909,20 @@ void processHostCommand(uint8_t cmd, const uint8_t* payload, uint16_t len,
     }
 
     case CMD_RX_START: {
-        startReceive();
+        if (virtualTcpCommand) {
+            if (virtualRadioOperation != VirtualRadioOperation::RX_SLOT) {
+                uint8_t error = ERR_RADIO_BUSY;
+                sendFrameToVirtualSlot(requestSlot, CMD_ERROR, &error, 1);
+                break;
+            }
+            if (!beginVirtualProfile(requestSlot)) {
+                uint8_t error = ERR_INVALID_CONFIG;
+                sendFrameToVirtualSlot(requestSlot, CMD_ERROR, &error, 1);
+                break;
+            }
+        } else {
+            startReceive();
+        }
         sendFrame(CMD_RX_STARTED, nullptr, 0, src);
         break;
     }
@@ -1094,6 +1930,23 @@ void processHostCommand(uint8_t cmd, const uint8_t* payload, uint16_t len,
     case CMD_SET_CONFIG: {
         if (len != sizeof(RadioConfig)) {
             sendError(ERR_INVALID_CONFIG, src);
+            break;
+        }
+        if (virtualTcpCommand) {
+            if (activeVirtualSlot == requestSlot &&
+                virtualRadioOperation != VirtualRadioOperation::RX_SLOT) {
+                uint8_t error = ERR_RADIO_BUSY;
+                sendFrameToVirtualSlot(requestSlot, CMD_ERROR, &error, 1);
+                break;
+            }
+            memcpy(&virtualConfigs[requestSlot], payload, sizeof(RadioConfig));
+            if (activeVirtualSlot == requestSlot && !applyConfig(virtualConfigs[requestSlot])) {
+                sendError(ERR_INVALID_CONFIG, src);
+                break;
+            }
+            sendFrame(CMD_CONFIG_RESP, (uint8_t*)&virtualConfigs[requestSlot],
+                      sizeof(RadioConfig), src);
+            if (activeVirtualSlot == requestSlot) startReceive();
             break;
         }
         memcpy(&currentConfig, payload, sizeof(RadioConfig));
@@ -1115,7 +1968,12 @@ void processHostCommand(uint8_t cmd, const uint8_t* payload, uint16_t len,
     }
 
     case CMD_GET_CONFIG: {
-        sendFrame(CMD_CONFIG_RESP, (uint8_t*)&currentConfig, sizeof(RadioConfig), src);
+        if (virtualTcpCommand) {
+            sendFrame(CMD_CONFIG_RESP, (uint8_t*)&virtualConfigs[requestSlot],
+                      sizeof(RadioConfig), src);
+        } else {
+            sendFrame(CMD_CONFIG_RESP, (uint8_t*)&currentConfig, sizeof(RadioConfig), src);
+        }
         break;
     }
 
@@ -1237,6 +2095,23 @@ void processHostCommand(uint8_t cmd, const uint8_t* payload, uint16_t len,
         break;
     }
     case CMD_RADIO_STANDBY: {
+        if (virtualTcpCommand) {
+            if (activeVirtualSlot == requestSlot &&
+                virtualRadioOperation != VirtualRadioOperation::RX_SLOT) {
+                uint8_t error = ERR_RADIO_BUSY;
+                sendFrameToVirtualSlot(requestSlot, CMD_ERROR, &error, 1);
+                break;
+            }
+            virtualStandby[requestSlot] = true;
+            if (activeVirtualSlot == requestSlot) {
+                radio.standby();
+                activeVirtualSlot = INVALID_VIRTUAL_SLOT;
+                activeVirtualGeneration = 0;
+            }
+            uint8_t statusCode = 0;
+            sendFrame(CMD_RADIO_STANDBY_RESP, &statusCode, 1, src);
+            break;
+        }
         radio.standby();
         radioStandby = true;
         oled.setStandby(true);
@@ -1249,12 +2124,35 @@ void processHostCommand(uint8_t cmd, const uint8_t* payload, uint16_t len,
         break;
     }
     case CMD_RADIO_RESUME: {
+        if (virtualTcpCommand) {
+            virtualStandby[requestSlot] = false;
+            bool ok = virtualRadioOperation == VirtualRadioOperation::RX_SLOT &&
+                      beginVirtualProfile(requestSlot);
+            uint8_t statusCode = ok ? 0 : 1;
+            if (!ok && virtualRadioOperation != VirtualRadioOperation::RX_SLOT) {
+                uint8_t error = ERR_RADIO_BUSY;
+                sendFrameToVirtualSlot(requestSlot, CMD_ERROR, &error, 1);
+            }
+            sendFrame(CMD_RADIO_RESUME_RESP, &statusCode, 1, src);
+            break;
+        }
         radioStandby = false;
         oled.setStandby(false);
 #if defined(BOARD_HELTEC_T114)
         NodeState::setStandby(false);
 #endif
-        bool ok = applyConfig(currentConfig) && startReceive();
+        bool ok;
+        if (virtualTcpReady()) {
+            virtualRadioOperation = VirtualRadioOperation::RX_SLOT;
+            activeVirtualSlot = INVALID_VIRTUAL_SLOT;
+            activeVirtualGeneration = 0;
+            int8_t next = nextReadyVirtualSlot(nextVirtualSlot);
+            ok = next >= 0 && beginVirtualProfile((uint8_t)next);
+            if (ok) nextVirtualSlot = (uint8_t)((next + 1) % VIRTUAL_SLOT_COUNT);
+            else radio.standby();
+        } else {
+            ok = applyConfig(currentConfig) && startReceive();
+        }
         LOG_R_INFO("radio RESUME (ok=%d)", (int)ok);
         uint8_t status = ok ? 0 : 1;
         sendFrame(CMD_RADIO_RESUME_RESP, &status, 1, src);
@@ -1551,6 +2449,10 @@ void setup() {
     // Ethernet (`ethernet.enabled = false`) skip straight to Wi-Fi.
     WifiManager::loadConfigOnly();
     const auto& netCfg = WifiManager::getConfig();
+    rxSlotDurationMs = netCfg.rxSlotMs < MIN_RX_SLOT_MS
+        ? MIN_RX_SLOT_MS : netCfg.rxSlotMs;
+    activityHoldMs = netCfg.activityHoldMs;
+    txEchoHoldMultiplier = netCfg.txEchoHoldMultiplier;
     bool useEthernet = false;
     if (BOARD.ethernet.enabled) {
         EthernetManager::begin(WifiManager::getHostname(),
@@ -1596,8 +2498,7 @@ void setup() {
         String token = BOARD.has_wifi ? wcfg.tcpToken : String();
 #endif
         uint16_t port = wcfg.tcpPort ? wcfg.tcpPort : 5055;
-        TCPServer::begin(port, token);
-        tcpStarted = true;
+        tcpStarted = TCPServer::begin(port, token);
 
         OTAManager::begin(deviceHostname, token);
         otaStarted = true;
@@ -1721,6 +2622,10 @@ void loop() {
 
     compatWdtReset();   // feed the loop watchdog every pass
 
+    // TCP profile switching and TX arbitration run cooperatively here. The
+    // transport remains serviced every loop; no RF operation owns a socket.
+    serviceVirtualRadio();
+
     // DIO1 during TX is consumed by the TX handler's own wait loop; in
     // loop() we only act on it when the radio is in RX mode.
     if (dio1Flag && !isTxActive) {
@@ -1763,8 +2668,7 @@ void loop() {
         String token = BOARD.has_wifi ? wcfg.tcpToken : String();
 #endif
         uint16_t port = wcfg.tcpPort ? wcfg.tcpPort : 5055;
-        TCPServer::begin(port, token);
-        tcpStarted = true;
+        tcpStarted = TCPServer::begin(port, token);
     }
     if (!otaStarted && netUp) {
         const auto& wcfg = WifiManager::getConfig();

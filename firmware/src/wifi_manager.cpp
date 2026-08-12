@@ -68,6 +68,9 @@ static void loadConfig() {
         cfg.tcpPort = DEFAULT_TCP_PORT;
         cfg.wifiExternalAntenna = false;
         cfg.gpsEnabled = false;
+        cfg.rxSlotMs = BUILD_DEFAULT_RX_SLOT_MS;
+        cfg.activityHoldMs = BUILD_DEFAULT_ACTIVITY_HOLD_MS;
+        cfg.txEchoHoldMultiplier = 1;
         effectiveHostname = "";
         return;
     }
@@ -84,7 +87,14 @@ static void loadConfig() {
     cfg.tcpPort     = p.getUShort("port", DEFAULT_TCP_PORT);
     cfg.wifiExternalAntenna = p.getBool("ant_ext", false);
     cfg.gpsEnabled  = p.getBool("gps_en", false);
+    cfg.rxSlotMs    = p.getUInt("rx_slot", BUILD_DEFAULT_RX_SLOT_MS);
+    cfg.activityHoldMs = p.getUInt("act_hold", BUILD_DEFAULT_ACTIVITY_HOLD_MS);
+    cfg.txEchoHoldMultiplier = p.getUInt("tx_echo_mult", 1);
     p.end();
+
+    // Reject stale or malformed NVS values while preserving the build-time
+    // default as the safe fallback for old firmware/configurations.
+    if (cfg.rxSlotMs < MIN_RX_SLOT_MS) cfg.rxSlotMs = BUILD_DEFAULT_RX_SLOT_MS;
 }
 
 bool hasWifiAntennaSwitch() {
@@ -163,25 +173,31 @@ static void refreshEffectiveHostname() {
 }
 
 void saveConfig(const Config& newCfg) {
+    Config stored = newCfg;
+    if (stored.rxSlotMs < MIN_RX_SLOT_MS) stored.rxSlotMs = BUILD_DEFAULT_RX_SLOT_MS;
+
     Preferences p;
     if (!p.begin(NVS_NAMESPACE, false)) return;
-    p.putString("ssid",  newCfg.ssid);
-    p.putString("pass",  newCfg.password);
-    p.putString("host",  sanitizeHostname(newCfg.hostname));
-    p.putBool  ("static", newCfg.useStaticIP);
-    p.putUInt  ("ip",    (uint32_t)newCfg.staticIP);
-    p.putUInt  ("gw",    (uint32_t)newCfg.gateway);
-    p.putUInt  ("sn",    (uint32_t)newCfg.subnet);
-    p.putUInt  ("dns",   (uint32_t)newCfg.dns1);
-    p.putUInt  ("dns2",  (uint32_t)newCfg.dns2);
-    p.putString("token", newCfg.tcpToken);
-    p.putUShort("port",  newCfg.tcpPort);
+    p.putString("ssid",  stored.ssid);
+    p.putString("pass",  stored.password);
+    p.putString("host",  sanitizeHostname(stored.hostname));
+    p.putBool  ("static", stored.useStaticIP);
+    p.putUInt  ("ip",    (uint32_t)stored.staticIP);
+    p.putUInt  ("gw",    (uint32_t)stored.gateway);
+    p.putUInt  ("sn",    (uint32_t)stored.subnet);
+    p.putUInt  ("dns",   (uint32_t)stored.dns1);
+    p.putUInt  ("dns2",  (uint32_t)stored.dns2);
+    p.putString("token", stored.tcpToken);
+    p.putUShort("port",  stored.tcpPort);
     if (hasWifiAntennaSwitch()) {
-        p.putBool("ant_ext", newCfg.wifiExternalAntenna);
+        p.putBool("ant_ext", stored.wifiExternalAntenna);
     }
-    p.putBool("gps_en", newCfg.gpsEnabled);
+    p.putBool("gps_en", stored.gpsEnabled);
+    p.putUInt("rx_slot", stored.rxSlotMs);
+    p.putUInt("act_hold", stored.activityHoldMs);
+    p.putUInt("tx_echo_mult", stored.txEchoHoldMultiplier);
     p.end();
-    cfg = newCfg;
+    cfg = stored;
     cfg.hostname = sanitizeHostname(cfg.hostname);
     if (!hasWifiAntennaSwitch()) {
         cfg.wifiExternalAntenna = false;

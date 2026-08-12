@@ -20,6 +20,7 @@
 #include <WebServer.h>
 #include <ETH.h>
 #include <WiFi.h>
+#include <cstdlib>
 #include <esp_ota_ops.h>
 
 namespace OTAManager {
@@ -283,35 +284,79 @@ static String buildSystemJson(const RuntimeStats::Snapshot& snap,
     return body;
 }
 
-static String buildRadioJson(const RuntimeStats::Snapshot& snap) {
+static void appendRadioConfigJson(String& body, const RadioConfig& radio) {
+    body += F("\"frequency_hz\":");
+    body += String(radio.freq_hz);
+    body += F(",\"frequency_mhz\":");
+    body += String(radio.freq_hz / 1000000.0f, 3);
+    body += F(",\"bandwidth_hz\":");
+    body += String(radio.bandwidth_hz);
+    body += F(",\"bandwidth_khz\":");
+    body += String(radio.bandwidth_hz / 1000.0f, 1);
+    body += F(",\"spreading_factor\":");
+    body += String(radio.sf);
+    body += F(",\"coding_rate\":");
+    body += String(radio.cr);
+    body += F(",\"tx_power_dbm\":");
+    body += String(radio.power_dbm);
+    body += F(",\"syncword\":");
+    body += jsonQuote(String("0x") + String(radio.syncword, HEX));
+    body += F(",\"syncword_value\":");
+    body += String(radio.syncword);
+    body += F(",\"preamble_len\":");
+    body += String(radio.preamble_len);
+}
+
+static String buildVirtualSlotJson(const RuntimeStats::VirtualSlotSnapshot& slot) {
     String body;
     body.reserve(512);
+    body += F("{\"slot\":");
+    body += String(slot.slot);
+    body += F(",\"port\":");
+    body += String(slot.port);
+    body += F(",\"active\":");
+    body += boolJson(slot.active);
+    body += F(",\"on_air\":");
+    body += boolJson(slot.onAir);
+    body += F(",\"standby\":");
+    body += boolJson(slot.standby);
+    body += F(",\"client_ip\":");
+    body += slot.clientIP.length() > 0 ? jsonQuote(slot.clientIP) : String("null");
+    body += F(",\"recieve_mirroing\":[");
+    for (uint8_t i = 0; i < slot.receiveMirroringCount; ++i) {
+        if (i > 0) body += F(",");
+        body += String(slot.receiveMirroring[i]);
+    }
+    body += F("]");
+    body += F(",\"auto_cad_enabled\":");
+    body += boolJson(slot.autoCadEnabled);
+    body += F(",\"cad_custom\":");
+    body += boolJson(slot.cadCustom);
+    body += F(",\"cad_sym_num\":");
+    body += String(slot.cadSymNum);
+    body += F(",\"cad_det_peak\":");
+    body += String(slot.cadDetPeak);
+    body += F(",\"cad_det_min\":");
+    body += String(slot.cadDetMin);
+    body += F(",\"cad_exit_mode\":");
+    body += String(slot.cadExitMode);
+    body += F(",");
+    appendRadioConfigJson(body, slot.radio);
+    body += F("}");
+    return body;
+}
+
+static String buildRadioJson(const RuntimeStats::Snapshot& snap) {
+    String body;
+    body.reserve(1024);
     body += F("{\"state\":");
     body += jsonQuote(radioStateLabel(snap));
     body += F(",\"standby\":");
     body += boolJson(snap.radioStandby);
     body += F(",\"auto_cad_enabled\":");
     body += boolJson(snap.autoCadEnabled);
-    body += F(",\"frequency_hz\":");
-    body += String(snap.radio.freq_hz);
-    body += F(",\"frequency_mhz\":");
-    body += String(snap.radio.freq_hz / 1000000.0f, 3);
-    body += F(",\"bandwidth_hz\":");
-    body += String(snap.radio.bandwidth_hz);
-    body += F(",\"bandwidth_khz\":");
-    body += String(snap.radio.bandwidth_hz / 1000.0f, 1);
-    body += F(",\"spreading_factor\":");
-    body += String(snap.radio.sf);
-    body += F(",\"coding_rate\":");
-    body += String(snap.radio.cr);
-    body += F(",\"tx_power_dbm\":");
-    body += String(snap.radio.power_dbm);
-    body += F(",\"syncword\":");
-    body += jsonQuote(String("0x") + String(snap.radio.syncword, HEX));
-    body += F(",\"syncword_value\":");
-    body += String(snap.radio.syncword);
-    body += F(",\"preamble_len\":");
-    body += String(snap.radio.preamble_len);
+    body += F(",");
+    appendRadioConfigJson(body, snap.radio);
     if (RFFrontEnd::hasHeltecV43LnaControl()) {
         body += F(",\"heltec_v43_external_lna_enabled\":");
         body += boolJson(RFFrontEnd::isExternalLnaEnabled());
@@ -320,6 +365,25 @@ static String buildRadioJson(const RuntimeStats::Snapshot& snap) {
         body += F(",\"agc_reset_interval_sec\":");
         body += String(RFFrontEnd::getAgcResetIntervalSec());
     }
+    body += F(",\"multiplexed\":");
+    body += boolJson(snap.virtualSlotCount > 0);
+    body += F(",\"active_slot\":");
+    bool hasOnAirSlot = false;
+    uint8_t onAirSlot = 0;
+    for (uint8_t i = 0; i < snap.virtualSlotCount; ++i) {
+        if (snap.virtualSlots[i].onAir) {
+            hasOnAirSlot = true;
+            onAirSlot = snap.virtualSlots[i].slot;
+            break;
+        }
+    }
+    body += hasOnAirSlot ? String(onAirSlot) : String("null");
+    body += F(",\"slots\":[");
+    for (uint8_t i = 0; i < snap.virtualSlotCount; ++i) {
+        if (i > 0) body += F(",");
+        body += buildVirtualSlotJson(snap.virtualSlots[i]);
+    }
+    body += F("]");
     body += F("}");
     return body;
 }
@@ -331,6 +395,8 @@ static String buildCountersJson(const RuntimeStats::Snapshot& snap) {
     body += String(snap.status.rx_count);
     body += F(",\"tx_packets\":");
     body += String(snap.status.tx_count);
+    body += F(",\"suppressed_rx\":");
+    body += String(snap.suppressedRxCount);
     body += F(",\"crc_errors\":");
     body += String(snap.status.crc_errors);
     body += F(",\"last_rssi_dbm\":");
@@ -399,6 +465,12 @@ static String buildConfigJson(const WifiManager::Config& cfg) {
     body += jsonQuote(cfg.tcpToken);
     body += F(",\"tcp_port\":");
     body += String(cfg.tcpPort);
+    body += F(",\"rx_slot_ms\":");
+    body += String(cfg.rxSlotMs);
+    body += F(",\"activity_hold_ms\":");
+    body += String(cfg.activityHoldMs);
+    body += F(",\"tx_echo_hold_multiplier\":");
+    body += String(cfg.txEchoHoldMultiplier);
     body += F(",\"use_static_ip\":");
     body += boolJson(cfg.useStaticIP);
     body += F(",\"static_ip\":");
@@ -461,6 +533,103 @@ static String buildStatsJson(const RuntimeStats::Snapshot& snap,
     return body;
 }
 
+enum class VirtualSlotTableRow : uint8_t {
+    STATUS,
+    TCP_PORT,
+    CLIENT,
+    FREQUENCY,
+    BANDWIDTH,
+    SPREADING_FACTOR,
+    CODING_RATE,
+    TX_POWER,
+    SYNCWORD,
+    PREAMBLE,
+    AUTO_CAD,
+    CAD_CUSTOM,
+    CAD_SYMBOLS,
+    CAD_DET_PEAK,
+    CAD_DET_MIN,
+    CAD_EXIT_MODE,
+    RECEIVE_MIRRORING
+};
+
+static void appendVirtualSlotTableRow(String& body,
+                                      const RuntimeStats::Snapshot& snap,
+                                      const char* label,
+                                      VirtualSlotTableRow row) {
+    body += F("<tr><th scope='row'>");
+    body += htmlEscape(String(label));
+    body += F("</th>");
+    for (uint8_t i = 0; i < snap.virtualSlotCount; ++i) {
+        const RuntimeStats::VirtualSlotSnapshot& slot = snap.virtualSlots[i];
+        String value;
+        switch (row) {
+            case VirtualSlotTableRow::STATUS:
+                value = slot.standby ? "Standby" : (slot.onAir ? "On air" : "Ready");
+                break;
+            case VirtualSlotTableRow::TCP_PORT:
+                value = String(slot.port);
+                break;
+            case VirtualSlotTableRow::CLIENT:
+                value = slot.clientIP.length() > 0 ? slot.clientIP : String("none");
+                break;
+            case VirtualSlotTableRow::FREQUENCY:
+                value = String(slot.radio.freq_hz / 1000000.0f, 3) + " MHz";
+                break;
+            case VirtualSlotTableRow::BANDWIDTH:
+                value = String(slot.radio.bandwidth_hz / 1000.0f, 1) + " kHz";
+                break;
+            case VirtualSlotTableRow::SPREADING_FACTOR:
+                value = String("SF") + String(slot.radio.sf);
+                break;
+            case VirtualSlotTableRow::CODING_RATE:
+                value = String("4/") + String(slot.radio.cr);
+                break;
+            case VirtualSlotTableRow::TX_POWER:
+                value = String(slot.radio.power_dbm) + " dBm";
+                break;
+            case VirtualSlotTableRow::SYNCWORD:
+                value = String("0x") + String(slot.radio.syncword, HEX);
+                break;
+            case VirtualSlotTableRow::PREAMBLE:
+                value = String(slot.radio.preamble_len);
+                break;
+            case VirtualSlotTableRow::AUTO_CAD:
+                value = slot.autoCadEnabled ? "On" : "Off";
+                break;
+            case VirtualSlotTableRow::CAD_CUSTOM:
+                value = slot.cadCustom ? "Custom" : "RadioLib default";
+                break;
+            case VirtualSlotTableRow::CAD_SYMBOLS:
+                value = String(slot.cadSymNum);
+                break;
+            case VirtualSlotTableRow::CAD_DET_PEAK:
+                value = String(slot.cadDetPeak);
+                break;
+            case VirtualSlotTableRow::CAD_DET_MIN:
+                value = String(slot.cadDetMin);
+                break;
+            case VirtualSlotTableRow::CAD_EXIT_MODE:
+                value = String("0x") + String(slot.cadExitMode, HEX);
+                break;
+            case VirtualSlotTableRow::RECEIVE_MIRRORING:
+                if (slot.receiveMirroringCount == 0) {
+                    value = "none";
+                } else {
+                    for (uint8_t i = 0; i < slot.receiveMirroringCount; ++i) {
+                        if (i > 0) value += ", ";
+                        value += String("Slot ") + String(slot.receiveMirroring[i]);
+                    }
+                }
+                break;
+        }
+        body += F("<td>");
+        body += htmlEscape(value);
+        body += F("</td>");
+    }
+    body += F("</tr>");
+}
+
 static bool parseJsonIp(JsonVariantConst value, IPAddress& ip, const char* field, String& error) {
     if (value.isNull()) {
         ip = IPAddress((uint32_t)0);
@@ -478,6 +647,21 @@ static bool parseJsonIp(JsonVariantConst value, IPAddress& ip, const char* field
     }
     if (!ip.fromString(raw)) {
         error = String(field) + " is not a valid IPv4 address.";
+        return false;
+    }
+    return true;
+}
+
+static bool parseJsonUint32(JsonVariantConst value, uint32_t& output,
+                            const String& field, uint32_t minimum,
+                            const String& minimumMessage, String& error) {
+    if (!value.is<uint32_t>()) {
+        error = field + " must be an unsigned integer.";
+        return false;
+    }
+    output = value.as<uint32_t>();
+    if (output < minimum) {
+        error = field + minimumMessage;
         return false;
     }
     return true;
@@ -525,6 +709,28 @@ static bool applyConfigPatch(JsonVariantConst root, WifiManager::Config& cfg, St
             error = "tcp_port must be between 1 and 65535.";
             return false;
         }
+    }
+
+    JsonVariantConst rxSlotVal = obj["rx_slot_ms"];
+    if (!rxSlotVal.isNull() &&
+        !parseJsonUint32(rxSlotVal, cfg.rxSlotMs, "rx_slot_ms",
+                         WifiManager::MIN_RX_SLOT_MS,
+                         " must be at least 5 milliseconds.", error)) {
+        return false;
+    }
+
+    JsonVariantConst activityHoldVal = obj["activity_hold_ms"];
+    if (!activityHoldVal.isNull() &&
+        !parseJsonUint32(activityHoldVal, cfg.activityHoldMs, "activity_hold_ms",
+                         0, "", error)) {
+        return false;
+    }
+
+    JsonVariantConst txEchoHoldMultiplierVal = obj["tx_echo_hold_multiplier"];
+    if (!txEchoHoldMultiplierVal.isNull() &&
+        !parseJsonUint32(txEchoHoldMultiplierVal, cfg.txEchoHoldMultiplier,
+                         "tx_echo_hold_multiplier", 0, "", error)) {
+        return false;
     }
 
     JsonVariantConst staticVal = obj["use_static_ip"];
@@ -826,6 +1032,20 @@ static void handleRoot() {
     }
     body += F("<button type='submit'>Save network settings</button></form></div></details>");
 
+    body += F("<details><summary>TCP Multiplexing</summary><div class='inside'>"
+              "<p>Configure the cooperative receive scheduler used by the four TCP virtual-radio slots."
+              " The base TCP port and the next three ports remain connected while the physical radio rotates between them.</p>"
+              "<form method='POST' action='/multiplexing'>"
+              "<div class='grid'>"
+              "<div><label>RX slot dwell (ms)</label><input type='number' name='rx_slot_ms' min='5' max='4294967295' step='1' required value='");
+    body += String(cfg.rxSlotMs);
+    body += F("'></div><div><label>Activity hold (ms)</label><input type='number' name='activity_hold_ms' min='0' max='4294967295' step='1' required value='");
+    body += String(cfg.activityHoldMs);
+    body += F("'></div><div><label>TX echo hold multiplier</label><input type='number' name='tx_echo_hold_multiplier' min='0' max='4294967295' step='1' required value='");
+    body += String(cfg.txEchoHoldMultiplier);
+    body += F("'></div></div><p class='m'>RX slot dwell must be at least 5 ms. Activity hold keeps a slot active after CAD/RX traffic. An exact copy of the last transmitted packet is ignored for activity hold multiplied by the TX echo value; 0 disables suppression. Reboot required.</p>"
+              "<button type='submit'>Save multiplexing settings</button></form></div></details>");
+
     if (RFFrontEnd::hasHeltecV43LnaControl()) {
         body += F("<details open><summary>Heltec V4.3 RF Front-End</summary><div class='inside'>"
                   "<p>Toggle the KCT8103L external RX LNA for receive only. The firmware always bypasses the FEM LNA during transmit so the TX path remains available.</p>"
@@ -909,6 +1129,9 @@ static void handleStats() {
               ".grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:.75em 1em}"
               ".kv{border:1px solid #ddd;border-radius:8px;background:#fff;padding:.7em .8em}"
               ".k{display:block;color:#666;font-size:.9em;margin-bottom:.2em}.v{font-weight:600}"
+              ".table-wrap{overflow-x:auto;border:1px solid #ddd;border-radius:8px;background:#fff}"
+              ".slots{border-collapse:collapse;min-width:700px;width:100%}.slots th,.slots td{border-bottom:1px solid #e5e5e5;padding:.55em .7em;text-align:left;white-space:nowrap}"
+              ".slots thead th{background:#f1f1f1}.slots tbody th{color:#666;font-weight:600;background:#fafafa}"
               ".actions{margin:1em 0}.actions a{margin-right:1em}code{font-family:ui-monospace,SFMono-Regular,monospace;background:#f3f3f3;padding:.1em .35em;border-radius:4px}"
               "@media (max-width:640px){body{padding:0 .75em}}</style></head><body>");
     body += "<h2>" + modemTitle() + " Stats</h2>";
@@ -948,21 +1171,50 @@ static void handleStats() {
     }
     body += "</div></div>";
 
-    body += F("<h3>Radio</h3><div class='grid'>");
-    body += "<div class='kv'><span class='k'>State</span><span class='v'>" + String(radioStateLabel(snap)) + "</span></div>";
-    body += "<div class='kv'><span class='k'>Frequency</span><span class='v'>" + String(snap.radio.freq_hz / 1000000.0f, 3) + " MHz</span></div>";
-    body += "<div class='kv'><span class='k'>Bandwidth</span><span class='v'>" + String(snap.radio.bandwidth_hz / 1000.0f, 1) + " kHz</span></div>";
-    body += "<div class='kv'><span class='k'>Spreading factor</span><span class='v'>SF" + String(snap.radio.sf) + "</span></div>";
-    body += "<div class='kv'><span class='k'>Coding rate</span><span class='v'>4/" + String(snap.radio.cr) + "</span></div>";
-    body += "<div class='kv'><span class='k'>TX power</span><span class='v'>" + String(snap.radio.power_dbm) + " dBm</span></div>";
-    body += "<div class='kv'><span class='k'>Syncword</span><span class='v'>0x" + String(snap.radio.syncword, HEX) + "</span></div>";
-    body += "<div class='kv'><span class='k'>Preamble</span><span class='v'>" + String(snap.radio.preamble_len) + "</span></div>";
-    body += "<div class='kv'><span class='k'>Auto CAD</span><span class='v'>" + String(snap.autoCadEnabled ? "On" : "Off") + "</span></div>";
-    body += "</div>";
+    if (snap.virtualSlotCount > 0) {
+        body += F("<h3>TCP multiplex slots</h3><div class='table-wrap'><table class='slots'><thead><tr><th>Setting</th>");
+        for (uint8_t i = 0; i < snap.virtualSlotCount; ++i) {
+            const RuntimeStats::VirtualSlotSnapshot& slot = snap.virtualSlots[i];
+            body += "<th>Slot " + String(slot.slot) + "<br><span class='m'>TCP " +
+                    String(slot.port) + "</span></th>";
+        }
+        body += F("</tr></thead><tbody>");
+        appendVirtualSlotTableRow(body, snap, "Status", VirtualSlotTableRow::STATUS);
+        appendVirtualSlotTableRow(body, snap, "TCP port", VirtualSlotTableRow::TCP_PORT);
+        appendVirtualSlotTableRow(body, snap, "Client", VirtualSlotTableRow::CLIENT);
+        appendVirtualSlotTableRow(body, snap, "Frequency", VirtualSlotTableRow::FREQUENCY);
+        appendVirtualSlotTableRow(body, snap, "Bandwidth", VirtualSlotTableRow::BANDWIDTH);
+        appendVirtualSlotTableRow(body, snap, "Spreading factor", VirtualSlotTableRow::SPREADING_FACTOR);
+        appendVirtualSlotTableRow(body, snap, "Coding rate", VirtualSlotTableRow::CODING_RATE);
+        appendVirtualSlotTableRow(body, snap, "TX power", VirtualSlotTableRow::TX_POWER);
+        appendVirtualSlotTableRow(body, snap, "Syncword", VirtualSlotTableRow::SYNCWORD);
+        appendVirtualSlotTableRow(body, snap, "Preamble", VirtualSlotTableRow::PREAMBLE);
+        appendVirtualSlotTableRow(body, snap, "Auto CAD", VirtualSlotTableRow::AUTO_CAD);
+        appendVirtualSlotTableRow(body, snap, "CAD settings", VirtualSlotTableRow::CAD_CUSTOM);
+        appendVirtualSlotTableRow(body, snap, "CAD symbols", VirtualSlotTableRow::CAD_SYMBOLS);
+        appendVirtualSlotTableRow(body, snap, "CAD detection peak", VirtualSlotTableRow::CAD_DET_PEAK);
+        appendVirtualSlotTableRow(body, snap, "CAD detection minimum", VirtualSlotTableRow::CAD_DET_MIN);
+        appendVirtualSlotTableRow(body, snap, "CAD exit mode", VirtualSlotTableRow::CAD_EXIT_MODE);
+        appendVirtualSlotTableRow(body, snap, "Receive mirroring", VirtualSlotTableRow::RECEIVE_MIRRORING);
+        body += F("</tbody></table></div>");
+    } else {
+        body += F("<h3>Radio</h3><div class='grid'>");
+        body += "<div class='kv'><span class='k'>State</span><span class='v'>" + String(radioStateLabel(snap)) + "</span></div>";
+        body += "<div class='kv'><span class='k'>Frequency</span><span class='v'>" + String(snap.radio.freq_hz / 1000000.0f, 3) + " MHz</span></div>";
+        body += "<div class='kv'><span class='k'>Bandwidth</span><span class='v'>" + String(snap.radio.bandwidth_hz / 1000.0f, 1) + " kHz</span></div>";
+        body += "<div class='kv'><span class='k'>Spreading factor</span><span class='v'>SF" + String(snap.radio.sf) + "</span></div>";
+        body += "<div class='kv'><span class='k'>Coding rate</span><span class='v'>4/" + String(snap.radio.cr) + "</span></div>";
+        body += "<div class='kv'><span class='k'>TX power</span><span class='v'>" + String(snap.radio.power_dbm) + " dBm</span></div>";
+        body += "<div class='kv'><span class='k'>Syncword</span><span class='v'>0x" + String(snap.radio.syncword, HEX) + "</span></div>";
+        body += "<div class='kv'><span class='k'>Preamble</span><span class='v'>" + String(snap.radio.preamble_len) + "</span></div>";
+        body += "<div class='kv'><span class='k'>Auto CAD</span><span class='v'>" + String(snap.autoCadEnabled ? "On" : "Off") + "</span></div>";
+        body += "</div>";
+    }
 
     body += F("<h3>Counters</h3><div class='grid'>");
     body += "<div class='kv'><span class='k'>RX packets</span><span class='v'>" + String(snap.status.rx_count) + "</span></div>";
     body += "<div class='kv'><span class='k'>TX packets</span><span class='v'>" + String(snap.status.tx_count) + "</span></div>";
+    body += "<div class='kv'><span class='k'>Suppressed RX</span><span class='v'>" + String(snap.suppressedRxCount) + "</span></div>";
     body += "<div class='kv'><span class='k'>CRC errors</span><span class='v'>" + String(snap.status.crc_errors) + "</span></div>";
     body += "<div class='kv'><span class='k'>Last RSSI</span><span class='v'>" + String(snap.status.last_rssi) + " dBm</span></div>";
     body += "<div class='kv'><span class='k'>Last SNR</span><span class='v'>" + String(snap.status.last_snr / 10.0f, 1) + " dB</span></div>";
@@ -1178,6 +1430,59 @@ static void handleNetworkSave() {
                    cfg.useStaticIP
                        ? F("The modem will reboot now and come back using the configured static network settings.")
                        : F("The modem will reboot now and come back using DHCP."));
+    delay(500);
+    ESP.restart();
+}
+
+static bool parseHttpUint32(const String& rawValue, uint32_t& output) {
+    String raw = rawValue;
+    raw.trim();
+    if (raw.length() == 0) return false;
+
+    char* end = nullptr;
+    unsigned long long parsed = strtoull(raw.c_str(), &end, 10);
+    if (end == raw.c_str() || *end != '\0' || parsed > 0xFFFFFFFFULL) return false;
+    output = (uint32_t)parsed;
+    return true;
+}
+
+static void handleMultiplexingSave() {
+    if (!checkAuth()) return;
+
+    uint32_t rxSlotMs = 0;
+    uint32_t activityHoldMs = 0;
+    uint32_t txEchoHoldMultiplier = 1;
+    if (!parseHttpUint32(httpServer->arg("rx_slot_ms"), rxSlotMs) ||
+        rxSlotMs < WifiManager::MIN_RX_SLOT_MS) {
+        httpServer->send(400, "text/plain",
+                         "RX slot dwell must be an integer of at least 5 milliseconds.\n");
+        return;
+    }
+    if (!parseHttpUint32(httpServer->arg("activity_hold_ms"), activityHoldMs)) {
+        httpServer->send(400, "text/plain",
+                         "Activity hold must be an unsigned integer in milliseconds.\n");
+        return;
+    }
+    if (!parseHttpUint32(httpServer->arg("tx_echo_hold_multiplier"),
+                         txEchoHoldMultiplier)) {
+        httpServer->send(400, "text/plain",
+                         "TX echo hold multiplier must be an unsigned integer.\n");
+        return;
+    }
+
+    WifiManager::Config cfg = WifiManager::getConfig();
+    cfg.rxSlotMs = rxSlotMs;
+    cfg.activityHoldMs = activityHoldMs;
+    cfg.txEchoHoldMultiplier = txEchoHoldMultiplier;
+    WifiManager::saveConfig(cfg);
+
+    Serial.printf("[OTA] multiplexing updated by %s -> rx_slot=%lu ms, activity_hold=%lu ms\n",
+                  httpServer->client().remoteIP().toString().c_str(),
+                  (unsigned long)cfg.rxSlotMs,
+                  (unsigned long)cfg.activityHoldMs);
+    sendSimplePage(F("Multiplexing saved"),
+                   F("Multiplexing saved"),
+                   F("The modem will reboot now with the updated TCP multiplexing settings."));
     delay(500);
     ESP.restart();
 }
@@ -1415,6 +1720,7 @@ void begin(const String& hn, const String& tk) {
     httpServer->on("/api/reboot", HTTP_POST, handleApiReboot);
     httpServer->on("/hostname", HTTP_POST, handleHostnameSave);
     httpServer->on("/network", HTTP_POST, handleNetworkSave);
+    httpServer->on("/multiplexing", HTTP_POST, handleMultiplexingSave);
     httpServer->on("/gps",     HTTP_POST, handleGpsSave);
     httpServer->on("/rf-lna",  HTTP_POST, handleRfLnaSave);
     httpServer->on("/token",  HTTP_POST, handleTokenSave);

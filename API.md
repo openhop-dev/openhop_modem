@@ -114,9 +114,58 @@ Returns the combined system, radio, counters, and network state in one response.
 
 Top-level keys:
 - `system` — board, firmware, hostname, uptime, die temperature, and battery voltage only when the board variant defines battery sensing (`battery_voltage_mv`, `battery_voltage_v`; otherwise `null`)
-- `radio`
+- `radio` — live/on-air radio settings. In TCP multiplex mode it also contains `multiplexed`, `active_slot`, and `slots`; `slots` is ordered by slot number and contains only connected, authorized TCP clients
 - `counters`
 - `network`
+
+`counters.suppressed_rx` is the number of exact copies of the most recently
+transmitted packet discarded during the configured TX echo suppression window.
+Suppressed packets are not included in `counters.rx_packets` and are not
+sent to radio slots.
+
+In multiplex mode, each `radio.slots[]` entry contains the TCP slot identity and
+all per-slot radio/CAD settings in a stable order:
+
+```json
+{
+  "slot": 0,
+  "port": 5055,
+  "active": true,
+  "on_air": true,
+  "standby": false,
+  "client_ip": "192.168.1.10",
+  "recieve_mirroing": [1],
+  "auto_cad_enabled": false,
+  "cad_custom": true,
+  "cad_sym_num": 1,
+  "cad_det_peak": 22,
+  "cad_det_min": 10,
+  "cad_exit_mode": 0,
+  "frequency_hz": 869618000,
+  "frequency_mhz": 869.618,
+  "bandwidth_hz": 62500,
+  "bandwidth_khz": 62.5,
+  "spreading_factor": 8,
+  "coding_rate": 8,
+  "tx_power_dbm": 22,
+  "syncword": "0x12",
+  "syncword_value": 18,
+  "preamble_len": 16
+}
+```
+
+`radio.slots[].recieve_mirroing` lists the other connected, non-standby slots
+that can receive the same packets as this slot. Matching compares only receive
+parameters: frequency, bandwidth, spreading factor, coding rate, and syncword.
+CAD settings, TX power, preamble length, status, TCP port, and client identity
+are ignored. Each packet/profile pair is delivered at most once to each ready
+slot during the duplicate-suppression window, so a client echo cannot cause the
+same packet to be mirrored back and forth. The field is an empty array when no
+other slot mirrors the receive profile.
+
+`radio.active_slot` is the slot currently selected by the receive scheduler,
+or `null` while no slot is on air. When no TCP client is connected, `radio.slots` is an empty array and the
+existing live radio fields remain unchanged.
 
 ### `GET /api/config`
 
@@ -130,6 +179,9 @@ Example:
   "effective_hostname": "heltec-ab12cd",
   "tcp_token": "your-token",
   "tcp_port": 5055,
+  "rx_slot_ms": 100,
+  "activity_hold_ms": 2000,
+  "tx_echo_hold_multiplier": 1,
   "use_static_ip": true,
   "static_ip": "192.168.1.42",
   "subnet": "255.255.255.0",
@@ -147,8 +199,20 @@ Accepted top-level fields:
 - `hostname`
 - `tcp_token`
 - `tcp_port`
+- `rx_slot_ms`
+- `activity_hold_ms`
+- `tx_echo_hold_multiplier`
 - `use_static_ip`
 - `network`
+
+Multiplexing fields:
+- `rx_slot_ms` — receive-slot dwell in milliseconds; minimum `5`
+- `activity_hold_ms` — how long to retain a slot after CAD detects activity or
+  an RF packet is received; queued TX requests wait for the hold to expire, and
+  `0` disables the hold
+- `tx_echo_hold_multiplier` — suppress an exact RF copy of the most recently
+  completed TX for `activity_hold_ms × tx_echo_hold_multiplier`; default `1`,
+  and `0` disables TX reflection suppression
 
 `network` fields:
 - `use_static_ip`
@@ -173,6 +237,9 @@ curl -u admin:YOUR_PASSWORD \
   -d '{
     "hostname": "heltec-ab12cd",
     "tcp_token": "meshpass",
+    "rx_slot_ms": 100,
+    "activity_hold_ms": 2000,
+    "tx_echo_hold_multiplier": 1,
     "network": {
       "use_static_ip": true,
       "static_ip": "192.168.1.42",

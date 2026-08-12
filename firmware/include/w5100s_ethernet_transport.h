@@ -6,6 +6,7 @@
 
 #include <Arduino.h>
 #include <IPAddress.h>
+#include "tcp_server.h"
 
 namespace EthernetManager {
     void begin(const char* hostname = nullptr,
@@ -20,13 +21,4 @@ namespace EthernetManager {
     bool isLinkUp();
     bool hasIP();
     const char* getIPString();
-}
-
-namespace TCPServer {
-    void begin(uint16_t port, const String& token);
-    void loop();
-    void end();
-    bool isClientReady();
-    void write(const uint8_t* data, size_t len);
-    String getClientIP();
 }

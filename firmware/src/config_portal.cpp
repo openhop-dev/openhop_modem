@@ -7,6 +7,7 @@
 
 #include <WebServer.h>
 #include <WiFi.h>
+#include <cstdlib>
 
 namespace ConfigPortal {
 
@@ -146,6 +147,14 @@ static void handleRoot() {
     html += F("<label>TCP auth token <span class='hint'>(optional; empty = no auth)</span></label>");
     html += "<input type='text' name='token' autocomplete='off' value='" + htmlEscape(cfg.tcpToken) + "'>";
 
+    html += F("<hr><label>TCP multiplexing</label>");
+    html += F("<label>RX slot dwell (ms) <span class='hint'>(minimum 5)</span></label>");
+    html += "<input type='number' name='rx_slot_ms' min='5' max='4294967295' step='1' value='" + String(cfg.rxSlotMs) + "'>";
+    html += F("<label>Activity hold (ms) <span class='hint'>(0 disables)</span></label>");
+    html += "<input type='number' name='activity_hold_ms' min='0' max='4294967295' step='1' value='" + String(cfg.activityHoldMs) + "'>";
+    html += F("<label>TX echo hold multiplier <span class='hint'>(default 1; 0 disables)</span></label>");
+    html += "<input type='number' name='tx_echo_hold_multiplier' min='0' max='4294967295' step='1' value='" + String(cfg.txEchoHoldMultiplier) + "'>";
+
     html += F("<button type='submit'>Save &amp; Restart</button>");
     html += F("</form></body></html>");
 
@@ -157,6 +166,18 @@ static IPAddress parseIP(const String& s) {
     IPAddress ip;
     if (!ip.fromString(s)) ip = IPAddress((uint32_t)0);
     return ip;
+}
+
+static bool parseUint32(const String& rawValue, uint32_t& output) {
+    String raw = rawValue;
+    raw.trim();
+    if (raw.length() == 0) return false;
+
+    char* end = nullptr;
+    unsigned long long parsed = strtoull(raw.c_str(), &end, 10);
+    if (end == raw.c_str() || *end != '\0' || parsed > 0xFFFFFFFFULL) return false;
+    output = (uint32_t)parsed;
+    return true;
 }
 
 static void handleSave() {
@@ -186,6 +207,23 @@ static void handleSave() {
     newCfg.tcpToken    = server->arg("token");
     newCfg.hostname    = server->arg("hostname");
     newCfg.hostname.trim();
+
+    uint32_t rxSlotMs = 0;
+    if (!parseUint32(server->arg("rx_slot_ms"), rxSlotMs) ||
+        rxSlotMs < WifiManager::MIN_RX_SLOT_MS) {
+        rxSlotMs = WifiManager::BUILD_DEFAULT_RX_SLOT_MS;
+    }
+    newCfg.rxSlotMs = rxSlotMs;
+    uint32_t activityHoldMs = 0;
+    if (!parseUint32(server->arg("activity_hold_ms"), activityHoldMs)) {
+        activityHoldMs = WifiManager::BUILD_DEFAULT_ACTIVITY_HOLD_MS;
+    }
+    newCfg.activityHoldMs = activityHoldMs;
+    uint32_t txEchoHoldMultiplier = 1;
+    if (!parseUint32(server->arg("tx_echo_hold_multiplier"), txEchoHoldMultiplier)) {
+        txEchoHoldMultiplier = 1;
+    }
+    newCfg.txEchoHoldMultiplier = txEchoHoldMultiplier;
 
     int port = server->arg("port").toInt();
     if (port < 1 || port > 65535) port = 5055;

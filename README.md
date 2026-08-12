@@ -1,3 +1,4 @@
+
 # openHop Modem (`pymc_modem`) — USB/TCP LoRa modem for openHop Core
 
 Firmware + Python driver that turns a supported ESP32 or nRF52 board
@@ -59,6 +60,59 @@ Raspberry Pi                                  openHop Modem
   token defaults blank/open on fresh firmware and can be set from the web UI on
   web-enabled builds. The RAK4631 Ethernet variant has no web UI/HTTP stack, so
   its W5100S TCP defaults live in `PYMC_ETH_*` build flags.
+
+### TCP virtual-radio multiplexing
+
+Network firmware keeps the existing openHop TCP frame protocol unchanged. When
+multiplexing is enabled, the configured protocol port is slot 0 and the modem
+also listens on the next three ports: for base port `5055`, slots use `5055`,
+`5056`, `5057`, and `5058`. Each port accepts one persistent client and uses the
+same TCP token. Radio profiles are independent per port; `CMD_SET_CONFIG`, CAD
+parameters, standby/resume, and TX completion are routed to the originating
+port without adding a slot field to any frame. RX packets are sent once to
+each ready, non-standby client whose receive-relevant settings match the active
+slot; TX power, preamble, CAD settings, and connection metadata do not affect
+that matching. A short-lived packet/profile cache suppresses repeated fan-out
+when a mirrored client echoes the same packet back over the air.
+
+The radio performs cooperative round-robin receive scheduling **only across
+connected, authorized TCP slots**; configured listeners without a client are
+skipped. Default dwell is 100 ms, configurable from the device HTTP page or
+`/api/config` with `rx_slot_ms` down to a validated minimum of 50 ms.
+`activity_hold_ms` controls bounded retention after slot CAD detects activity or
+the radio receives a packet. Queued TX requests remain queued during this hold
+and cannot take over the radio until it expires. The setting is validated for US
+Meshcore settings down to 1000ms (Max packet transmit time is 800ms theoretically).
+
+`tx_echo_hold_multiplier` defaults to 1. An exact RF copy of the last successfully
+transmitted packet is discarded for `activity_hold_ms` multiplied by this value,
+before RX counters or slot mirroring; set the multiplier to 0 to disable it.
+
+The legacy build flags
+`PYMC_RX_SLOT_MS` and `PYMC_ACTIVITY_HOLD_MS` still provide first-boot defaults.
+After any activity hold expires, TX requests have priority over RX rotation and
+are serialized fairly across ports; sockets stay connected while the radio changes
+profile, performs CAD, or transmits. At very short dwell values, SPI profile
+switch and CAD latency can exceed the requested wall-clock dwell, so actual
+observation time is best effort and packet loss remains possible.
+
+The RAK4631/W5100S Ethernet target is intentionally limited to slot 0 on the
+base port (normally `5055`). The W5100S exposes only four hardware sockets, so
+reserving sockets for multiple listeners would leave no reliable socket for an
+accepted protocol client. Wi-Fi ESP32 targets provide the four-port
+(`5055`–`5058`) service; W5100S remains a single-client Ethernet transport.
+
+Example PlatformIO override:
+
+```ini
+build_flags =
+  -DPYMC_RX_SLOT_MS=50
+  -DPYMC_ACTIVITY_HOLD_MS=2000
+```
+
+Single-client deployments remain compatible: connect to the base port only and
+use the normal [`TCPLoRaRadio`](pymc_driver/tcp_radio.py) configuration with that
+port.
 
 ## Project layout
 

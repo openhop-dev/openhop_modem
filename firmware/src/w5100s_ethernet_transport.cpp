@@ -3,8 +3,8 @@
 // RAK4631 + RAK13800 / WisMesh Ethernet Gateway.
 //
 // This is deliberately protocol-compatible with the existing ESP32
-// tcp_server.cpp: one client, optional shared-token AUTH, same pyMC
-// binary frame format, same TransportSource::TCP command path.
+// tcp_server.cpp: one client per listener, optional shared-token AUTH,
+// same pyMC binary frame format, same TransportSource::TCP command path.
 // =============================================================
 
 #if defined(PYMC_ETHERNET_W5100S)
@@ -364,70 +364,97 @@ namespace EthernetManager {
 }
 
 namespace TCPServer {
-    static EthernetServer* server = nullptr;
-    static EthernetClient client;
-    static String requiredToken;
-    static bool authenticated = false;
-    static FrameParser parser;
-    static uint32_t acceptedCount = 0;
-    static uint32_t frameCount = 0;
+    static constexpr uint8_t ETHERNET_TCP_CLIENTS = 1;
+    static constexpr uint8_t INVALID_SLOT = 0xFF;
+
+    struct ClientSlot {
+        EthernetClient client;
+        FrameParser parser;
+        bool occupied = false;
+        bool authenticated = false;
+        uint32_t acceptedCount = 0;
+        uint32_t frameCount = 0;
+        uint32_t generation = 0;
+    };
+
+    static EthernetServer* listeners[ETHERNET_TCP_CLIENTS] = {};
+    static ClientSlot slots[ETHERNET_TCP_CLIENTS];
+    static String requiredToken = "";
+    static uint8_t commandSlot = INVALID_SLOT;
     static bool lastIpUsable = false;
 
     static bool requiresAuth() {
         return requiredToken.length() > 0;
     }
 
-    static void sendToClient(uint8_t cmd, const uint8_t* payload, uint16_t len) {
-        if (!client || !client.connected()) return;
+    static void sendToClient(uint8_t slot, uint8_t cmd,
+                             const uint8_t* payload, uint16_t len) {
+        if (slot >= ETHERNET_TCP_CLIENTS) return;
+        ClientSlot& state = slots[slot];
+        if (!state.occupied || !state.client.connected()) return;
         uint8_t buf[MAX_FRAME_SIZE];
         uint16_t flen = 0;
         buildFrame(buf, flen, cmd, payload, len);
-        client.write(buf, flen);
+        state.client.write(buf, flen);
     }
 
-    static void sendErrorToClient(uint8_t err) {
-        sendToClient(CMD_ERROR, &err, 1);
+    static void sendErrorToClient(uint8_t slot, uint8_t err) {
+        sendToClient(slot, CMD_ERROR, &err, 1);
     }
 
-    static void disconnectClient() {
-        if (client) {
-            Serial.printf("[TCP/ETH] disconnect auth=%u frames=%lu\n",
-                          authenticated ? 1U : 0U, (unsigned long)frameCount);
-            client.stop();
+    static void disconnectClient(uint8_t slot) {
+        if (slot >= ETHERNET_TCP_CLIENTS) return;
+        ClientSlot& state = slots[slot];
+        if (state.occupied) {
+            IPAddress addr = state.client.remoteIP();
+            Serial.printf("[TCP/ETH] disconnect slot=%u client %u.%u.%u.%u auth=%u frames=%lu\n",
+                          (unsigned)slot, addr[0], addr[1], addr[2], addr[3],
+                          state.authenticated ? 1U : 0U,
+                          (unsigned long)state.frameCount);
+            state.client.stop();
         }
-        authenticated = false;
-        frameCount = 0;
-        parser.reset();
+        state.occupied = false;
+        state.authenticated = false;
+        state.frameCount = 0;
+        state.generation++;
+        state.parser.reset();
     }
 
-    static void onFrameOk(uint8_t cmd, const uint8_t* payload, uint16_t len, TransportSource src) {
+    static void onFrameOk(uint8_t cmd, const uint8_t* payload, uint16_t len,
+                          TransportSource src) {
         (void)src;
-        frameCount++;
-        Serial.printf("[TCP/ETH] frame cmd=0x%02X len=%u auth=%u\n",
-                      cmd, (unsigned)len, authenticated ? 1U : 0U);
+        if (commandSlot >= ETHERNET_TCP_CLIENTS) return;
+        ClientSlot& state = slots[commandSlot];
+        state.frameCount++;
+        Serial.printf("[TCP/ETH] slot=%u frame cmd=0x%02X len=%u auth=%u\n",
+                      (unsigned)commandSlot, cmd, (unsigned)len,
+                      state.authenticated ? 1U : 0U);
 
-        if (requiresAuth() && !authenticated) {
+        if (requiresAuth() && !state.authenticated) {
             if (cmd == CMD_AUTH) {
-                if (len == requiredToken.length() && memcmp(payload, requiredToken.c_str(), len) == 0) {
-                    authenticated = true;
-                    Serial.println("[TCP/ETH] auth OK");
-                    sendToClient(CMD_AUTH_OK, nullptr, 0);
+                if (len == requiredToken.length() &&
+                    memcmp(payload, requiredToken.c_str(), len) == 0) {
+                    state.authenticated = true;
+                    Serial.printf("[TCP/ETH] slot=%u auth OK\n",
+                                  (unsigned)commandSlot);
+                    sendToClient(commandSlot, CMD_AUTH_OK, nullptr, 0);
                 } else {
-                    Serial.println("[TCP/ETH] auth rejected");
-                    sendErrorToClient(ERR_UNAUTHORIZED);
+                    Serial.printf("[TCP/ETH] slot=%u auth rejected\n",
+                                  (unsigned)commandSlot);
+                    sendErrorToClient(commandSlot, ERR_UNAUTHORIZED);
                     delay(5);
-                    disconnectClient();
+                    disconnectClient(commandSlot);
                 }
             } else {
-                sendErrorToClient(ERR_UNAUTHORIZED);
+                sendErrorToClient(commandSlot, ERR_UNAUTHORIZED);
                 delay(5);
-                disconnectClient();
+                disconnectClient(commandSlot);
             }
             return;
         }
 
         if (cmd == CMD_AUTH) {
-            sendToClient(CMD_AUTH_OK, nullptr, 0);
+            sendToClient(commandSlot, CMD_AUTH_OK, nullptr, 0);
             return;
         }
 
@@ -436,102 +463,195 @@ namespace TCPServer {
 
     static void onFrameErr(uint8_t err_code, TransportSource src) {
         (void)src;
-        Serial.printf("[TCP/ETH] frame parse error 0x%02X\n", err_code);
+        if (commandSlot >= ETHERNET_TCP_CLIENTS) return;
+        Serial.printf("[TCP/ETH] slot=%u frame parse error 0x%02X\n",
+                      (unsigned)commandSlot, err_code);
         noteTransportFrameError(err_code);
-        sendErrorToClient(err_code);
+        sendErrorToClient(commandSlot, err_code);
     }
 
-    void begin(uint16_t port, const String& token) {
+    bool begin(uint16_t port, const String& token) {
         end();
         requiredToken = token;
-        authenticated = false;
-        parser.reset();
-        server = new EthernetServer(port ? port : PYMC_ETH_TCP_PORT);
-        server->begin();
+        commandSlot = INVALID_SLOT;
+        const uint16_t basePort = port ? port : PYMC_ETH_TCP_PORT;
+        const uint32_t lastPort = (uint32_t)basePort + ETHERNET_TCP_CLIENTS - 1u;
+        if (lastPort > 0xFFFFu) {
+            Serial.printf("[TCP/ETH] invalid base port %u\n", (unsigned)basePort);
+            return false;
+        }
+        for (uint8_t slot = 0; slot < ETHERNET_TCP_CLIENTS; slot++) {
+            slots[slot].parser.reset();
+            listeners[slot] = new EthernetServer((uint16_t)(basePort + slot));
+            listeners[slot]->begin();
+        }
         lastIpUsable = EthernetManager::hasIP();
-        Serial.printf("[TCP/ETH] listening on %u auth=%s\n",
-                      (unsigned)(port ? port : PYMC_ETH_TCP_PORT),
+        Serial.printf("[TCP/ETH] listening on %u-%u auth=%s\n",
+                      (unsigned)basePort,
+                      (unsigned)(basePort + ETHERNET_TCP_CLIENTS - 1),
                       requiresAuth() ? "required" : "open");
+        return true;
     }
 
     void end() {
-        disconnectClient();
-        if (server) {
-            delete server;
-            server = nullptr;
+        commandSlot = INVALID_SLOT;
+        for (uint8_t slot = 0; slot < ETHERNET_TCP_CLIENTS; slot++) {
+            disconnectClient(slot);
+            if (listeners[slot]) {
+                delete listeners[slot];
+                listeners[slot] = nullptr;
+            }
         }
         lastIpUsable = false;
     }
 
     void loop() {
-        if (!server) return;
-
         const bool ipUsable = EthernetManager::hasIP();
         if (!ipUsable) {
-            if (client) disconnectClient();
+            for (uint8_t slot = 0; slot < ETHERNET_TCP_CLIENTS; slot++) {
+                if (slots[slot].occupied) disconnectClient(slot);
+            }
             lastIpUsable = false;
             return;
         }
 
         if (!lastIpUsable) {
             // A DHCP retry after cable replug calls Ethernet.begin() again.
-            // On W5100S that can invalidate/recreate sockets, so restart the
+            // On W5100S that can invalidate/recreate sockets, so restart each
             // listener when the Ethernet path transitions back to usable.
-            server->begin();
-            lastIpUsable = true;
-            Serial.println("[TCP/ETH] IP restored; listener restarted");
-        }
-
-        if (!client || !client.connected()) {
-            if (client) disconnectClient();
-            EthernetClient incoming = server->accept();
-            if (incoming) {
-                IPAddress addr = incoming.remoteIP();
-                if (!isLanAddress(addr)) {
-                    Serial.printf("[TCP/ETH] rejecting non-LAN client %u.%u.%u.%u\n",
-                                  addr[0], addr[1], addr[2], addr[3]);
-                    incoming.stop();
-                    return;
-                }
-                client = incoming;
-                parser.reset();
-                authenticated = false;
-                frameCount = 0;
-                acceptedCount++;
-                Serial.printf("[TCP/ETH] accepted client %u.%u.%u.%u (#%lu, auth=%s)\n",
-                              addr[0], addr[1], addr[2], addr[3],
-                              (unsigned long)acceptedCount,
-                              requiresAuth() ? "required" : "open");
+            for (uint8_t slot = 0; slot < ETHERNET_TCP_CLIENTS; slot++) {
+                if (listeners[slot]) listeners[slot]->begin();
             }
+            lastIpUsable = true;
+            Serial.println("[TCP/ETH] IP restored; listeners restarted");
         }
 
-        if (client && client.connected()) {
-            while (client.available()) {
-                uint8_t b = (uint8_t)client.read();
-                frameparser_feed(parser, b, TransportSource::TCP, onFrameOk, onFrameErr);
+        for (uint8_t slot = 0; slot < ETHERNET_TCP_CLIENTS; slot++) {
+            if (!listeners[slot]) continue;
+            ClientSlot& state = slots[slot];
+
+            if (state.occupied && !state.client.connected()) {
+                disconnectClient(slot);
+            }
+
+            if (!state.occupied) {
+                EthernetClient incoming = listeners[slot]->accept();
+                if (incoming) {
+                    IPAddress addr = incoming.remoteIP();
+                    if (!isLanAddress(addr)) {
+                        Serial.printf(
+                            "[TCP/ETH] rejecting non-LAN client %u.%u.%u.%u\n",
+                            addr[0], addr[1], addr[2], addr[3]);
+                        incoming.stop();
+                    } else {
+                        state.client = incoming;
+                        state.occupied = true;
+                        state.parser.reset();
+                        state.authenticated = false;
+                        state.frameCount = 0;
+                        state.acceptedCount++;
+                        Serial.printf("[TCP/ETH] accepted slot=%u client %u.%u.%u.%u (#%lu, auth=%s)\n",
+                                      (unsigned)slot, addr[0], addr[1], addr[2], addr[3],
+                                      (unsigned long)state.acceptedCount,
+                                      requiresAuth() ? "required" : "open");
+                    }
+                }
+            }
+
+            if (state.occupied && state.client.connected()) {
+                const uint8_t previousSlot = commandSlot;
+                commandSlot = slot;
+                while (state.client.available()) {
+                    uint8_t b = (uint8_t)state.client.read();
+                    frameparser_feed(state.parser, b, TransportSource::TCP,
+                                     onFrameOk, onFrameErr);
+                }
+                commandSlot = previousSlot;
             }
         }
     }
 
     bool isClientReady() {
         if (!EthernetManager::hasIP()) return false;
-        if (!client || !client.connected()) return false;
-        return !requiresAuth() || authenticated;
+        for (uint8_t slot = 0; slot < ETHERNET_TCP_CLIENTS; slot++) {
+            if (isSlotReady(slot)) return true;
+        }
+        return false;
     }
 
     String getClientIP() {
         if (!EthernetManager::hasIP()) return String();
-        if (!client || !client.connected()) return String();
-        IPAddress addr = client.remoteIP();
-        char buf[16];
-        snprintf(buf, sizeof(buf), "%u.%u.%u.%u", addr[0], addr[1], addr[2], addr[3]);
-        return String(buf);
+        const uint8_t slot = activeSlot();
+        return slot < ETHERNET_TCP_CLIENTS ? getSlotIP(slot) : String();
     }
 
     void write(const uint8_t* data, size_t len) {
         if (!EthernetManager::hasIP()) return;
-        if (!client || !client.connected()) return;
-        client.write(data, len);
+        if (commandSlot < ETHERNET_TCP_CLIENTS) {
+            writeToSlot(commandSlot, data, len);
+        } else {
+            writeToReadySlots(data, len);
+        }
+    }
+
+    uint8_t activeSlot() {
+        if (commandSlot < ETHERNET_TCP_CLIENTS) return commandSlot;
+        for (uint8_t slot = 0; slot < ETHERNET_TCP_CLIENTS; slot++) {
+            if (isSlotReady(slot)) return slot;
+        }
+        for (uint8_t slot = 0; slot < ETHERNET_TCP_CLIENTS; slot++) {
+            if (slots[slot].occupied && slots[slot].client.connected()) return slot;
+        }
+        return INVALID_SLOT;
+    }
+
+    bool isSlotReady(uint8_t slot) {
+        if (slot >= ETHERNET_TCP_CLIENTS) return false;
+        ClientSlot& state = slots[slot];
+        return state.occupied && state.client.connected() &&
+               (!requiresAuth() || state.authenticated);
+    }
+
+    uint32_t getSlotGeneration(uint8_t slot) {
+        if (slot >= ETHERNET_TCP_CLIENTS) return 0;
+        return slots[slot].generation;
+    }
+
+    String getSlotIP(uint8_t slot) {
+        if (slot >= ETHERNET_TCP_CLIENTS || !slots[slot].occupied ||
+            !slots[slot].client.connected()) {
+            return String();
+        }
+        IPAddress addr = slots[slot].client.remoteIP();
+        char buf[16];
+        snprintf(buf, sizeof(buf), "%u.%u.%u.%u",
+                 addr[0], addr[1], addr[2], addr[3]);
+        return String(buf);
+    }
+
+    void writeToSlot(uint8_t slot, const uint8_t* data, size_t len) {
+        if (slot >= ETHERNET_TCP_CLIENTS || !data || len == 0) return;
+        ClientSlot& state = slots[slot];
+        if (!state.occupied) return;
+        if (!state.client.connected()) {
+            disconnectClient(slot);
+            return;
+        }
+        size_t written = state.client.write(data, len);
+        if (written != len && !state.client.connected()) {
+            disconnectClient(slot);
+        }
+    }
+
+    void writeToReadySlots(const uint8_t* data, size_t len) {
+        if (!data || len == 0) return;
+        for (uint8_t slot = 0; slot < ETHERNET_TCP_CLIENTS; slot++) {
+            if (isSlotReady(slot)) writeToSlot(slot, data, len);
+        }
+    }
+
+    uint8_t currentCommandSlot() {
+        return commandSlot;
     }
 }
 

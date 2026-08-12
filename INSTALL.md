@@ -273,6 +273,35 @@ pymc_tcp:
   lbt_max_attempts: 5
 ```
 
+For four wire-compatible virtual radios, use the configured port and the next
+three consecutive ports (`5055`–`5058` in this example). Each client connects
+to one port and sends the same existing protocol; no protocol version or frame
+field changes are required. The modem keeps connected TCP sessions open while
+switching the single physical radio, and skips listener slots that have no
+active authorized client. TX is serialized with priority over RX rotation.
+
+The device HTTP page's **TCP Multiplexing** section and `POST /api/config` can
+change the scheduler at runtime. The API fields are `rx_slot_ms` (minimum 5 ms),
+`activity_hold_ms` (0 disables the hold), and `tx_echo_hold_multiplier` (default
+1; 0 disables exact last-TX reflection suppression). Firmware build flags remain
+available as first-boot defaults:
+
+```ini
+build_flags =
+  -DPYMC_RX_SLOT_MS=100       ; valid range: 5 ms and above
+  -DPYMC_ACTIVITY_HOLD_MS=2000
+```
+
+At 5 ms, CAD is skipped for slot rotation because its SX1262 operation can be
+longer than the requested dwell; TX and explicit host CAD still remain
+functional. Treat receive coverage as best effort at short dwell values.
+
+The RAK4631/W5100S target is the exception to the four-port layout: it exposes
+only the configured base port (normally `5055`) and one TCP client. The W5100S
+has four hardware sockets total, and using four listeners would consume the
+socket budget before accepted protocol clients could operate. Use an ESP32
+Wi-Fi target when four simultaneous TCP virtual radios are required.
+
 USB modem alternative:
 
 ```yaml
