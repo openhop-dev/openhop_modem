@@ -23,6 +23,13 @@ static bool        authenticated  = false;
 static FrameParser parser;
 static uint32_t    acceptedCount  = 0;
 static uint32_t    frameCount     = 0;
+static uint32_t    parsedFrameCount = 0;
+
+// Keep the single cooperative firmware loop fair. A command callback may do
+// synchronous radio work, so draining a busy TCP socket without a budget can
+// indefinitely postpone HTTP/OTA servicing later in loop().
+static constexpr size_t MAX_BYTES_PER_LOOP = 256;
+static constexpr uint8_t MAX_FRAMES_PER_LOOP = 1;
 
 static bool requiresAuth() { return requiredToken.length() > 0; }
 
@@ -72,6 +79,7 @@ static void disconnectClient() {
 
 static void onFrameOk(uint8_t cmd, const uint8_t* payload, uint16_t len, TransportSource src) {
     (void)src;  // always TCP here
+    parsedFrameCount++;
     frameCount++;
     Serial.printf("[TCP] frame cmd=0x%02X len=%u auth=%u\n",
                   cmd, (unsigned)len, authenticated ? 1U : 0U);
@@ -166,11 +174,25 @@ void loop() {
         }
     }
 
-    // Read available bytes through the parser
+    // Read available bytes through the parser, but always yield back to the
+    // main loop after a bounded amount of work. FrameParser keeps partial
+    // state, so frames larger than the byte budget continue on the next pass.
     if (client && client.connected()) {
-        while (client.available()) {
+        size_t bytesProcessed = 0;
+        uint8_t framesProcessed = 0;
+        uint32_t previousFrameCount = parsedFrameCount;
+
+        while (client.connected() && client.available() &&
+               bytesProcessed < MAX_BYTES_PER_LOOP &&
+               framesProcessed < MAX_FRAMES_PER_LOOP) {
             uint8_t b = (uint8_t)client.read();
+            bytesProcessed++;
             frameparser_feed(parser, b, TransportSource::TCP, onFrameOk, onFrameErr);
+
+            if (parsedFrameCount != previousFrameCount) {
+                framesProcessed++;
+                previousFrameCount = parsedFrameCount;
+            }
         }
     }
 }
