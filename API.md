@@ -123,13 +123,16 @@ Example:
 
 ### `GET /api/stats`
 
-Returns the combined system, radio, counters, and network state in one response.
+Returns the combined system, radio, counters, network, and GPS state in one response.
 
 Top-level keys:
+- `battery_voltage_mv`, `battery_voltage_v` — battery voltage when the board defines battery sensing; otherwise `null`
+- `bus_voltage_v`, `current_ma`, `power_mw` — Station G3 INA219 input-power readings when the monitor is available; values are `null` when its latest sample failed
 - `system` — board, firmware, hostname, uptime, die temperature, battery voltage only when the board variant defines battery sensing (`battery_voltage_mv`, `battery_voltage_v`; otherwise `null`), and Station G3-only INA219 power readings
 - `radio`
 - `counters`
 - `network`
+- `gps`
 
 ### `GET /api/config`
 
