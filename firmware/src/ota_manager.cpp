@@ -12,9 +12,6 @@
 #include "tcp_server.h"
 #include "wifi_manager.h"
 #include "webui_shared.h"
-#if defined(BOARD_STATION_G3)
-#include "station_g3_power.h"
-#endif
 
 #include <ArduinoJson.h>
 #include <ArduinoOTA.h>
@@ -375,6 +372,26 @@ static void sendJsonError(int code, const String& message) {
     sendJson(code, String("{\"error\":") + jsonQuote(message) + "}");
 }
 
+#if defined(BOARD_STATION_G3)
+static void appendStationG3PowerTelemetry(
+    String& body, const RuntimeStats::Snapshot& snap) {
+    if (!snap.stationG3PowerMonitorAvailable) return;
+
+    body += F(",\"bus_voltage_v\":");
+    body += snap.stationG3PowerValid
+                ? String(snap.stationG3InputVoltageV, 3) : String("null");
+    body += F(",\"current_ma\":");
+    body += snap.stationG3PowerValid
+                ? String(snap.stationG3CurrentMa, 2) : String("null");
+    body += F(",\"power_mw\":");
+    // Keep the INA219 current direction. Casting a negative reading to an
+    // unsigned integer would turn small reverse-current/noise samples into a
+    // multi-gigawatt JSON value.
+    body += snap.stationG3PowerValid
+                ? String(snap.stationG3PowerW * 1000.0f, 1) : String("null");
+}
+#endif
+
 static String buildSystemJson(const RuntimeStats::Snapshot& snap,
                               const NetworkSnapshot& net,
                               const String& clientIP) {
@@ -614,17 +631,7 @@ static String buildStatsJson(const RuntimeStats::Snapshot& snap,
                     : String("null");
     }
 #if defined(BOARD_STATION_G3)
-    {
-        const auto& power = StationG3Power::snapshot();
-        if (power.available) {
-            body += F(",\"bus_voltage_v\":");
-            body += power.valid ? String(power.inputVoltageV, 3) : String("null");
-            body += F(",\"current_ma\":");
-            body += power.valid ? String(power.currentMa, 2) : String("null");
-            body += F(",\"power_mw\":");
-            body += power.valid ? String(static_cast<uint32_t>(power.powerW * 1000.0f)) : String("null");
-        }
-    }
+    appendStationG3PowerTelemetry(body, snap);
 #endif
     body += F(",\"system\":");
     body += buildSystemJson(snap, net, clientIP);
@@ -1276,19 +1283,6 @@ static void handleApiTemp() {
                     ? String(snap.batteryChargeRatePctPerHour, 3)
                     : String("null");
     }
-#if defined(BOARD_STATION_G3)
-    {
-        const auto& power = StationG3Power::snapshot();
-        if (power.available) {
-            body += F(",\"bus_voltage_v\":");
-            body += power.valid ? String(power.inputVoltageV, 3) : String("null");
-            body += F(",\"current_ma\":");
-            body += power.valid ? String(power.currentMa, 2) : String("null");
-            body += F(",\"power_mw\":");
-            body += power.valid ? String(static_cast<uint32_t>(power.powerW * 1000.0f)) : String("null");
-        }
-    }
-#endif
     body += F(",\"firmware\":\"");
     body += snap.firmwareVersion;
     body += F("\",\"hostname\":\"");
