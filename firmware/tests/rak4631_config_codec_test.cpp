@@ -36,7 +36,7 @@ void testDefaults() {
     assert(!config.useStaticIP);
     assert(config.tcpPort == 5055);
     assert(std::strcmp(config.tcpToken, "build-token") == 0);
-    assert(std::strcmp(config.httpPassword, "password") == 0);
+    assert(std::strcmp(config.httpPassword, "openhop") == 0);
     assert(!config.gpsEnabled);
 }
 

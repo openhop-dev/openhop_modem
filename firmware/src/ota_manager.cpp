@@ -33,7 +33,7 @@ static constexpr uint16_t HTTP_PORT         = 80;
 static constexpr const char* NVS_NAMESPACE  = "lora_modem";
 static constexpr const char* HTTP_PASS_KEY  = "http_pass";
 static constexpr const char* HTTP_AUTH_USER = "admin";
-static constexpr const char* DEFAULT_HTTP_PASSWORD = "password";
+static constexpr const char* DEFAULT_HTTP_PASSWORD = "openhop";
 static constexpr uint8_t MAX_HTTP_PASSWORD_LEN = 64;
 static constexpr uint8_t MAX_TCP_TOKEN_LEN = 64;
 
