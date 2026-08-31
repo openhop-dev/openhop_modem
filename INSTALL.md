@@ -175,7 +175,7 @@ visible via mDNS:
 cd firmware
 pio run -e <env> -t upload --upload-port <env-stem>-<mac3>.local
 # or HTTP directly:
-curl -u admin:password -F firmware=@.pio/build/<env>/firmware.bin \
+curl -u admin:openhop -F firmware=@.pio/build/<env>/firmware.bin \
      http://<env-stem>-<mac3>.local/update
 ```
 
@@ -184,12 +184,12 @@ Hostname stems are listed in §1 (e.g. `heltec`, `heltec-v4`, `heltec-v42`,
 `lilygo-tbeam-s3-supreme`, `rak3112`, `station-g2`, `p4nano`). The board
 reboots after upload.
 The HTTP OTA page uses Basic Auth with username `admin` and default
-password `password`; change it from the OTA page after first network boot.
+password `openhop`; change it from the OTA page after first network boot.
 Rollback is **not** automatic on a broken image — keep the USB cable
 as a recovery fallback.
 
 For the RAK4631, find the assigned address in the DHCP lease table and open
-`http://<rak-ip>/`. The initial HTTP credentials are `admin` / `password`.
+`http://<rak-ip>/`. The initial HTTP credentials are `admin` / `openhop`.
 Change the HTTP password and openHop TCP token from the page. Hostname,
 DHCP/static networking, TCP port/token, and optional compile-gated GPS settings
 are stored atomically; the page states when reboot is required. Port 80 is

@@ -65,7 +65,7 @@ constexpr uint32_t RESPONSE_DEADLINE_MS = 5000;
 constexpr size_t RESPONSE_CHUNK_BYTES = 256;
 constexpr size_t MAX_RESPONSE_BODY_BYTES = 16384;
 constexpr const char* AUTH_USER = "admin";
-constexpr const char* DEFAULT_HTTP_PASSWORD = "password";
+constexpr const char* DEFAULT_HTTP_PASSWORD = "openhop";
 constexpr const char* OTA_DISABLED_REASON =
     "Stock RAK4631/Adafruit nRF52 bootloader staged-image installation is "
     "incompatible or unverified; Ethernet OTA remains disabled. Use the "
