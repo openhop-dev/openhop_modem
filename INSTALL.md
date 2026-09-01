@@ -352,7 +352,7 @@ To package an existing tag locally without uploading:
 
 ```bash
 python3 firmware/tools/package_release_assets.py \
-    --tag v1.2.0 --output-dir /tmp/openhop-release
+    --tag v1.3.0 --output-dir /tmp/openhop-release
 (cd /tmp/openhop-release && sha256sum -c *-SHA256SUMS.txt)
 ```
 
