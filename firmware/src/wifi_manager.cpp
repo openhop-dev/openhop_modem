@@ -68,6 +68,7 @@ static void loadConfig() {
         cfg.tcpPort = DEFAULT_TCP_PORT;
         cfg.wifiExternalAntenna = false;
         cfg.gpsEnabled = false;
+        cfg.wifiPowerSave = true;
         effectiveHostname = "";
         return;
     }
@@ -84,6 +85,7 @@ static void loadConfig() {
     cfg.tcpPort     = p.getUShort("port", DEFAULT_TCP_PORT);
     cfg.wifiExternalAntenna = p.getBool("ant_ext", false);
     cfg.gpsEnabled  = p.getBool("gps_en", false);
+    cfg.wifiPowerSave = p.getBool("wifi_ps", true);
     p.end();
 }
 
@@ -180,6 +182,7 @@ void saveConfig(const Config& newCfg) {
         p.putBool("ant_ext", newCfg.wifiExternalAntenna);
     }
     p.putBool("gps_en", newCfg.gpsEnabled);
+    p.putBool("wifi_ps", newCfg.wifiPowerSave);
     p.end();
     cfg = newCfg;
     cfg.hostname = sanitizeHostname(cfg.hostname);
@@ -244,12 +247,10 @@ static bool attemptSTA() {
                   cfg.tcpToken.length() > 0 ? "token" : "open");
 
     WiFi.persistent(false);   // we manage persistence via Preferences
-#if defined(BOARD_STATION_G2) || defined(BOARD_STATION_G3)
-    // Station G2/G3's high-power radio/TCP use case benefits from avoiding
-    // modem latency caused by Wi-Fi power-save sleep. Keep this scoped to
-    // Station hardware until other boards are explicitly validated with it.
-    WiFi.setSleep(false);
-#endif
+    // Wi-Fi power-save modem sleep adds tens-hundreds of ms of latency and,
+    // after long idle periods, can end in a lost association the
+    // auto-reconnect never recovers from. Toggleable in the web UI.
+    WiFi.setSleep(cfg.wifiPowerSave);
     WiFi.setAutoReconnect(true);
     WiFi.mode(WIFI_STA);
     WiFi.setHostname(effectiveHostname.c_str());

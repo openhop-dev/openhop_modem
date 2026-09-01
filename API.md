@@ -175,6 +175,9 @@ Accepted top-level fields:
 - `tcp_token`
 - `tcp_port`
 - `use_static_ip`
+- `wifi_power_save` — Wi-Fi boards only; `false` disables Wi-Fi modem
+  power-save for lower latency at higher power draw. Applies after the
+  post-save reboot.
 - `network`
 - `pa_high_power_enabled` — Station G3 only; `false` selects the lower GPIO9
   mode and `true` selects the higher mode. The setting applies immediately and
