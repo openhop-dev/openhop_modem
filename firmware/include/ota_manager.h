@@ -19,7 +19,7 @@ namespace OTAManager {
 
 // Start ArduinoOTA + HTTP /update endpoint on port 80.
 // HTTP requires Basic auth with user="admin" and an NVS-backed password
-// that defaults to "password"; the web page exposes a password-change form.
+// that defaults to "openhop"; the web page exposes a password-change form.
 // ArduinoOTA uses the TCP token when one is configured, otherwise the same
 // HTTP password. Must be called after Wi-Fi STA or Ethernet is up.
 void begin(const String& hostname, const String& token);

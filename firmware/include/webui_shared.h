@@ -50,6 +50,7 @@ struct ConfigModel {
     bool tcpTokenSet = false;
     std::string tcpToken;
     bool wifiExternalAntenna = false;
+    bool wifiPowerSave = true;
     bool gpsEnabled = false;
     bool heltecV43ExternalLnaEnabled = false;
     bool heltecV43FemLnaBypassed = false;

@@ -79,6 +79,15 @@ for field in (
 ):
     assert field in ota
 
+for field in ("bus_voltage_v", "current_ma", "power_mw"):
+    assert field in ota
+assert "appendStationG3PowerTelemetry(body, snap);" in ota
+assert ota.count("appendStationG3PowerTelemetry(body, snap);") == 1
+assert '#include "station_g3_power.h"' not in ota
+assert "StationG3Power::snapshot()" not in ota
+assert "static_cast<uint32_t>(snap.stationG3PowerW" not in ota
+assert "String(snap.stationG3PowerW * 1000.0f, 1)" in ota
+
 # G3 controls and power telemetry must be capability-gated, not exposed by
 # unrelated board variants or added to the binary host protocol.
 assert "if (RFFrontEnd::hasStationG3LnaControl())" in ota

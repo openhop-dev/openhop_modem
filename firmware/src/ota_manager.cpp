@@ -30,7 +30,7 @@ static constexpr uint16_t HTTP_PORT         = 80;
 static constexpr const char* NVS_NAMESPACE  = "lora_modem";
 static constexpr const char* HTTP_PASS_KEY  = "http_pass";
 static constexpr const char* HTTP_AUTH_USER = "admin";
-static constexpr const char* DEFAULT_HTTP_PASSWORD = "password";
+static constexpr const char* DEFAULT_HTTP_PASSWORD = "openhop";
 static constexpr uint8_t MAX_HTTP_PASSWORD_LEN = 64;
 static constexpr uint8_t MAX_TCP_TOKEN_LEN = 64;
 
@@ -248,6 +248,7 @@ static WebUiShared::Model buildWebUiModel() {
     model.config.tcpTokenSet = cfg.tcpToken.length() > 0;
     model.config.tcpToken = cfg.tcpToken.c_str();
     model.config.wifiExternalAntenna = cfg.wifiExternalAntenna;
+    model.config.wifiPowerSave = cfg.wifiPowerSave;
     model.config.gpsEnabled = cfg.gpsEnabled;
     model.config.heltecV43ExternalLnaEnabled = RFFrontEnd::isExternalLnaEnabled();
     model.config.heltecV43FemLnaBypassed = RFFrontEnd::isFemLnaBypassed();
@@ -371,6 +372,26 @@ static void sendJson(int code, const String& body) {
 static void sendJsonError(int code, const String& message) {
     sendJson(code, String("{\"error\":") + jsonQuote(message) + "}");
 }
+
+#if defined(BOARD_STATION_G3)
+static void appendStationG3PowerTelemetry(
+    String& body, const RuntimeStats::Snapshot& snap) {
+    if (!snap.stationG3PowerMonitorAvailable) return;
+
+    body += F(",\"bus_voltage_v\":");
+    body += snap.stationG3PowerValid
+                ? String(snap.stationG3InputVoltageV, 3) : String("null");
+    body += F(",\"current_ma\":");
+    body += snap.stationG3PowerValid
+                ? String(snap.stationG3CurrentMa, 2) : String("null");
+    body += F(",\"power_mw\":");
+    // Keep the INA219 current direction. Casting a negative reading to an
+    // unsigned integer would turn small reverse-current/noise samples into a
+    // multi-gigawatt JSON value.
+    body += snap.stationG3PowerValid
+                ? String(snap.stationG3PowerW * 1000.0f, 1) : String("null");
+}
+#endif
 
 static String buildSystemJson(const RuntimeStats::Snapshot& snap,
                               const NetworkSnapshot& net,
@@ -570,6 +591,10 @@ static String buildConfigJson(const WifiManager::Config& cfg) {
         body += F(",\"wifi_external_antenna\":");
         body += boolJson(cfg.wifiExternalAntenna);
     }
+    if (BOARD.has_wifi) {
+        body += F(",\"wifi_power_save\":");
+        body += boolJson(cfg.wifiPowerSave);
+    }
     if (RFFrontEnd::hasHeltecV43LnaControl()) {
         body += F(",\"heltec_v43_external_lna_enabled\":");
         body += boolJson(RFFrontEnd::isExternalLnaEnabled());
@@ -610,6 +635,9 @@ static String buildStatsJson(const RuntimeStats::Snapshot& snap,
                     ? String(snap.batteryChargeRatePctPerHour, 3)
                     : String("null");
     }
+#if defined(BOARD_STATION_G3)
+    appendStationG3PowerTelemetry(body, snap);
+#endif
     body += F(",\"system\":");
     body += buildSystemJson(snap, net, clientIP);
     body += F(",\"radio\":");
@@ -724,6 +752,19 @@ static bool applyConfigPatch(JsonVariantConst root,
             return false;
         }
         cfg.wifiExternalAntenna = antennaVal.as<bool>();
+    }
+
+    JsonVariantConst psVal = obj["wifi_power_save"];
+    if (!psVal.isNull()) {
+        if (!BOARD.has_wifi) {
+            error = "wifi_power_save is not supported on this board.";
+            return false;
+        }
+        if (!psVal.is<bool>()) {
+            error = "wifi_power_save must be true or false.";
+            return false;
+        }
+        cfg.wifiPowerSave = psVal.as<bool>();
     }
 
     JsonVariantConst gpsVal = obj["gps_enabled"];
@@ -1026,6 +1067,11 @@ static void handleRoot() {
         body += F("<div class='checkline'><input type='checkbox' id='wifi_ant_ext' name='wifi_ant_ext' value='1'");
         if (cfg.wifiExternalAntenna) body += F(" checked");
         body += F("><label for='wifi_ant_ext'>Use external Wi-Fi antenna</label></div>");
+    }
+    if (BOARD.has_wifi) {
+        body += F("<div class='checkline'><input type='checkbox' id='wifi_ps' name='wifi_ps' value='1'");
+        if (cfg.wifiPowerSave) body += F(" checked");
+        body += F("><label for='wifi_ps' title='Disable for lower latency, higher power draw'>Wi-Fi power save</label></div>");
     }
     body += F("<button type='submit'>Save network settings</button></form></div></details>");
 
@@ -1431,6 +1477,7 @@ static void handleNetworkSave() {
     } else {
         cfg.wifiExternalAntenna = false;
     }
+    cfg.wifiPowerSave = httpServer->hasArg("wifi_ps");
 
     if (cfg.useStaticIP) {
         if ((uint32_t)cfg.staticIP == 0 || (uint32_t)cfg.subnet == 0 || (uint32_t)cfg.gateway == 0) {

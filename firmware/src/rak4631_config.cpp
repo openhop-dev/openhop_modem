@@ -189,7 +189,7 @@ Config makeDefaults(const char* hostname, uint16_t tcpPort, const char* tcpToken
     config.useStaticIP = false;
     config.tcpPort = (tcpPort == 0 || tcpPort == 80) ? 5055 : tcpPort;
     copyBounded(config.tcpToken, tcpToken);
-    copyBounded(config.httpPassword, "password");
+    copyBounded(config.httpPassword, "openhop");
     config.gpsEnabled = false;
     return config;
 }

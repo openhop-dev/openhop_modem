@@ -30,6 +30,7 @@ struct Config {
     uint16_t  tcpPort;   // default 5055
     bool      wifiExternalAntenna; // C6-only when BOARD enables antenna switch
     bool      gpsEnabled; // default off; applies to any board with GPS UART pins
+    bool      wifiPowerSave; // default on; disable for lower latency at higher power draw
 };
 
 // Poll PRG button at boot; if held >= 3s, wipe NVS and reboot. Call from setup().

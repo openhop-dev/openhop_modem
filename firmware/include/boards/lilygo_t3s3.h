@@ -44,6 +44,14 @@ inline const BoardConfig BOARD = {
     .pin_user_button        = 0,      // BOOT button on GPIO0
     .user_button_active_low = true,
 
+    // LiPo monitor from Xinyuan-LilyGO/LilyGo-LoRa-Series schematic.
+    // Uses a simple voltage divider into GPIO1 with no switching.
+    .battery = {
+        .pin = 1,
+        .enable_pin = -1,
+        .multiplier = 2.000f,
+    },
+
     .max_tx_power_dbm = 22,           // SX1262 spec ceiling
 
     .use_dio3_tcxo = true,
