@@ -1,6 +1,6 @@
 {
   "name": "BQ Voyage Station G3 openHop Modem",
-  "version": "v1.2.0-station_g3",
+  "version": "v1.3.0-station_g3",
   "new_install_prompt_erase": true,
   "builds": [
     {

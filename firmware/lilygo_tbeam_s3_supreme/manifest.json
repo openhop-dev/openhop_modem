@@ -1,6 +1,6 @@
 {
   "name": "LilyGO T-Beam-S3 Supreme openHop Modem",
-  "version": "v1.2.0-lilygo_tbeam_s3_supreme",
+  "version": "v1.3.0-lilygo_tbeam_s3_supreme",
   "new_install_prompt_erase": true,
   "builds": [
     {
