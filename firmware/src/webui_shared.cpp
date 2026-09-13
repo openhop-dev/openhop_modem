@@ -330,6 +330,12 @@ std::string renderSystemJson(const Model& m) {
     if (m.capabilities.boardTemperature) out += ",\"board_temperature_c\":" + (m.boardTemperatureAvailable ? fixed(m.boardTemperatureC, 1) : "null");
     if (m.capabilities.boardFan) out += ",\"board_fan_enabled\":" + std::string(m.boardFanEnabled ? "true" : "false");
     out += ",\"battery_voltage_mv\":" + (m.battery.voltageValid ? number(m.battery.voltageMv) : "null") + ",\"battery_voltage_v\":" + (m.battery.voltageValid ? fixed(m.battery.voltageMv / 1000.0, 3) : "null");
+    if (m.radio.register08B5Valid) {
+        out += ",\"sx126x_08b5\":" + number(m.radio.register08B5);
+        out += ",\"sx126x_08b5_bit0\":" + boolean((m.radio.register08B5 & 0x01) != 0);
+    } else {
+        out += ",\"sx126x_08b5\":null,\"sx126x_08b5_bit0\":null";
+    }
     if (m.battery.chargeRateAvailable) out += ",\"battery_charge_rate_pct_per_hour\":" + (m.battery.chargeRateValid ? fixed(m.battery.chargeRatePctPerHour, 3) : "null");
     return out + "}";
 }
