@@ -273,7 +273,7 @@ static _WiFiStub WiFi;
 // ─── Version ─────────────────────────────────────────────────
 // Base version is shared by every board; the board's fw_suffix
 // distinguishes one binary from another (e.g. "v1.3.0-ikoka").
-#define FW_VERSION_BASE "v1.3.0"
+#define FW_VERSION_BASE "v1.3.0-08b5-3400us"
 static String fwVersion;   // populated in setup()
 
 // ─── Task watchdog — self-heal on loop() hang ───────────────
@@ -299,9 +299,13 @@ public:
             0);
     }
 
+    int16_t readRegister08B5(uint8_t& value) {
+        return readRegister(0x08B5, &value, 1);
+    }
+
     int16_t applyRegisterPatch08B5() {
         uint8_t value = 0;
-        int16_t state = readRegister(0x08B5, &value, 1);
+        int16_t state = readRegister08B5(value);
         if (state != RADIOLIB_ERR_NONE) return state;
         value |= 0x01;
         return writeRegister(0x08B5, &value, 1);
@@ -503,6 +507,13 @@ Snapshot capture() {
     snap.firmwareVersion = fwVersion;
     snap.radioStandby = radioStandby;
     snap.autoCadEnabled = autoCadEnabled;
+    if (radioReady) {
+        uint8_t value = 0;
+        if (radio.readRegister08B5(value) == RADIOLIB_ERR_NONE) {
+            snap.sx126xRegister08B5 = value;
+            snap.sx126xRegister08B5Valid = true;
+        }
+    }
     snap.hasBatteryChargeRatePctPerHour = BOARD.battery.fuel_gauge_i2c_addr != 0 &&
         BOARD.battery.fuel_gauge_crate_reg != 0;
     if (snap.hasBatteryChargeRatePctPerHour) {
@@ -902,6 +913,9 @@ bool applyConfig(const RadioConfig& cfg) {
                BOARD.name, fwVersion.c_str(), (int)cfg.power_dbm, (int)pwr,
                (int)BOARD.max_tx_power_dbm, state, currentLimitBefore,
                currentLimitAfter);
+    if (state != RADIOLIB_ERR_NONE) return false;
+
+    state = radio.setPaRampTime(RADIOLIB_SX126X_PA_RAMP_3400U);
     if (state != RADIOLIB_ERR_NONE) return false;
 
     state = radio.setSyncWord(cfg.syncword);

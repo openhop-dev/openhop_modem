@@ -233,6 +233,8 @@ WebUiShared::Model buildModel() {
     model.radio.txPowerDbm = runtime.radio.power_dbm;
     model.radio.syncword = runtime.radio.syncword;
     model.radio.preambleLength = runtime.radio.preamble_len;
+    model.radio.register08B5Valid = runtime.sx126xRegister08B5Valid;
+    model.radio.register08B5 = runtime.sx126xRegister08B5;
     model.counters.rxPackets = runtime.status.rx_count;
     model.counters.txPackets = runtime.status.tx_count;
     model.counters.crcErrors = runtime.status.crc_errors;
