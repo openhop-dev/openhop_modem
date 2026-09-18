@@ -12,6 +12,8 @@ struct Snapshot {
     String firmwareVersion;
     bool radioStandby;
     bool autoCadEnabled;
+    bool sx126xRegister08B5Valid;
+    uint8_t sx126xRegister08B5;
     bool hasBatteryChargeRatePctPerHour;
     bool batteryChargeRatePctPerHourValid;
     float batteryChargeRatePctPerHour;

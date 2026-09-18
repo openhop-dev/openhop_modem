@@ -314,6 +314,8 @@ static WebUiShared::Model buildWebUiModel() {
     model.radio.txPowerDbm = snap.radio.power_dbm;
     model.radio.syncword = snap.radio.syncword;
     model.radio.preambleLength = snap.radio.preamble_len;
+    model.radio.register08B5Valid = snap.sx126xRegister08B5Valid;
+    model.radio.register08B5 = snap.sx126xRegister08B5;
     model.counters.rxPackets = snap.status.rx_count;
     model.counters.txPackets = snap.status.tx_count;
     model.counters.crcErrors = snap.status.crc_errors;
@@ -422,6 +424,13 @@ static String buildSystemJson(const RuntimeStats::Snapshot& snap,
     body += snap.status.battery_mv != 0xFFFF ? String(snap.status.battery_mv) : String("null");
     body += F(",\"battery_voltage_v\":");
     body += snap.status.battery_mv != 0xFFFF ? String(snap.status.battery_mv / 1000.0f, 3) : String("null");
+    body += F(",\"sx126x_08b5\":");
+    body += snap.sx126xRegister08B5Valid
+                ? String(snap.sx126xRegister08B5) : String("null");
+    body += F(",\"sx126x_08b5_bit0\":");
+    body += snap.sx126xRegister08B5Valid
+                ? ((snap.sx126xRegister08B5 & 0x01) ? String("true") : String("false"))
+                : String("null");
     if (snap.hasBatteryChargeRatePctPerHour) {
         body += F(",\"battery_charge_rate_pct_per_hour\":");
         body += snap.batteryChargeRatePctPerHourValid

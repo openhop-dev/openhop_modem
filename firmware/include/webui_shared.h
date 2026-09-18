@@ -122,6 +122,8 @@ struct RadioModel {
     int8_t txPowerDbm = 0;
     uint8_t syncword = 0;
     uint16_t preambleLength = 0;
+    bool register08B5Valid = false;
+    uint8_t register08B5 = 0;
 };
 
 struct CountersModel {
