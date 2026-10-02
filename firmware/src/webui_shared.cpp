@@ -292,7 +292,7 @@ std::string renderStatsPage(const Model& m) {
         body += "</div>";
     }
     body += "<h3>Counters</h3><div class='grid'>";
-    appendKv(body, "RX packets", number(m.counters.rxPackets)); appendKv(body, "TX packets", number(m.counters.txPackets)); appendKv(body, "CRC errors", number(m.counters.crcErrors)); appendKv(body, "Last RSSI", number(m.counters.lastRssiDbm) + " dBm"); appendKv(body, "Last SNR", fixed(m.counters.lastSnrDb, 1) + " dB"); appendKv(body, "Noise floor", fixed(m.counters.noiseFloorDbm, 1) + " dBm"); appendKv(body, "Die temperature", number(m.dieTemperatureC) + " C");
+    appendKv(body, "RX packets", number(m.counters.rxPackets)); appendKv(body, "TX packets", number(m.counters.txPackets)); appendKv(body, "CRC errors", number(m.counters.crcErrors)); appendKv(body, "Last RSSI", number(m.counters.lastRssiDbm) + " dBm"); appendKv(body, "Last SNR", fixed(m.counters.lastSnrDb, 1) + " dB"); appendKv(body, "Noise floor", fixed(m.counters.noiseFloorDbm, 1) + " dBm"); appendKv(body, "Die temperature", number(m.dieTemperatureC) + " C"); if (m.capabilities.boardTemperature) appendKv(body, "Board temperature", m.boardTemperatureAvailable ? fixed(m.boardTemperatureC, 1) + " C" : "unknown"); if (m.capabilities.boardFan) appendKv(body, "Cooling fan", m.boardFanEnabled ? "ON" : "OFF");
     body += "</div><h3>Network</h3><div class='grid'>";
     appendKv(body, "Mode", m.config.useStaticIp ? "Static" : "DHCP"); appendKv(body, "Port", number(m.config.tcpPort));
     if (m.network.hasWifiRssi) appendKv(body, "Wi-Fi RSSI", number(m.network.wifiRssiDbm) + " dBm");
@@ -306,7 +306,10 @@ std::string renderStatsPage(const Model& m) {
 std::string renderSystemJson(const Model& m) {
     std::string out = "{\"board\":" + quote(m.board) + ",\"firmware\":" + quote(m.firmware) + ",\"hostname\":" + quote(m.hostname);
     out += ",\"mdns\":" + (m.capabilities.mdns ? quote(m.hostname + ".local") : std::string("null"));
-    out += ",\"interface\":" + quote(m.network.interfaceName) + ",\"current_ip\":" + quote(m.network.currentIp) + ",\"connected_client_ip\":" + nullableString(m.connectedClientIp) + ",\"uptime_sec\":" + number(m.uptimeSec) + ",\"uptime\":" + quote(uptime(m.uptimeSec)) + ",\"die_temperature_c\":" + number(m.dieTemperatureC) + ",\"battery_voltage_mv\":" + (m.battery.voltageValid ? number(m.battery.voltageMv) : "null") + ",\"battery_voltage_v\":" + (m.battery.voltageValid ? fixed(m.battery.voltageMv / 1000.0, 3) : "null");
+    out += ",\"interface\":" + quote(m.network.interfaceName) + ",\"current_ip\":" + quote(m.network.currentIp) + ",\"connected_client_ip\":" + nullableString(m.connectedClientIp) + ",\"uptime_sec\":" + number(m.uptimeSec) + ",\"uptime\":" + quote(uptime(m.uptimeSec)) + ",\"die_temperature_c\":" + number(m.dieTemperatureC);
+    if (m.capabilities.boardTemperature) out += ",\"board_temperature_c\":" + (m.boardTemperatureAvailable ? fixed(m.boardTemperatureC, 1) : "null");
+    if (m.capabilities.boardFan) out += ",\"board_fan_enabled\":" + std::string(m.boardFanEnabled ? "true" : "false");
+    out += ",\"battery_voltage_mv\":" + (m.battery.voltageValid ? number(m.battery.voltageMv) : "null") + ",\"battery_voltage_v\":" + (m.battery.voltageValid ? fixed(m.battery.voltageMv / 1000.0, 3) : "null");
     if (m.battery.chargeRateAvailable) out += ",\"battery_charge_rate_pct_per_hour\":" + (m.battery.chargeRateValid ? fixed(m.battery.chargeRatePctPerHour, 3) : "null");
     return out + "}";
 }
@@ -360,7 +363,10 @@ std::string renderStatsJson(const Model& m) {
 }
 
 std::string renderTempJson(const Model& m) {
-    std::string out = "{\"die_temperature_c\":" + number(m.dieTemperatureC) + ",\"battery_voltage_mv\":" + (m.battery.voltageValid ? number(m.battery.voltageMv) : "null") + ",\"battery_voltage_v\":" + (m.battery.voltageValid ? fixed(m.battery.voltageMv / 1000.0, 3) : "null");
+    std::string out = "{\"die_temperature_c\":" + number(m.dieTemperatureC);
+    if (m.capabilities.boardTemperature) out += ",\"board_temperature_c\":" + (m.boardTemperatureAvailable ? fixed(m.boardTemperatureC, 1) : "null");
+    if (m.capabilities.boardFan) out += ",\"board_fan_enabled\":" + std::string(m.boardFanEnabled ? "true" : "false");
+    out += ",\"battery_voltage_mv\":" + (m.battery.voltageValid ? number(m.battery.voltageMv) : "null") + ",\"battery_voltage_v\":" + (m.battery.voltageValid ? fixed(m.battery.voltageMv / 1000.0, 3) : "null");
     if (m.battery.chargeRateAvailable) out += ",\"battery_charge_rate_pct_per_hour\":" + (m.battery.chargeRateValid ? fixed(m.battery.chargeRatePctPerHour, 3) : "null");
     return out + ",\"firmware\":" + quote(m.firmware) + ",\"hostname\":" + quote(m.hostname) + "}";
 }

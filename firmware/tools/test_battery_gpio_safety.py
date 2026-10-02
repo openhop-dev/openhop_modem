@@ -23,6 +23,8 @@ inline uint32_t millis(){return now;}
 inline void analogReference(int v){calls.emplace_back(3,-1,v);}
 inline void analogReadResolution(int v){calls.emplace_back(4,-1,v);}
 inline int analogRead(int p){calls.emplace_back(5,p,0); return 3000;}
+constexpr int ADC_11db=11;
+inline void analogSetPinAttenuation(int p,int v){calls.emplace_back(7,p,v);}
 inline int analogReadMilliVolts(int p){calls.emplace_back(6,p,0); return 1000;}
 '''
 WIRE = r'''#pragma once
@@ -69,6 +71,10 @@ int main(){
   check(calls.size()==19 && calls[0]==std::make_tuple(0,0,OUTPUT) &&
         calls[1]==std::make_tuple(1,0,high?HIGH:LOW),"valid explicit GPIO0 and gate polarity preserved");
  }
+ c.adc_attenuation_db=11; calls.clear();
+ check(BatteryMonitor::readMilliVolts(c)==4000,"board-specific calibrated attenuation preserves voltage");
+ check(calls[3]==std::make_tuple(7,1,ADC_11db),"explicit board attenuation applied");
+ c.adc_attenuation_db=-1;
 #else
  untouched(c,"unsupported calibrated ADC never drives gate");
 #endif

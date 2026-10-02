@@ -25,6 +25,8 @@
 #include "environment_sensor.h"
 #include "runtime_stats.h"
 #include "battery_monitor.h"
+#include "pa_ramp.h"
+#include "tbeam_1w_fan.h"
 #include "gps_manager.h"
 #if defined(BOARD_HELTEC_T114)
 #  include "node_state.h"
@@ -360,6 +362,7 @@ static volatile bool dio1Flag    = false;
 static volatile uint32_t dio1IrqCount = 0;
 static bool        radioReady    = false;
 static bool        isTxActive    = false;
+static bool        radioTxReady  = false;
 
 // ─── Noise floor sampling ────────────────────────────────────
 #define NUM_NOISE_FLOOR_SAMPLES 20
@@ -509,6 +512,10 @@ Snapshot capture() {
         compatReadCpuTemperature());
     snap.status.noise_floor_x10 = (int16_t)(noiseFloor * 10.0f);
     snap.status.battery_mv = BatteryMonitor::readMilliVolts(BOARD.battery);
+    snap.hasBoardTemperature = BOARD.thermistor.ntc_pin >= 0;
+    snap.boardTemperatureC = TBeam1WFan::temperatureC();
+    snap.hasBoardFan = BOARD.thermistor.fan_pin >= 0;
+    snap.boardFanEnabled = TBeam1WFan::isEnabled();
     snap.radio = currentConfig;
     snap.firmwareVersion = fwVersion;
     snap.radioStandby = radioStandby;
@@ -892,8 +899,10 @@ static bool parseSetWifi(const uint8_t* p, uint16_t len, WifiManager::Config& ou
 
 // ─── Radio configuration ────────────────────────────────────
 bool applyConfig(const RadioConfig& cfg) {
-    radio.standby();
-    int state;
+    // Invalidate before the first mutation: a partial apply must prohibit TX.
+    radioTxReady = false;
+    int state = radio.standby();
+    if (state != RADIOLIB_ERR_NONE) return false;
 
     state = radio.setFrequency(cfg.freq_hz / 1e6f);
     if (state != RADIOLIB_ERR_NONE) return false;
@@ -912,7 +921,9 @@ bool applyConfig(const RadioConfig& cfg) {
     int8_t pwr = cfg.power_dbm;
     if (pwr > BOARD.max_tx_power_dbm) pwr = BOARD.max_tx_power_dbm;
     int currentLimitBefore = (int)radio.getCurrentLimit();
-    state = radio.setOutputPower(pwr);
+    const uint8_t rampSetting = BOARD.pa_ramp_time_us == 1700
+        ? RADIOLIB_SX126X_PA_RAMP_1700U : 0;
+    state = applyOutputPowerAndRamp(radio, pwr, rampSetting);
     int currentLimitAfter = (int)radio.getCurrentLimit();
     LOG_R_INFO("applyConfig board=%s fw=%s pwr_req=%d pwr=%d max=%d setOutputPower=%d ocp_before=%dmA ocp_after=%dmA",
                BOARD.name, fwVersion.c_str(), (int)cfg.power_dbm, (int)pwr,
@@ -926,13 +937,14 @@ bool applyConfig(const RadioConfig& cfg) {
     state = radio.setPreambleLength(cfg.preamble_len);
     if (state != RADIOLIB_ERR_NONE) return false;
 
-    radio.explicitHeader();
-    radio.setCRC(1);
-    radio.invertIQ(false);
+    if (radio.explicitHeader() != RADIOLIB_ERR_NONE) return false;
+    if (radio.setCRC(1) != RADIOLIB_ERR_NONE) return false;
+    if (radio.invertIQ(false) != RADIOLIB_ERR_NONE) return false;
 
     // Auto-LDRO mirrors openHop Core sx1262_wrapper.py — without this,
     // SF11/SF12 presets are modulation-incompatible with openHop Core.
-    radio.autoLDRO();
+    if (radio.autoLDRO() != RADIOLIB_ERR_NONE) return false;
+    radioTxReady = true;
 
     // Push the live config to the TFT cache so the next status
     // refresh shows what the radio is actually running.
@@ -1022,6 +1034,10 @@ void processHostCommand(uint8_t cmd, const uint8_t* payload, uint16_t len,
     switch (cmd) {
 
     case CMD_TX_REQUEST: {
+        if (!radioTxReady) {
+            sendError(ERR_INVALID_CONFIG, src);
+            break;
+        }
         if (len == 0 || len > MAX_LORA_PAYLOAD) {
             sendError(ERR_PAYLOAD_TOO_BIG, src);
             break;
@@ -1665,11 +1681,11 @@ void setup() {
     // and raise EN HIGH for the rest of the device's lifetime. After
     // this point the RF switch is enabled; SX1262's DIO2 (or our
     // rx_pin / tx_pin GPIOs) will drive the actual TX/RX selection.
-    rfSwitchEnHighAfterSettle();
-
-    // Some boards also have PA/LNA front-end mode pins that must be
-    // asserted to fixed levels before the SX1262 is initialized.
     configureStaticGpios();
+    TBeam1WFan::begin();
+    // Static GPIOs establish CTRL/LNA LOW before this raises GPIO40, the
+    // radio/PA LDO enable on the T-Beam 1W.
+    rfSwitchEnHighAfterSettle();
 
     // ─── SX1262 init (skipped when board has no LoRa hardware) ──
     // ESP32-P4-NANO ships without a LoRa front end on day one — the
@@ -2142,9 +2158,11 @@ void loop() {
                     ip       = BOARD.has_wifi ? WifiManager::getIPString(): "---";
                 }
                 uint16_t batteryMv = BatteryMonitor::readMilliVolts(BOARD.battery);
+                const float boardTemperatureC = TBeam1WFan::temperatureC();
                 status.battery_mv = batteryMv;
                 oled.showStatus(status.rx_count, status.tx_count,
-                                ssid, ip, stateTag, fwVersion.c_str(), batteryMv);
+                                ssid, ip, stateTag, fwVersion.c_str(), batteryMv,
+                                boardTemperatureC);
             } else if (currentScreen == Screen::RADIO) {
                 oled.showRadioConfig(currentConfig.freq_hz,
                                      currentConfig.bandwidth_hz,
@@ -2160,9 +2178,13 @@ void loop() {
                 uint32_t usb_idle = (lastUsbCmdMs == 0)
                     ? UINT32_MAX
                     : (millis() - lastUsbCmdMs) / 1000;
+                const uint16_t batteryMv =
+                    BatteryMonitor::readMilliVolts(BOARD.battery);
+                const float boardTemperatureC = TBeam1WFan::temperatureC();
                 oled.showDiagnostics(uptime, ip.c_str(), usb_idle,
                                      status.rx_count, status.tx_count,
-                                     status.crc_errors, fwVersion.c_str());
+                                     status.crc_errors, batteryMv,
+                                     boardTemperatureC, fwVersion.c_str());
             }
         }
     }

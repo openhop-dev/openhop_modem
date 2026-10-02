@@ -52,6 +52,11 @@ struct RfSwitchPolicy {
     bool     dio2_as_rf_switch;
 };
 
+struct ThermistorConfig {
+    int8_t ntc_pin = -1;
+    int8_t fan_pin = -1;
+};
+
 struct StaticGpioLevel {
     int8_t pin;
     bool   level_high;
@@ -89,6 +94,7 @@ struct BatterySenseConfig {
     uint16_t minimum_plausible_mv = 0;
     uint16_t maximum_plausible_mv = 0;
     uint8_t minimum_valid_samples = 0;
+    int8_t adc_attenuation_db = -1;  // trailing extension preserves positional configs
 };
 
 struct WifiAntennaSwitchConfig {
@@ -171,8 +177,8 @@ struct BoardConfig {
     // this value; lets the host config drive everything below.
     int8_t max_tx_power_dbm;
 
-    // SX1262 TCXO control. All Ebyte/Heltec carrier boards use a
-    // 32 MHz TCXO powered by SX1262 DIO3 at 1.8 V.
+    // SX1262 TCXO control. Carrier boards declare the voltage required by
+    // their 32 MHz TCXO (typically 1.8 V; the T-Beam 1W uses 3.0 V).
     bool  use_dio3_tcxo;
     float tcxo_voltage;
 
@@ -284,6 +290,10 @@ struct BoardConfig {
     // Periodic SX126x AGC maintenance. Zero disables it. Keep this at the
     // end so existing positional board initializers retain their layout.
     uint32_t sx126x_agc_reset_interval_ms = 0;
+
+    // Optional extensions must remain trailing for positional nRF52 boards.
+    ThermistorConfig thermistor;
+    uint16_t pa_ramp_time_us = 0;  // 0 = keep RadioLib's default ramp
 };
 
 extern const BoardConfig BOARD;
@@ -327,8 +337,10 @@ extern const BoardConfig BOARD;
 #  include "boards/station_g2.h"
 #elif defined(BOARD_LILYGO_TBEAM_S3_SUPREME)
 #  include "boards/lilygo_tbeam_s3_supreme.h"
+#elif defined(BOARD_LILYGO_TBEAM_1W)
+#  include "boards/lilygo_tbeam_1w.h"
 #elif defined(BOARD_STATION_G3)
 #  include "boards/station_g3.h"
 #else
-#  error "No board selected — add one of -DBOARD_HELTEC_V3 / -DBOARD_HELTEC_V4 / -DBOARD_HELTEC_V42 / -DBOARD_HELTEC_V43 / -DBOARD_IKOKA_STICK / -DBOARD_LILYGO_T3S3 / -DBOARD_RAK3112_WISMESH / -DBOARD_ESP32_P4_NANO / -DBOARD_ETHERMESH_1W / -DBOARD_HELTEC_T114 / -DBOARD_HELTEC_TRACKER_V2 / -DBOARD_XIAO_WIO_SX1262 / -DBOARD_PHOTON_1W_XIAO_ESP32C6 / -DBOARD_XIAO_NRF52_WIO / -DBOARD_RAK4631_WISMESH_ETH / -DBOARD_RAK4631_USB / -DBOARD_RAK3401 / -DBOARD_STATION_G2 / -DBOARD_LILYGO_TBEAM_S3_SUPREME / -DBOARD_STATION_G3 to platformio.ini build_flags"
+#  error "No board selected — add one of -DBOARD_HELTEC_V3 / -DBOARD_HELTEC_V4 / -DBOARD_HELTEC_V42 / -DBOARD_HELTEC_V43 / -DBOARD_IKOKA_STICK / -DBOARD_LILYGO_T3S3 / -DBOARD_RAK3112_WISMESH / -DBOARD_ESP32_P4_NANO / -DBOARD_ETHERMESH_1W / -DBOARD_HELTEC_T114 / -DBOARD_HELTEC_TRACKER_V2 / -DBOARD_XIAO_WIO_SX1262 / -DBOARD_PHOTON_1W_XIAO_ESP32C6 / -DBOARD_XIAO_NRF52_WIO / -DBOARD_RAK4631_WISMESH_ETH / -DBOARD_RAK4631_USB / -DBOARD_RAK3401 / -DBOARD_STATION_G2 / -DBOARD_LILYGO_TBEAM_S3_SUPREME / -DBOARD_LILYGO_TBEAM_1W / -DBOARD_STATION_G3 to platformio.ini build_flags"
 #endif

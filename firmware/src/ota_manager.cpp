@@ -4,6 +4,7 @@
 // =============================================================
 #include "ota_manager.h"
 #include "agc_maintenance.h"
+#include <cmath>
 #include "board_config.h"
 #include "ethernet_manager.h"
 #include "gps_manager.h"
@@ -209,6 +210,12 @@ static WebUiShared::Model buildWebUiModel() {
     model.connectedClientIp = TCPServer::getClientIP().c_str();
     model.uptimeSec = snap.status.uptime_sec;
     model.dieTemperatureC = snap.status.temp_c;
+    model.boardTemperatureAvailable = snap.hasBoardTemperature &&
+                                      std::isfinite(snap.boardTemperatureC);
+    model.boardTemperatureC = snap.boardTemperatureC;
+    model.capabilities.boardTemperature = snap.hasBoardTemperature;
+    model.boardFanEnabled = snap.boardFanEnabled;
+    model.capabilities.boardFan = snap.hasBoardFan;
     model.capabilities.wifi = BOARD.has_wifi;
     model.capabilities.ethernet = BOARD.ethernet.enabled;
     model.capabilities.mdns = true;

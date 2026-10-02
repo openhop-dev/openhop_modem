@@ -30,6 +30,10 @@ struct Snapshot {
     uint32_t lastAgcResetMsAgo;
     EnvironmentSensor::Snapshot environment;
 #endif
+    bool hasBoardTemperature;
+    float boardTemperatureC;
+    bool hasBoardFan;
+    bool boardFanEnabled;
 };
 
 Snapshot capture();

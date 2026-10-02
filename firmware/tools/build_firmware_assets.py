@@ -122,6 +122,11 @@ ENV_METADATA: dict[str, dict[str, str | bool]] = {
         "chip_family": "ESP32-S3",
         "web_manifest": True,
     },
+    "lilygo_tbeam_1w": {
+        "name": "LilyGO T-Beam 1W openHop Modem",
+        "chip_family": "ESP32-S3",
+        "web_manifest": True,
+    },
     "heltec_t114": {
         "name": "Heltec T114 openHop Modem",
         "chip_family": "NRF52",
@@ -166,6 +171,7 @@ BOARD_HEADER_TO_ENV = {
     "firmware/include/boards/ethermesh_1w.h": "ethermesh_1w",
     "firmware/include/boards/lilygo_t3s3.h": "lilygo_t3s3",
     "firmware/include/boards/lilygo_tbeam_s3_supreme.h": "lilygo_tbeam_s3_supreme",
+    "firmware/include/boards/lilygo_tbeam_1w.h": "lilygo_tbeam_1w",
     "firmware/include/boards/heltec_t114.h": "heltec_t114",
     "firmware/include/boards/xiao_nrf52_wio.h": "xiao_nrf52_wio",
     "firmware/include/boards/rak4631_wismesh_eth.h": "rak4631_wismesh_eth",

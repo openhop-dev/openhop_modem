@@ -6,7 +6,8 @@
 
 #include <Wire.h>
 #include <Adafruit_GFX.h>
-#if defined(BOARD_STATION_G2) || defined(BOARD_LILYGO_TBEAM_S3_SUPREME) || defined(BOARD_STATION_G3)
+#if defined(BOARD_STATION_G2) || defined(BOARD_LILYGO_TBEAM_S3_SUPREME) || \
+    defined(BOARD_LILYGO_TBEAM_1W) || defined(BOARD_STATION_G3)
 #include <Adafruit_SH110X.h>
 using OledDriver = Adafruit_SH1106G;
 static constexpr uint16_t OLED_WHITE = SH110X_WHITE;
@@ -32,7 +33,8 @@ public:
     void showStatus(uint32_t rx, uint32_t tx,
                     const char* ssid, const char* ip,
                     const char* state, const char* version,
-                    uint16_t battery_mv = 0xFFFF);
+                    uint16_t battery_mv = 0xFFFF,
+                    float board_temperature_c = __builtin_nanf(""));
     // Secondary screen: live radio configuration (freq, SF, BW, CR, power,
     // preamble, sync word). Reached by short-tap PRG from the status screen.
     void showRadioConfig(uint32_t freq_hz, uint32_t bandwidth_hz,
@@ -47,6 +49,8 @@ public:
                          uint32_t usb_idle_sec,        // UINT32_MAX = never
                          uint32_t rx_count, uint32_t tx_count,
                          uint32_t crc_errors,
+                         uint16_t battery_mv,
+                         float board_temperature_c,
                          const char* version);
     void showError(const char* msg);
     void clear();

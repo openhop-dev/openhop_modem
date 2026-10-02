@@ -209,8 +209,11 @@ uint16_t readMilliVolts(const BatterySenseConfig& config) {
     }
 
     // Preserve the existing calibrated ESP analogReadMilliVolts path.
+    if (config.adc_attenuation_db == 11) {
+        analogSetPinAttenuation(config.pin, ADC_11db);
+    }
     uint32_t totalMillivolts = 0;
-    constexpr uint8_t sampleCount = 8;
+    const uint8_t sampleCount = config.sample_count == 0 ? 8 : config.sample_count;
     for (uint8_t i = 0; i < sampleCount; ++i) {
         totalMillivolts += analogReadMilliVolts(config.pin);
         delay(1);
