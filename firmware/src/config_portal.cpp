@@ -14,7 +14,23 @@ namespace ConfigPortal {
 static WebServer* server = nullptr;
 static bool       active = false;
 
+static bool admitRequest() {
+    if (!server) return false;
+    const IPAddress apIP = WiFi.softAPIP();
+
+    // The pinned IPv6 NetworkServer path can wildcard-bind despite the
+    // constructor address. Trust the accepted socket, never the HTTP Host.
+    if (active && (WiFi.getMode() & WIFI_AP) && server->client() &&
+        apIP.type() == IPv4 && uint32_t(apIP) != 0) {
+        const IPAddress localIP = server->client().localIP();
+        if (localIP.type() == IPv4 && localIP == apIP) return true;
+    }
+    server->send(403, "text/plain", "Forbidden");
+    return false;
+}
+
 static void handleRoot() {
+    if (!admitRequest()) return;
     const auto& cfg = WifiManager::getConfig();
 
     // Fresh scan for SSID list (blocks ~1–2 s). Many routers/mesh APs broadcast
@@ -84,6 +100,7 @@ static IPAddress parseIP(const String& s) {
 }
 
 static void handleSave() {
+    if (!admitRequest()) return;
     WifiManager::Config newCfg = WifiManager::getConfig();
 
     String ssidSel = server->arg("ssid");
@@ -153,12 +170,25 @@ static void handleSave() {
 
 void begin() {
     if (server) return;
-    server = new WebServer(80);
+    // Best-effort bind only; every handler independently enforces AP admission.
+    server = new WebServer(WiFi.softAPIP(), 80);
     server->on("/",     HTTP_GET,  handleRoot);
     server->on("/save", HTTP_POST, handleSave);
-    server->onNotFound([]() { server->send(404, "text/plain", "Not found"); });
+    server->onNotFound([]() {
+        if (!admitRequest()) return;
+        server->send(404, "text/plain", "Not found");
+    });
     server->begin();
     active = true;
+}
+
+void end() {
+    if (server) {
+        server->stop();
+        delete server;
+        server = nullptr;
+    }
+    active = false;
 }
 
 void loop() {

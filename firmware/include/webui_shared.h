@@ -13,6 +13,7 @@ struct Capabilities {
     bool wifiReset = false;
     bool wifiAntennaSelection = false;
     bool heltecV43Controls = false;
+    bool stationAgcControls = false;
     bool gps = false;
     bool battery = false;
     bool radio = false;
@@ -21,6 +22,8 @@ struct Capabilities {
     bool writableManagement = false;
     bool exposeTcpToken = false;
     bool bleDfu = false;
+    bool boardTemperature = false;
+    bool boardFan = false;
 };
 
 struct NetworkModel {
@@ -141,6 +144,9 @@ struct Model {
     std::string dfuBluetoothAddress;
     uint32_t uptimeSec = 0;
     int8_t dieTemperatureC = 0;
+    bool boardTemperatureAvailable = false;
+    float boardTemperatureC = 0.0f;
+    bool boardFanEnabled = false;
     Capabilities capabilities;
     NetworkModel network;
     ConfigModel config;

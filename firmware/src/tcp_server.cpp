@@ -19,6 +19,7 @@ namespace TCPServer {
 
 static WiFiServer* server         = nullptr;
 static WiFiClient  client;
+static uint32_t    clientLocalIP = 0; // capture before an outage invalidates getsockname
 static String      requiredToken  = "";
 static bool        authenticated  = false;
 static FrameParser parser;
@@ -75,6 +76,7 @@ static void disconnectClient() {
     }
     authenticated = false;
     frameCount = 0;
+    clientLocalIP = 0;
     parser.reset();
 }
 
@@ -142,6 +144,12 @@ void end() {
     }
 }
 
+void invalidateInterface(const IPAddress& address) {
+    if (client && clientLocalIP == static_cast<uint32_t>(address)) {
+        disconnectClient();
+    }
+}
+
 void loop() {
     if (!server) return;
 
@@ -163,6 +171,7 @@ void loop() {
                 return;
             }
             client = incoming;
+            clientLocalIP = static_cast<uint32_t>(client.localIP());
             client.setNoDelay(true);
             parser.reset();
             authenticated = false;

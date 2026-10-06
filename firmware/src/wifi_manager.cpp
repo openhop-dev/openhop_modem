@@ -8,6 +8,7 @@
 
 #include <WiFi.h>
 #include <Preferences.h>
+#include <atomic>
 
 namespace WifiManager {
 
@@ -24,40 +25,55 @@ static String  ipStr       = "---";
 static String  effectiveHostname;
 static bool    eventsRegistered = false;
 
-// Log lines use plain ASCII so any connected host protocol parser
-// just discards them while waiting for the PROTO_SYNC (0xAA) byte.
-static const char* wifiEventName(arduino_event_id_t id) {
-    switch (id) {
-        case ARDUINO_EVENT_WIFI_STA_START:        return "STA_START";
-        case ARDUINO_EVENT_WIFI_STA_STOP:         return "STA_STOP";
-        case ARDUINO_EVENT_WIFI_STA_CONNECTED:    return "STA_ASSOCIATED";
-        case ARDUINO_EVENT_WIFI_STA_DISCONNECTED: return "STA_DISCONNECTED";
-        case ARDUINO_EVENT_WIFI_STA_GOT_IP:       return "STA_GOT_IP";
-        case ARDUINO_EVENT_WIFI_STA_LOST_IP:      return "STA_LOST_IP";
-        case ARDUINO_EVENT_WIFI_AP_START:         return "AP_START";
-        case ARDUINO_EVENT_WIFI_AP_STOP:          return "AP_STOP";
-        default:                                  return "OTHER";
-    }
-}
+// The Arduino event task only publishes bits/reason. No String, logging,
+// driver calls or server mutation here. exchange() cannot lose a short outage.
+static std::atomic<uint32_t> pendingEvents{0};
+static constexpr uint32_t EVENT_INVALID = 1;
+static constexpr uint32_t EVENT_STATE = 2;
+static constexpr uint32_t EVENT_DOWN = 8;
+static bool eventDown = false;
+static constexpr uint32_t EVENT_REASON = 4;
+static uint32_t invalidatedIP = 0;
+static uint32_t lastSTAIP = 0;
+static bool apActive = false;
+static bool everConnected = false;
+static bool fallbackWanted = false;
+static uint32_t apAttemptAt = 0;
+static bool apStopFailed = false;
+static uint32_t apStopAt = 0;
+enum class Phase { ATTEMPT, BACKOFF, RESTART_SETTLE };
+static Phase phase = Phase::ATTEMPT;
+static uint32_t phaseAt = 0;
+static uint32_t backoffMs = 5000;
+static uint32_t waitMs = 5000;
+static unsigned failures = 0;
 
 static void onWiFiEvent(arduino_event_id_t event, arduino_event_info_t info) {
+    uint32_t bits = 0;
     switch (event) {
-        case ARDUINO_EVENT_WIFI_STA_CONNECTED:
-            Serial.printf("[WiFi] %s ch=%d\n",
-                          wifiEventName(event), info.wifi_sta_connected.channel);
-            break;
         case ARDUINO_EVENT_WIFI_STA_DISCONNECTED:
-            Serial.printf("[WiFi] %s reason=%d\n",
-                          wifiEventName(event), info.wifi_sta_disconnected.reason);
+            // Latest reason and sticky invalidation are published atomically.
+            bits = EVENT_INVALID | EVENT_STATE | EVENT_DOWN | EVENT_REASON |
+                   (static_cast<uint32_t>(info.wifi_sta_disconnected.reason) << 8);
+            break;
+        case ARDUINO_EVENT_WIFI_STA_STOP:
+        case ARDUINO_EVENT_WIFI_STA_LOST_IP:
+            bits = EVENT_INVALID | EVENT_STATE | EVENT_DOWN;
             break;
         case ARDUINO_EVENT_WIFI_STA_GOT_IP:
-            Serial.printf("[WiFi] %s ip=%s\n",
-                          wifiEventName(event), WiFi.localIP().toString().c_str());
+            bits = EVENT_STATE;
+            if (info.got_ip.ip_changed) bits |= EVENT_INVALID;
             break;
-        default:
-            Serial.printf("[WiFi] event %s (%d)\n", wifiEventName(event), (int)event);
-            break;
+        default: return;
     }
+    // Preserve sticky flags but replace, rather than OR together, reason codes.
+    uint32_t previous = pendingEvents.load(std::memory_order_relaxed);
+    uint32_t next;
+    do {
+        next = (bits & EVENT_REASON) ? ((previous & 0xff) | bits) : (previous | bits);
+        next = (next & ~EVENT_DOWN) | (bits & EVENT_DOWN);
+    } while (!pendingEvents.compare_exchange_weak(previous, next,
+                 std::memory_order_relaxed, std::memory_order_relaxed));
 }
 
 static void loadConfig() {
@@ -228,61 +244,41 @@ static void buildAPSsid() {
 }
 
 static void startAPMode() {
+    apAttemptAt = millis();
     buildAPSsid();
-    WiFi.mode(WIFI_AP);
-    WiFi.softAP(apSSID.c_str(), nullptr);   // open AP (user-requested)
+    // Keep STA available for saved-network retries without taking the portal down.
+    if (!WiFi.mode(cfg.ssid.length() ? WIFI_AP_STA : WIFI_AP) ||
+        !WiFi.softAP(apSSID.c_str(), nullptr)) {
+        Serial.println("[WiFi] setup AP start failed; retry in 5s");
+        return;
+    }
+    apActive = true;
     ipStr = WiFi.softAPIP().toString();
     currentMode = Mode::AP_CONFIG;
     ConfigPortal::begin();
+    Serial.printf("[WiFi] setup AP ready ip=%s\n", ipStr.c_str());
 }
 
-static bool attemptSTA() {
-    if (cfg.ssid.length() == 0) return false;
-
-    Serial.printf("[WiFi] STA connecting to '%s' host='%s' (%s, port=%u, auth=%s)\n",
-                  cfg.ssid.c_str(),
-                  effectiveHostname.c_str(),
-                  cfg.useStaticIP ? "static IP" : "DHCP",
-                  (unsigned)cfg.tcpPort,
-                  cfg.tcpToken.length() > 0 ? "token" : "open");
-
-    WiFi.persistent(false);   // we manage persistence via Preferences
-    // Wi-Fi power-save modem sleep adds tens-hundreds of ms of latency and,
-    // after long idle periods, can end in a lost association the
-    // auto-reconnect never recovers from. Toggleable in the web UI.
+static void attemptSTA() {
+    phase = Phase::ATTEMPT;
+    phaseAt = millis();
+    WiFi.persistent(false);   // Preferences owns credentials; never erase here
     WiFi.setSleep(cfg.wifiPowerSave);
-    WiFi.setAutoReconnect(true);
-    WiFi.mode(WIFI_STA);
-    WiFi.setHostname(effectiveHostname.c_str());
-    if (cfg.useStaticIP) {
-        WiFi.config(cfg.staticIP, cfg.gateway, cfg.subnet, cfg.dns1, cfg.dns2);
+    // Firmware owns all retry deadlines, including AUTH_FAIL and LOST_IP.
+    // Do not race Arduino's reason-dependent reconnect loop.
+    WiFi.setAutoReconnect(false);
+    bool ok = WiFi.mode(apActive ? WIFI_AP_STA : WIFI_STA);
+    if (ok) ok = WiFi.setHostname(effectiveHostname.c_str());
+    if (ok && cfg.useStaticIP) {
+        ok = WiFi.config(cfg.staticIP, cfg.gateway, cfg.subnet, cfg.dns1, cfg.dns2);
     }
-    WiFi.begin(cfg.ssid.c_str(), cfg.password.c_str());
-    currentMode = Mode::STA_CONNECTING;
-
-    uint32_t start = millis();
-    uint32_t lastLog = 0;
-    while (WiFi.status() != WL_CONNECTED) {
-        if (millis() - start >= STA_CONNECT_TIMEOUT_MS) {
-            Serial.printf("[WiFi] STA timeout after %us, last status=%d\n",
-                          (unsigned)(STA_CONNECT_TIMEOUT_MS / 1000),
-                          (int)WiFi.status());
-            return false;
-        }
-        if (millis() - lastLog >= 1000) {
-            lastLog = millis();
-            Serial.printf("[WiFi] waiting… status=%d  t=%us\n",
-                          (int)WiFi.status(),
-                          (unsigned)((millis() - start) / 1000));
-        }
-        delay(100);
-    }
-
-    ipStr = WiFi.localIP().toString();
-    currentMode = Mode::STA_CONNECTED;
-    Serial.printf("[WiFi] STA connected ip=%s rssi=%d\n",
-                  ipStr.c_str(), WiFi.RSSI());
-    return true;
+    // Default station netif remains DHCP; static configuration is reapplied
+    // after every station recreation. Antenna and sleep policy are unchanged.
+    if (ok) ok = WiFi.disconnect(false, false);
+    if (ok) ok = WiFi.begin(cfg.ssid.c_str(), cfg.password.c_str()) != WL_CONNECT_FAILED;
+    Serial.printf("[WiFi] STA attempt %s (%s), deadline=30s failures=%u\n",
+                  ok ? "started" : "API failed", cfg.useStaticIP ? "static" : "DHCP", failures);
+    currentMode = apActive ? Mode::AP_CONFIG : Mode::STA_CONNECTING;
 }
 
 void loadConfigOnly() {
@@ -312,48 +308,113 @@ void begin() {
     }
 
     if (cfg.ssid.length() == 0) {
+        currentMode = Mode::AP_CONFIG; // retry AP startup even if the driver fails
         startAPMode();
-        Serial.printf("[WiFi] AP '%s' up, ip=%s\n", apSSID.c_str(), ipStr.c_str());
         return;
     }
 
-    if (attemptSTA()) return;
-
-    // STA failed — fall back to AP so user can fix credentials
-    Serial.println("[WiFi] STA failed -> fallback to AP mode");
-    WiFi.disconnect(true);
-    startAPMode();
-    Serial.printf("[WiFi] AP '%s' up, ip=%s\n", apSSID.c_str(), ipStr.c_str());
+    attemptSTA();
 }
 
 void loop() {
-    switch (currentMode) {
-    case Mode::AP_CONFIG:
-        ConfigPortal::loop();
-        break;
-
-    case Mode::STA_CONNECTED:
-        if (WiFi.status() != WL_CONNECTED) {
-            currentMode = Mode::STA_CONNECTING;
-            ipStr = "---";
-        }
-        break;
-
-    case Mode::STA_CONNECTING:
-        if (WiFi.status() == WL_CONNECTED) {
-            ipStr = WiFi.localIP().toString();
-            currentMode = Mode::STA_CONNECTED;
-        }
-        break;
-
-    case Mode::OFFLINE:
-        break;
+    if (currentMode == Mode::OFFLINE) return;
+    const uint32_t now = millis();
+    const uint32_t events = pendingEvents.exchange(0, std::memory_order_relaxed);
+    if (events & EVENT_REASON) {
+        Serial.printf("[WiFi] STA disconnected reason=%u\n", (unsigned)(events >> 8));
     }
+    if (events & EVENT_STATE) eventDown = events & EVENT_DOWN;
+    const uint32_t ip = static_cast<uint32_t>(WiFi.localIP());
+    const bool usable = !eventDown && WiFi.status() == WL_CONNECTED && ip != 0;
+    if (lastSTAIP && ((events & EVENT_INVALID) || !usable || ip != lastSTAIP)) {
+        invalidatedIP = lastSTAIP;
+        lastSTAIP = 0;
+    }
+    if (usable && cfg.ssid.length()) {
+        lastSTAIP = ip;
+        if (apActive) {
+            // Stop port 80 before the main loop can start the management server.
+            // A failed AP shutdown remains retryable without deleting the portal.
+            if (apStopFailed && now - apStopAt < 5000) {
+                ConfigPortal::loop();
+                return;
+            }
+            apStopAt = now;
+            if (!WiFi.softAPdisconnect(true)) {
+                apStopFailed = true;
+                Serial.println("[WiFi] AP shutdown failed; retry in 5s");
+                ConfigPortal::loop();
+                return;
+            }
+            apStopFailed = false;
+            ConfigPortal::end();
+            apActive = false;
+        }
+        if (currentMode != Mode::STA_CONNECTED) {
+            Serial.printf("[WiFi] STA usable ip=%s\n", WiFi.localIP().toString().c_str());
+        }
+        ipStr = WiFi.localIP().toString();
+        currentMode = Mode::STA_CONNECTED;
+        everConnected = true;
+        fallbackWanted = false;
+        failures = 0;
+        backoffMs = 5000;
+        return;
+    }
+    if (currentMode == Mode::STA_CONNECTED) {
+        currentMode = Mode::STA_CONNECTING;
+        phase = Phase::ATTEMPT;
+        phaseAt = now; // bounded grace for a transient event/IP loss
+    }
+    ipStr = apActive ? WiFi.softAPIP().toString() : String("---");
+    if (apActive) ConfigPortal::loop();
+    if ((fallbackWanted || !cfg.ssid.length()) && !apActive && now - apAttemptAt >= 5000) {
+        startAPMode();
+    }
+    if (!cfg.ssid.length()) return; // intentional setup: never attempt an empty SSID
+
+    if (phase == Phase::ATTEMPT && now - phaseAt >= STA_CONNECT_TIMEOUT_MS) {
+        ++failures;
+        // Only boot failure opens a setup AP. A previously configured runtime
+        // outage must not expose the unauthenticated setup portal on the LAN.
+        if (!everConnected && !apActive) {
+            fallbackWanted = true;
+            startAPMode();
+        }
+        phase = Phase::BACKOFF;
+        phaseAt = now;
+        waitMs = backoffMs;
+        backoffMs = backoffMs >= 30000 ? 60000 : backoffMs * 2;
+        Serial.printf("[WiFi] STA deadline status=%d retry=%lus failures=%u\n",
+                      (int)WiFi.status(), (unsigned long)(waitMs / 1000), failures);
+    } else if (phase == Phase::BACKOFF && now - phaseAt >= waitMs) {
+        if (failures % 3 == 0) {
+            // Disable STA only; preserve the recovery AP and all Ethernet state.
+            if (!WiFi.mode(apActive ? WIFI_AP : WIFI_OFF)) {
+                phaseAt = now;
+                Serial.println("[WiFi] STA restart failed; bounded retry");
+                return;
+            }
+            phase = Phase::RESTART_SETTLE;
+            phaseAt = now;
+            Serial.println("[WiFi] restarting station interface");
+        } else {
+            attemptSTA();
+        }
+    } else if (phase == Phase::RESTART_SETTLE && now - phaseAt >= 250) {
+        attemptSTA();
+    }
+}
+
+uint32_t consumeSTAInvalidation() {
+    const uint32_t ip = invalidatedIP;
+    invalidatedIP = 0;
+    return ip;
 }
 
 Mode        getMode()         { return currentMode; }
 bool        isSTAConnected()  { return currentMode == Mode::STA_CONNECTED; }
-bool        isAPActive()      { return currentMode == Mode::AP_CONFIG; }
+bool        isAPActive()      { return apActive; }
 const char* getIPString()     { return ipStr.c_str(); }
 const Config& getConfig()     { return cfg; }
 const char* getHostname()     { return effectiveHostname.c_str(); }

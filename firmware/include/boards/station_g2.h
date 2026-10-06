@@ -61,4 +61,5 @@ inline const BoardConfig BOARD = {
     // BoardConfig supports Heltec V4 static front-end GPIO setup.
     .static_gpios = {},
     .static_gpio_count = 0,
+    .sx126x_agc_reset_interval_ms = 0,
 };

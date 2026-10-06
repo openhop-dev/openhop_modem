@@ -3,6 +3,8 @@
 // dual-bank rollback guarded by a sanity watchdog.
 // =============================================================
 #include "ota_manager.h"
+#include "agc_maintenance.h"
+#include <cmath>
 #include "board_config.h"
 #include "ethernet_manager.h"
 #include "gps_manager.h"
@@ -208,12 +210,21 @@ static WebUiShared::Model buildWebUiModel() {
     model.connectedClientIp = TCPServer::getClientIP().c_str();
     model.uptimeSec = snap.status.uptime_sec;
     model.dieTemperatureC = snap.status.temp_c;
+    model.boardTemperatureAvailable = snap.hasBoardTemperature &&
+                                      std::isfinite(snap.boardTemperatureC);
+    model.boardTemperatureC = snap.boardTemperatureC;
+    model.capabilities.boardTemperature = snap.hasBoardTemperature;
+    model.boardFanEnabled = snap.boardFanEnabled;
+    model.capabilities.boardFan = snap.hasBoardFan;
     model.capabilities.wifi = BOARD.has_wifi;
     model.capabilities.ethernet = BOARD.ethernet.enabled;
     model.capabilities.mdns = true;
     model.capabilities.wifiReset = BOARD.has_wifi;
     model.capabilities.wifiAntennaSelection = WifiManager::hasWifiAntennaSwitch();
     model.capabilities.heltecV43Controls = RFFrontEnd::hasHeltecV43LnaControl();
+#if defined(BOARD_STATION_G2) || defined(BOARD_STATION_G3)
+    model.capabilities.stationAgcControls = RFFrontEnd::hasAgcResetIntervalControl();
+#endif
     model.capabilities.gps = GPSManager::hasGpsPins();
     model.capabilities.battery = BOARD.battery.pin >= 0 || BOARD.battery.fuel_gauge_i2c_addr != 0;
     model.capabilities.radio = true;
@@ -493,9 +504,18 @@ static String buildRadioJson(const RuntimeStats::Snapshot& snap) {
         body += boolJson(RFFrontEnd::isExternalLnaEnabled());
         body += F(",\"heltec_v43_fem_lna_bypassed\":");
         body += boolJson(RFFrontEnd::isFemLnaBypassed());
+    }
+    if (RFFrontEnd::hasAgcResetIntervalControl()) {
         body += F(",\"agc_reset_interval_sec\":");
         body += String(RFFrontEnd::getAgcResetIntervalSec());
     }
+#if defined(BOARD_STATION_G2) || defined(BOARD_STATION_G3)
+    body += F(",\"agc_reset_count\":");
+    body += String(snap.agcResetCount);
+    body += F(",\"last_agc_reset_ms_ago\":");
+    body += snap.agcResetCount > 0
+                ? String(snap.lastAgcResetMsAgo) : String("null");
+#endif
     body += F("}");
     return body;
 }
@@ -600,6 +620,8 @@ static String buildConfigJson(const WifiManager::Config& cfg) {
         body += boolJson(RFFrontEnd::isExternalLnaEnabled());
         body += F(",\"heltec_v43_fem_lna_bypassed\":");
         body += boolJson(RFFrontEnd::isFemLnaBypassed());
+    }
+    if (RFFrontEnd::hasAgcResetIntervalControl()) {
         body += F(",\"agc_reset_interval_sec\":");
         body += String(RFFrontEnd::getAgcResetIntervalSec());
     }
@@ -648,6 +670,20 @@ static String buildStatsJson(const RuntimeStats::Snapshot& snap,
     body += buildNetworkJson(cfg, net);
     body += F(",\"gps\":");
     body += GPSManager::buildJson();
+#if defined(BOARD_STATION_G2) || defined(BOARD_STATION_G3)
+    const auto& environment = snap.environment;
+    body += F(",\"environment\":{\"sensor\":");
+    body += environment.available ? jsonQuote(environment.sensor) : String("null");
+    body += F(",\"available\":");
+    body += boolJson(environment.available);
+    body += F(",\"temperature_c\":");
+    body += environment.available ? String(environment.temperatureC, 2) : String("null");
+    body += F(",\"humidity_pct\":");
+    body += environment.available ? String(environment.humidityPct, 2) : String("null");
+    body += F(",\"pressure_hpa\":");
+    body += environment.available ? String(environment.pressureHpa, 2) : String("null");
+    body += F("}");
+#endif
     body += F("}");
     return body;
 }
@@ -688,6 +724,7 @@ struct RfConfigPatch {
 static bool applyConfigPatch(JsonVariantConst root,
                              WifiManager::Config& cfg,
                              RfConfigPatch& rfPatch,
+                             bool& rebootRequired,
                              String& error) {
     if (!root.is<JsonObjectConst>()) {
         error = "JSON body must be an object.";
@@ -698,6 +735,7 @@ static bool applyConfigPatch(JsonVariantConst root,
 
     JsonVariantConst hostVal = obj["hostname"];
     if (!hostVal.isNull()) {
+        rebootRequired = true;
         if (!hostVal.is<const char*>()) {
             error = "hostname must be a string.";
             return false;
@@ -708,6 +746,7 @@ static bool applyConfigPatch(JsonVariantConst root,
 
     JsonVariantConst tokenVal = obj["tcp_token"];
     if (!tokenVal.isNull()) {
+        rebootRequired = true;
         if (!tokenVal.is<const char*>()) {
             error = "tcp_token must be a string.";
             return false;
@@ -721,6 +760,7 @@ static bool applyConfigPatch(JsonVariantConst root,
 
     JsonVariantConst portVal = obj["tcp_port"];
     if (!portVal.isNull()) {
+        rebootRequired = true;
         if (!portVal.is<uint16_t>()) {
             error = "tcp_port must be an integer.";
             return false;
@@ -734,6 +774,7 @@ static bool applyConfigPatch(JsonVariantConst root,
 
     JsonVariantConst staticVal = obj["use_static_ip"];
     if (!staticVal.isNull()) {
+        rebootRequired = true;
         if (!staticVal.is<bool>()) {
             error = "use_static_ip must be true or false.";
             return false;
@@ -743,6 +784,7 @@ static bool applyConfigPatch(JsonVariantConst root,
 
     JsonVariantConst antennaVal = obj["wifi_external_antenna"];
     if (!antennaVal.isNull()) {
+        rebootRequired = true;
         if (!WifiManager::hasWifiAntennaSwitch()) {
             error = "wifi_external_antenna is not supported on this board.";
             return false;
@@ -756,6 +798,7 @@ static bool applyConfigPatch(JsonVariantConst root,
 
     JsonVariantConst psVal = obj["wifi_power_save"];
     if (!psVal.isNull()) {
+        rebootRequired = true;
         if (!BOARD.has_wifi) {
             error = "wifi_power_save is not supported on this board.";
             return false;
@@ -769,6 +812,7 @@ static bool applyConfigPatch(JsonVariantConst root,
 
     JsonVariantConst gpsVal = obj["gps_enabled"];
     if (!gpsVal.isNull()) {
+        rebootRequired = true;
         if (!GPSManager::hasGpsPins()) {
             error = "gps_enabled is not supported on this board.";
             return false;
@@ -824,7 +868,7 @@ static bool applyConfigPatch(JsonVariantConst root,
 
     JsonVariantConst agcVal = obj["agc_reset_interval_sec"];
     if (!agcVal.isNull()) {
-        if (!RFFrontEnd::hasHeltecV43LnaControl()) {
+        if (!RFFrontEnd::hasAgcResetIntervalControl()) {
             error = "agc_reset_interval_sec is not supported on this board.";
             return false;
         }
@@ -851,6 +895,7 @@ static bool applyConfigPatch(JsonVariantConst root,
 
         JsonVariantConst nestedStaticVal = network["use_static_ip"];
         if (!nestedStaticVal.isNull()) {
+            rebootRequired = true;
             if (!nestedStaticVal.is<bool>()) {
                 error = "network.use_static_ip must be true or false.";
                 return false;
@@ -858,14 +903,24 @@ static bool applyConfigPatch(JsonVariantConst root,
             cfg.useStaticIP = nestedStaticVal.as<bool>();
         }
 
-        if (!parseJsonIp(network["static_ip"], cfg.staticIP, "network.static_ip", error)) return false;
-        if (!parseJsonIp(network["subnet"], cfg.subnet, "network.subnet", error)) return false;
-        if (!parseJsonIp(network["gateway"], cfg.gateway, "network.gateway", error)) return false;
-        if (!parseJsonIp(network["dns1"], cfg.dns1, "network.dns1", error)) return false;
-        if (!parseJsonIp(network["dns2"], cfg.dns2, "network.dns2", error)) return false;
+        JsonVariantConst staticIpVal = network["static_ip"];
+        JsonVariantConst subnetVal = network["subnet"];
+        JsonVariantConst gatewayVal = network["gateway"];
+        JsonVariantConst dns1Val = network["dns1"];
+        JsonVariantConst dns2Val = network["dns2"];
+        if (!staticIpVal.isNull() || !subnetVal.isNull() || !gatewayVal.isNull() ||
+            !dns1Val.isNull() || !dns2Val.isNull()) {
+            rebootRequired = true;
+        }
+        if (!parseJsonIp(staticIpVal, cfg.staticIP, "network.static_ip", error)) return false;
+        if (!parseJsonIp(subnetVal, cfg.subnet, "network.subnet", error)) return false;
+        if (!parseJsonIp(gatewayVal, cfg.gateway, "network.gateway", error)) return false;
+        if (!parseJsonIp(dns1Val, cfg.dns1, "network.dns1", error)) return false;
+        if (!parseJsonIp(dns2Val, cfg.dns2, "network.dns2", error)) return false;
 
         JsonVariantConst antennaVal = network["wifi_external_antenna"];
         if (!antennaVal.isNull()) {
+            rebootRequired = true;
             if (!WifiManager::hasWifiAntennaSwitch()) {
                 error = "network.wifi_external_antenna is not supported on this board.";
                 return false;
@@ -893,7 +948,7 @@ static bool applyConfigPatch(JsonVariantConst root,
 
         JsonVariantConst agcVal = network["agc_reset_interval_sec"];
         if (!agcVal.isNull()) {
-            if (!RFFrontEnd::hasHeltecV43LnaControl()) {
+            if (!RFFrontEnd::hasAgcResetIntervalControl()) {
                 error = "network.agc_reset_interval_sec is not supported on this board.";
                 return false;
             }
@@ -1373,8 +1428,10 @@ static void handleApiConfigPost() {
 
     WifiManager::Config cfg = WifiManager::getConfig();
     RfConfigPatch rfPatch;
+    bool rebootRequired = false;
     String error;
-    if (!applyConfigPatch(doc.as<JsonVariantConst>(), cfg, rfPatch, error)) {
+    if (!applyConfigPatch(doc.as<JsonVariantConst>(), cfg, rfPatch,
+                          rebootRequired, error)) {
         sendJsonError(400, error);
         return;
     }
@@ -1402,13 +1459,15 @@ static void handleApiConfigPost() {
         return;
     }
 
-    WifiManager::saveConfig(cfg);
+    if (rebootRequired) WifiManager::saveConfig(cfg);
 
     Serial.printf("[OTA] API config updated by %s\n",
                   httpServer->client().remoteIP().toString().c_str());
 
-    sendJson(200, String("{\"status\":\"saved\",\"rebooting\":true,\"config\":") +
-                   buildConfigJson(cfg) + "}");
+    sendJson(200, String("{\"status\":\"saved\",\"rebooting\":") +
+                   (rebootRequired ? "true" : "false") +
+                   ",\"config\":" + buildConfigJson(cfg) + "}");
+    if (!rebootRequired) return;
     delay(500);
     ESP.restart();
 }
@@ -1526,6 +1585,29 @@ static void handleGpsSave() {
                        : F("The GPS UART is disabled and the setting has been saved."));
 }
 
+
+#if defined(BOARD_STATION_G2) || defined(BOARD_STATION_G3)
+static void handleStationAgcSave() {
+    if (!checkAuth()) return;
+    if (!httpServer->hasArg("agc_reset_interval_sec")) {
+        httpServer->send(400, "text/plain", "AGC interval is required.\n");
+        return;
+    }
+    const String raw = httpServer->arg("agc_reset_interval_sec");
+    uint16_t interval = 0;
+    if (!AgcMaintenance::parseIntervalSeconds(raw.c_str(), raw.length(), interval)) {
+        httpServer->send(400, "text/plain", "AGC interval must be an integer from 0 to 3600.\n");
+        return;
+    }
+    if (!RFFrontEnd::setAgcResetIntervalSec(interval, true)) {
+        httpServer->send(500, "text/plain", "Failed to save AGC interval.\n");
+        return;
+    }
+    sendSimplePage(F("AGC interval saved"), F("AGC interval saved"),
+                   interval == 0 ? F("Periodic AGC recovery is disabled. No reboot required.")
+                                 : F("Periodic AGC recovery is enabled. No reboot required."));
+}
+#endif
 
 static void handleRfLnaSave() {
     if (!checkAuth()) return;
@@ -1765,6 +1847,9 @@ void begin(const String& hn, const String& tk) {
     httpServer->on("/network", HTTP_POST, handleNetworkSave);
     httpServer->on("/gps",     HTTP_POST, handleGpsSave);
     httpServer->on("/rf-lna",  HTTP_POST, handleRfLnaSave);
+#if defined(BOARD_STATION_G2) || defined(BOARD_STATION_G3)
+    httpServer->on("/agc-reset", HTTP_POST, handleStationAgcSave);
+#endif
     if (RFFrontEnd::hasPaModeControl() && RFFrontEnd::hasStationG3LnaControl()) {
         httpServer->on("/rf-pa", HTTP_POST, handleRfPaSave);
     }

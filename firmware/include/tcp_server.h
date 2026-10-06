@@ -7,6 +7,7 @@
 
 #include <Arduino.h>
 #include <stdint.h>
+#include <IPAddress.h>
 
 namespace TCPServer {
 
@@ -17,6 +18,10 @@ void begin(uint16_t port, const String& token);
 
 // Stop accepting connections and drop the current client.
 void end();
+
+// Drop only a session bound to an invalidated interface address, not listeners
+// or a session on another (e.g. Ethernet) interface. Main-loop context only.
+void invalidateInterface(const IPAddress& address);
 
 // Service accepts + incoming bytes. Call every loop().
 void loop();

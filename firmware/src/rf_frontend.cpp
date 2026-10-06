@@ -38,10 +38,7 @@ static void setConfiguredLna(bool enabled) {
 #if defined(BOARD_HELTEC_V43) && defined(ARDUINO_ARCH_ESP32)
 static constexpr int8_t HELTEC_V43_CTX_PIN = 5;
 static constexpr const char* V43_LNA_BYPASS_KEY = "v43_lna_bp";
-static constexpr const char* V43_AGC_RESET_INTERVAL_KEY = "v43_agc_sec";
-static constexpr uint16_t MAX_AGC_RESET_INTERVAL_SEC = 3600;
 static bool femLnaBypassed = true;
-static uint16_t agcResetIntervalSec = 0;
 
 static void writeHeltecV43Ctx(bool bypassLna, const char* reason) {
     pinMode(HELTEC_V43_CTX_PIN, OUTPUT);
@@ -59,6 +56,18 @@ static void writeHeltecV43Ctx(bool bypassLna, const char* reason) {
 static void applyHeltecV43LnaState() {
     writeHeltecV43Ctx(femLnaBypassed, "RX");
 }
+#endif
+
+#if (defined(BOARD_HELTEC_V43) || defined(BOARD_STATION_G2) || defined(BOARD_STATION_G3)) && defined(ARDUINO_ARCH_ESP32)
+static constexpr uint16_t MAX_AGC_RESET_INTERVAL_SEC = 3600;
+#if defined(BOARD_HELTEC_V43)
+static constexpr const char* AGC_RESET_INTERVAL_KEY = "v43_agc_sec";
+#elif defined(BOARD_STATION_G3)
+static constexpr const char* AGC_RESET_INTERVAL_KEY = "g3_agc_sec";
+#else
+static constexpr const char* AGC_RESET_INTERVAL_KEY = "g2_agc_sec";
+#endif
+static uint16_t agcResetIntervalSec = 0;
 #endif
 
 }  // namespace
@@ -111,15 +120,25 @@ void begin() {
     Preferences p;
     if (p.begin(NVS_NAMESPACE, true)) {
         femLnaBypassed = p.getBool(V43_LNA_BYPASS_KEY, true);
-        agcResetIntervalSec = p.getUShort(V43_AGC_RESET_INTERVAL_KEY, 0);
-        if (agcResetIntervalSec > MAX_AGC_RESET_INTERVAL_SEC) {
-            agcResetIntervalSec = MAX_AGC_RESET_INTERVAL_SEC;
-        }
         p.end();
     }
     applyHeltecV43LnaState();
-    Serial.printf("[RF] Heltec V4.3 agc.reset.interval=%u s\n",
-                  (unsigned)agcResetIntervalSec);
+#endif
+#if (defined(BOARD_HELTEC_V43) || defined(BOARD_STATION_G2) || defined(BOARD_STATION_G3)) && defined(ARDUINO_ARCH_ESP32)
+    agcResetIntervalSec =
+        (uint16_t)(BOARD.sx126x_agc_reset_interval_ms / 1000U);
+    Preferences agcPrefs;
+    if (agcPrefs.begin(NVS_NAMESPACE, true)) {
+        agcResetIntervalSec = agcPrefs.getUShort(
+            AGC_RESET_INTERVAL_KEY,
+            (uint16_t)(BOARD.sx126x_agc_reset_interval_ms / 1000U));
+        agcPrefs.end();
+    }
+    if (agcResetIntervalSec > MAX_AGC_RESET_INTERVAL_SEC) {
+        agcResetIntervalSec = MAX_AGC_RESET_INTERVAL_SEC;
+    }
+    Serial.printf("[AGC] %s agc.reset.interval=%u s\n",
+                  BOARD.name, (unsigned)agcResetIntervalSec);
 #endif
 }
 
@@ -269,22 +288,30 @@ void prepareStandby() {
 }
 
 uint16_t getAgcResetIntervalSec() {
-#if defined(BOARD_HELTEC_V43) && defined(ARDUINO_ARCH_ESP32)
+#if (defined(BOARD_HELTEC_V43) || defined(BOARD_STATION_G2) || defined(BOARD_STATION_G3)) && defined(ARDUINO_ARCH_ESP32)
     return agcResetIntervalSec;
 #else
     return 0;
 #endif
 }
 
+bool hasAgcResetIntervalControl() {
+#if (defined(BOARD_HELTEC_V43) || defined(BOARD_STATION_G2) || defined(BOARD_STATION_G3)) && defined(ARDUINO_ARCH_ESP32)
+    return true;
+#else
+    return false;
+#endif
+}
+
 bool setAgcResetIntervalSec(uint16_t intervalSec, bool persist) {
-#if defined(BOARD_HELTEC_V43) && defined(ARDUINO_ARCH_ESP32)
+#if (defined(BOARD_HELTEC_V43) || defined(BOARD_STATION_G2) || defined(BOARD_STATION_G3)) && defined(ARDUINO_ARCH_ESP32)
     if (intervalSec > MAX_AGC_RESET_INTERVAL_SEC) {
         intervalSec = MAX_AGC_RESET_INTERVAL_SEC;
     }
     if (persist) {
         Preferences p;
         if (!p.begin(NVS_NAMESPACE, false)) return false;
-        bool ok = p.putUShort(V43_AGC_RESET_INTERVAL_KEY, intervalSec) > 0;
+        bool ok = p.putUShort(AGC_RESET_INTERVAL_KEY, intervalSec) > 0;
         p.end();
         if (!ok) return false;
     }

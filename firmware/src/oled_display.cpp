@@ -8,6 +8,8 @@
 #include "board_config.h"
 #include "splash_logo.h"
 
+#include <cmath>
+
 #define DISPLAY_ADDRESS 0x3C
 
 void OledDisplay::begin() {
@@ -45,7 +47,8 @@ void OledDisplay::begin() {
     _display = new OledDriver(128, 64, &Wire, BOARD.pin_i2c_oled_rst);
 
     // 5. Start display.
-#if defined(BOARD_STATION_G2) || defined(BOARD_LILYGO_TBEAM_S3_SUPREME) || defined(BOARD_STATION_G3)
+#if defined(BOARD_STATION_G2) || defined(BOARD_LILYGO_TBEAM_S3_SUPREME) || \
+    defined(BOARD_LILYGO_TBEAM_1W) || defined(BOARD_STATION_G3)
     if (_display->begin(DISPLAY_ADDRESS, true)) {
         _ready = true;
 
@@ -95,7 +98,8 @@ void OledDisplay::showBoot(const char* version) {
 void OledDisplay::showStatus(uint32_t rx, uint32_t tx,
                              const char* ssid, const char* ip,
                              const char* state, const char* version,
-                             uint16_t battery_mv) {
+                             uint16_t battery_mv,
+                             float board_temperature_c) {
     if (!_ready) return;
 
     char buf[32];
@@ -145,7 +149,19 @@ void OledDisplay::showStatus(uint32_t rx, uint32_t tx,
     // battery sensing pass a real value; every other board silently omits it.
     if (battery_mv != 0xFFFF) {
         _display->setCursor(0, 54);
-        snprintf(buf, sizeof(buf), "BAT:%.2fV", (double)(battery_mv / 1000.0f));
+        if (std::isfinite(board_temperature_c)) {
+            snprintf(buf, sizeof(buf), "BAT:%.2fV %.1fC",
+                     (double)(battery_mv / 1000.0f),
+                     (double)board_temperature_c);
+        } else {
+            snprintf(buf, sizeof(buf), "BAT:%.2fV",
+                     (double)(battery_mv / 1000.0f));
+        }
+        _display->print(buf);
+    } else if (std::isfinite(board_temperature_c)) {
+        _display->setCursor(0, 54);
+        snprintf(buf, sizeof(buf), "TEMP:%.1fC",
+                 (double)board_temperature_c);
         _display->print(buf);
     }
 
@@ -225,6 +241,8 @@ void OledDisplay::showDiagnostics(uint32_t uptime_sec,
                                   uint32_t usb_idle_sec,
                                   uint32_t rx_count, uint32_t tx_count,
                                   uint32_t crc_errors,
+                                  uint16_t battery_mv,
+                                  float board_temperature_c,
                                   const char* version) {
     if (!_ready) return;
 
@@ -295,6 +313,22 @@ void OledDisplay::showDiagnostics(uint32_t uptime_sec,
              (unsigned long)crc_errors);
     _display->print(buf);
 
+    // Line 5 (y=54) — optional board telemetry. Battery is voltage only;
+    // a percentage would be misleading under the external PA load.
+    _display->setCursor(0, 54);
+    if (battery_mv != 0xFFFF && std::isfinite(board_temperature_c)) {
+        snprintf(buf, sizeof(buf), "B:%.2fV T:%.1fC",
+                 (double)(battery_mv / 1000.0f),
+                 (double)board_temperature_c);
+        _display->print(buf);
+    } else if (battery_mv != 0xFFFF) {
+        snprintf(buf, sizeof(buf), "B:%.2fV", (double)(battery_mv / 1000.0f));
+        _display->print(buf);
+    } else if (std::isfinite(board_temperature_c)) {
+        snprintf(buf, sizeof(buf), "T:%.1fC", (double)board_temperature_c);
+        _display->print(buf);
+    }
+
     // Heartbeat dot, bottom-right
     static bool dot = false;
     if (dot) _display->fillCircle(124, 60, 2, OLED_WHITE);
@@ -322,7 +356,8 @@ void OledDisplay::clear() {
 
 void OledDisplay::turnOff() {
     if (!_ready) return;
-#if defined(BOARD_STATION_G2) || defined(BOARD_LILYGO_TBEAM_S3_SUPREME) || defined(BOARD_STATION_G3)
+#if defined(BOARD_STATION_G2) || defined(BOARD_LILYGO_TBEAM_S3_SUPREME) || \
+    defined(BOARD_LILYGO_TBEAM_1W) || defined(BOARD_STATION_G3)
     _display->oled_command(SH110X_DISPLAYOFF);
 #else
     _display->ssd1306_command(SSD1306_DISPLAYOFF);
@@ -331,7 +366,8 @@ void OledDisplay::turnOff() {
 
 void OledDisplay::turnOn() {
     if (!_ready) return;
-#if defined(BOARD_STATION_G2) || defined(BOARD_LILYGO_TBEAM_S3_SUPREME) || defined(BOARD_STATION_G3)
+#if defined(BOARD_STATION_G2) || defined(BOARD_LILYGO_TBEAM_S3_SUPREME) || \
+    defined(BOARD_LILYGO_TBEAM_1W) || defined(BOARD_STATION_G3)
     _display->oled_command(SH110X_DISPLAYON);
 #else
     _display->ssd1306_command(SSD1306_DISPLAYON);

@@ -207,6 +207,19 @@ std::string renderRootPage(const Model& m) {
     }
     body += "<label>openHop TCP port</label><input type='number' name='port' min='1' max='65535' value='" + number(m.config.tcpPort) + "'><p class='m'>Port 80 is reserved for this management server.</p><button type='submit'>Save network settings</button></form></div></details>";
     }
+    if (m.capabilities.stationAgcControls && m.capabilities.writableManagement) {
+        body += "<details open><summary>Station AGC Recovery</summary><div class='inside'>"
+                "<p>Optional workaround for receiver deafness. Each reset briefly interrupts reception; "
+                "disabled by default. The recommended interval for affected stations is 4 seconds.</p>"
+                "<form method='POST' action='/agc-reset'>"
+                "<label>AGC reset interval (seconds; 0 disables)"
+                "<input name='agc_reset_interval_sec' type='number' min='0' max='3600' step='1' required value='";
+        body += number(m.config.agcResetIntervalSec);
+        body += "'></label><button type='submit'>Save AGC interval</button>"
+                "</form><p class='m'>Applies immediately and persists across reboots. "
+                "Resets are deferred during active reception and for 10 seconds after TX.</p>"
+                "</div></details>";
+    }
     if (m.capabilities.heltecV43Controls) {
         body += "<details open><summary>Heltec V4.3 RF Front-End</summary><div class='inside'><p>Toggle the KCT8103L external RX LNA for receive only. The firmware always bypasses the FEM LNA during transmit so the TX path remains available.</p><form method='POST' action='/rf-lna'><div class='checkline'><input type='checkbox' id='v43_lna_on' name='v43_lna_on' value='1'" + std::string(m.config.heltecV43ExternalLnaEnabled ? " checked" : "") + "><label for='v43_lna_on'>Enable external FEM RX LNA</label></div><label>agc.reset.interval (seconds, 0 disables)<input name='agc_reset_interval_sec' type='number' min='0' max='3600' step='1' value='" + number(m.config.agcResetIntervalSec) + "'></label><p class='m'>Periodically restarts RX gain control during long idle periods to prevent strong out-of-band interference from clamping the noise floor.</p><button type='submit'>Save RF front-end settings</button></form><p class='m'>Settings apply immediately and persist across reboots. Unchecked LNA = GPIO5/CTX HIGH, external LNA bypassed.</p></div></details>";
     }
@@ -279,7 +292,7 @@ std::string renderStatsPage(const Model& m) {
         body += "</div>";
     }
     body += "<h3>Counters</h3><div class='grid'>";
-    appendKv(body, "RX packets", number(m.counters.rxPackets)); appendKv(body, "TX packets", number(m.counters.txPackets)); appendKv(body, "CRC errors", number(m.counters.crcErrors)); appendKv(body, "Last RSSI", number(m.counters.lastRssiDbm) + " dBm"); appendKv(body, "Last SNR", fixed(m.counters.lastSnrDb, 1) + " dB"); appendKv(body, "Noise floor", fixed(m.counters.noiseFloorDbm, 1) + " dBm"); appendKv(body, "Die temperature", number(m.dieTemperatureC) + " C");
+    appendKv(body, "RX packets", number(m.counters.rxPackets)); appendKv(body, "TX packets", number(m.counters.txPackets)); appendKv(body, "CRC errors", number(m.counters.crcErrors)); appendKv(body, "Last RSSI", number(m.counters.lastRssiDbm) + " dBm"); appendKv(body, "Last SNR", fixed(m.counters.lastSnrDb, 1) + " dB"); appendKv(body, "Noise floor", fixed(m.counters.noiseFloorDbm, 1) + " dBm"); appendKv(body, "Die temperature", number(m.dieTemperatureC) + " C"); if (m.capabilities.boardTemperature) appendKv(body, "Board temperature", m.boardTemperatureAvailable ? fixed(m.boardTemperatureC, 1) + " C" : "unknown"); if (m.capabilities.boardFan) appendKv(body, "Cooling fan", m.boardFanEnabled ? "ON" : "OFF");
     body += "</div><h3>Network</h3><div class='grid'>";
     appendKv(body, "Mode", m.config.useStaticIp ? "Static" : "DHCP"); appendKv(body, "Port", number(m.config.tcpPort));
     if (m.network.hasWifiRssi) appendKv(body, "Wi-Fi RSSI", number(m.network.wifiRssiDbm) + " dBm");
@@ -293,7 +306,10 @@ std::string renderStatsPage(const Model& m) {
 std::string renderSystemJson(const Model& m) {
     std::string out = "{\"board\":" + quote(m.board) + ",\"firmware\":" + quote(m.firmware) + ",\"hostname\":" + quote(m.hostname);
     out += ",\"mdns\":" + (m.capabilities.mdns ? quote(m.hostname + ".local") : std::string("null"));
-    out += ",\"interface\":" + quote(m.network.interfaceName) + ",\"current_ip\":" + quote(m.network.currentIp) + ",\"connected_client_ip\":" + nullableString(m.connectedClientIp) + ",\"uptime_sec\":" + number(m.uptimeSec) + ",\"uptime\":" + quote(uptime(m.uptimeSec)) + ",\"die_temperature_c\":" + number(m.dieTemperatureC) + ",\"battery_voltage_mv\":" + (m.battery.voltageValid ? number(m.battery.voltageMv) : "null") + ",\"battery_voltage_v\":" + (m.battery.voltageValid ? fixed(m.battery.voltageMv / 1000.0, 3) : "null");
+    out += ",\"interface\":" + quote(m.network.interfaceName) + ",\"current_ip\":" + quote(m.network.currentIp) + ",\"connected_client_ip\":" + nullableString(m.connectedClientIp) + ",\"uptime_sec\":" + number(m.uptimeSec) + ",\"uptime\":" + quote(uptime(m.uptimeSec)) + ",\"die_temperature_c\":" + number(m.dieTemperatureC);
+    if (m.capabilities.boardTemperature) out += ",\"board_temperature_c\":" + (m.boardTemperatureAvailable ? fixed(m.boardTemperatureC, 1) : "null");
+    if (m.capabilities.boardFan) out += ",\"board_fan_enabled\":" + std::string(m.boardFanEnabled ? "true" : "false");
+    out += ",\"battery_voltage_mv\":" + (m.battery.voltageValid ? number(m.battery.voltageMv) : "null") + ",\"battery_voltage_v\":" + (m.battery.voltageValid ? fixed(m.battery.voltageMv / 1000.0, 3) : "null");
     if (m.battery.chargeRateAvailable) out += ",\"battery_charge_rate_pct_per_hour\":" + (m.battery.chargeRateValid ? fixed(m.battery.chargeRatePctPerHour, 3) : "null");
     return out + "}";
 }
@@ -347,7 +363,10 @@ std::string renderStatsJson(const Model& m) {
 }
 
 std::string renderTempJson(const Model& m) {
-    std::string out = "{\"die_temperature_c\":" + number(m.dieTemperatureC) + ",\"battery_voltage_mv\":" + (m.battery.voltageValid ? number(m.battery.voltageMv) : "null") + ",\"battery_voltage_v\":" + (m.battery.voltageValid ? fixed(m.battery.voltageMv / 1000.0, 3) : "null");
+    std::string out = "{\"die_temperature_c\":" + number(m.dieTemperatureC);
+    if (m.capabilities.boardTemperature) out += ",\"board_temperature_c\":" + (m.boardTemperatureAvailable ? fixed(m.boardTemperatureC, 1) : "null");
+    if (m.capabilities.boardFan) out += ",\"board_fan_enabled\":" + std::string(m.boardFanEnabled ? "true" : "false");
+    out += ",\"battery_voltage_mv\":" + (m.battery.voltageValid ? number(m.battery.voltageMv) : "null") + ",\"battery_voltage_v\":" + (m.battery.voltageValid ? fixed(m.battery.voltageMv / 1000.0, 3) : "null");
     if (m.battery.chargeRateAvailable) out += ",\"battery_charge_rate_pct_per_hour\":" + (m.battery.chargeRateValid ? fixed(m.battery.chargeRatePctPerHour, 3) : "null");
     return out + ",\"firmware\":" + quote(m.firmware) + ",\"hostname\":" + quote(m.hostname) + "}";
 }

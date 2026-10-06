@@ -16,6 +16,7 @@ bool hasHeltecV43LnaControl();
 bool isFemLnaBypassed();
 bool isExternalLnaEnabled();
 bool setFemLnaBypassed(bool bypass, bool persist);
+bool hasAgcResetIntervalControl();
 void prepareTransmit();
 void prepareReceive();
 void prepareStandby();

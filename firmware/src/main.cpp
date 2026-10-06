@@ -20,9 +20,13 @@
 #include "frame_parser.h"
 #include "compat.h"
 #include "rf_frontend.h"
+#include "agc_maintenance.h"
 #include "station_g3_power.h"
+#include "environment_sensor.h"
 #include "runtime_stats.h"
 #include "battery_monitor.h"
+#include "pa_ramp.h"
+#include "tbeam_1w_fan.h"
 #include "gps_manager.h"
 #if defined(BOARD_HELTEC_T114)
 #  include "node_state.h"
@@ -272,8 +276,8 @@ static _WiFiStub WiFi;
 
 // ─── Version ─────────────────────────────────────────────────
 // Base version is shared by every board; the board's fw_suffix
-// distinguishes one binary from another (e.g. "v1.3.0-ikoka").
-#define FW_VERSION_BASE "v1.3.0"
+// distinguishes one binary from another (e.g. "v1.4.0-ikoka").
+#define FW_VERSION_BASE "v1.4.0"
 static String fwVersion;   // populated in setup()
 
 // ─── Task watchdog — self-heal on loop() hang ───────────────
@@ -358,6 +362,7 @@ static volatile bool dio1Flag    = false;
 static volatile uint32_t dio1IrqCount = 0;
 static bool        radioReady    = false;
 static bool        isTxActive    = false;
+static bool        radioTxReady  = false;
 
 // ─── Noise floor sampling ────────────────────────────────────
 #define NUM_NOISE_FLOOR_SAMPLES 20
@@ -366,7 +371,15 @@ static float    noiseFloorSum    = 0.0f;
 static int      noiseFloorCount  = 0;
 static uint32_t lastPacketTime   = 0;
 static uint32_t lastNoiseSample  = 0;
-static uint32_t lastAgcResetMs   = 0;
+static AgcMaintenance::Schedule agcMaintenanceSchedule;
+#if defined(BOARD_STATION_G2) || defined(BOARD_STATION_G3)
+// openHop repeaters can defer forwarding by several packet airtimes. Keep
+// periodic maintenance out of that response window after this modem transmits.
+static uint32_t lastTxCompleteMs = 0;
+static uint32_t agcResetCount = 0;
+static uint32_t lastSuccessfulAgcResetMs = 0;
+static uint32_t lastAgcSuccessLogMs = 0;
+#endif
 
 // ─── CAD parameters (set by host via CMD_SET_CAD_PARAMS) ─────
 // When cadCustom == false we call scanChannel() with RadioLib's defaults;
@@ -499,6 +512,10 @@ Snapshot capture() {
         compatReadCpuTemperature());
     snap.status.noise_floor_x10 = (int16_t)(noiseFloor * 10.0f);
     snap.status.battery_mv = BatteryMonitor::readMilliVolts(BOARD.battery);
+    snap.hasBoardTemperature = BOARD.thermistor.ntc_pin >= 0;
+    snap.boardTemperatureC = TBeam1WFan::temperatureC();
+    snap.hasBoardFan = BOARD.thermistor.fan_pin >= 0;
+    snap.boardFanEnabled = TBeam1WFan::isEnabled();
     snap.radio = currentConfig;
     snap.firmwareVersion = fwVersion;
     snap.radioStandby = radioStandby;
@@ -518,6 +535,12 @@ Snapshot capture() {
     snap.stationG3PowerW = power.powerW;
     snap.stationG3MinimumInputVoltageV = power.minimumInputVoltageV;
     snap.stationG3MaximumCurrentMa = power.maximumCurrentMa;
+#if defined(BOARD_STATION_G2) || defined(BOARD_STATION_G3)
+    snap.agcResetCount = agcResetCount;
+    snap.lastAgcResetMsAgo = agcResetCount > 0
+        ? (uint32_t)(millis() - lastSuccessfulAgcResetMs) : 0;
+    snap.environment = EnvironmentSensor::snapshot();
+#endif
     return snap;
 }
 }
@@ -876,8 +899,10 @@ static bool parseSetWifi(const uint8_t* p, uint16_t len, WifiManager::Config& ou
 
 // ─── Radio configuration ────────────────────────────────────
 bool applyConfig(const RadioConfig& cfg) {
-    radio.standby();
-    int state;
+    // Invalidate before the first mutation: a partial apply must prohibit TX.
+    radioTxReady = false;
+    int state = radio.standby();
+    if (state != RADIOLIB_ERR_NONE) return false;
 
     state = radio.setFrequency(cfg.freq_hz / 1e6f);
     if (state != RADIOLIB_ERR_NONE) return false;
@@ -896,7 +921,9 @@ bool applyConfig(const RadioConfig& cfg) {
     int8_t pwr = cfg.power_dbm;
     if (pwr > BOARD.max_tx_power_dbm) pwr = BOARD.max_tx_power_dbm;
     int currentLimitBefore = (int)radio.getCurrentLimit();
-    state = radio.setOutputPower(pwr);
+    const uint8_t rampSetting = BOARD.pa_ramp_time_us == 1700
+        ? RADIOLIB_SX126X_PA_RAMP_1700U : 0;
+    state = applyOutputPowerAndRamp(radio, pwr, rampSetting);
     int currentLimitAfter = (int)radio.getCurrentLimit();
     LOG_R_INFO("applyConfig board=%s fw=%s pwr_req=%d pwr=%d max=%d setOutputPower=%d ocp_before=%dmA ocp_after=%dmA",
                BOARD.name, fwVersion.c_str(), (int)cfg.power_dbm, (int)pwr,
@@ -910,13 +937,14 @@ bool applyConfig(const RadioConfig& cfg) {
     state = radio.setPreambleLength(cfg.preamble_len);
     if (state != RADIOLIB_ERR_NONE) return false;
 
-    radio.explicitHeader();
-    radio.setCRC(1);
-    radio.invertIQ(false);
+    if (radio.explicitHeader() != RADIOLIB_ERR_NONE) return false;
+    if (radio.setCRC(1) != RADIOLIB_ERR_NONE) return false;
+    if (radio.invertIQ(false) != RADIOLIB_ERR_NONE) return false;
 
     // Auto-LDRO mirrors openHop Core sx1262_wrapper.py — without this,
     // SF11/SF12 presets are modulation-incompatible with openHop Core.
-    radio.autoLDRO();
+    if (radio.autoLDRO() != RADIOLIB_ERR_NONE) return false;
+    radioTxReady = true;
 
     // Push the live config to the TFT cache so the next status
     // refresh shows what the radio is actually running.
@@ -1006,6 +1034,10 @@ void processHostCommand(uint8_t cmd, const uint8_t* payload, uint16_t len,
     switch (cmd) {
 
     case CMD_TX_REQUEST: {
+        if (!radioTxReady) {
+            sendError(ERR_INVALID_CONFIG, src);
+            break;
+        }
         if (len == 0 || len > MAX_LORA_PAYLOAD) {
             sendError(ERR_PAYLOAD_TOO_BIG, src);
             break;
@@ -1149,6 +1181,9 @@ void processHostCommand(uint8_t cmd, const uint8_t* payload, uint16_t len,
         dio1Flag = false;
         isTxActive = false;
         lastPacketTime = millis();
+#if defined(BOARD_STATION_G2) || defined(BOARD_STATION_G3)
+        lastTxCompleteMs = lastPacketTime;
+#endif
 
         if (txOk) {
             status.tx_count++;
@@ -1631,6 +1666,7 @@ void setup() {
     // proceeds in the background. We just record when it went up;
     // the wait-until-elapsed happens at the end of setup().
     oled.begin();
+    EnvironmentSensor::begin();
     StationG3Power::begin();
 #if defined(BOARD_HELTEC_T114)
     // Push restored state onto the OLED before showSplash so the
@@ -1645,11 +1681,11 @@ void setup() {
     // and raise EN HIGH for the rest of the device's lifetime. After
     // this point the RF switch is enabled; SX1262's DIO2 (or our
     // rx_pin / tx_pin GPIOs) will drive the actual TX/RX selection.
-    rfSwitchEnHighAfterSettle();
-
-    // Some boards also have PA/LNA front-end mode pins that must be
-    // asserted to fixed levels before the SX1262 is initialized.
     configureStaticGpios();
+    TBeam1WFan::begin();
+    // Static GPIOs establish CTRL/LNA LOW before this raises GPIO40, the
+    // radio/PA LDO enable on the T-Beam 1W.
+    rfSwitchEnHighAfterSettle();
 
     // ─── SX1262 init (skipped when board has no LoRa hardware) ──
     // ESP32-P4-NANO ships without a LoRa front end on day one — the
@@ -1729,6 +1765,7 @@ void setup() {
         }
 
         radioReady = true;
+        agcMaintenanceSchedule.recordAttempt(millis());
         startRak3401ReadyLedHeartbeat();
         }
     } else {
@@ -1808,10 +1845,8 @@ void setup() {
     }
 
     // Hold the splash for the rest of SPLASH_HOLD_MS if init finished
-    // earlier than that. Wi-Fi STA connect already burns several seconds
-    // so on most boards this loop is a no-op, but on the P4-Nano (no
-    // radio init, no Wi-Fi delay when offline) we still want the logo
-    // up for a clean visible second.
+    // earlier than that. STA connection is asynchronous; the main loop
+    // services its connection deadline after this short display hold.
     while (millis() - splashStartedMs < SPLASH_HOLD_MS) {
         delay(50);
     }
@@ -1831,7 +1866,7 @@ void setup() {
 #endif
 
     // Arm the task watchdog LAST — everything above may legitimately take
-    // many seconds (WiFi STA connect up to 30 s). From now on, any loop()
+    // many seconds (radio/PMU/Ethernet initialization). From now on, any loop()
     // iteration that doesn't complete within LOOP_WDT_TIMEOUT_S triggers a
     // panic reboot. If the bootloader is OTA-aware, the rolled-back slot
     // would take over; on stock Arduino bootloader, the same image reboots.
@@ -1885,20 +1920,60 @@ void sampleNoiseFloor() {
 }
 
 void maybeResetAgc() {
-    if (!radioReady || radioStandby || isTxActive) return;
-    if (!RFFrontEnd::hasHeltecV43LnaControl()) return;
-    uint16_t intervalSec = RFFrontEnd::getAgcResetIntervalSec();
-    if (intervalSec == 0) return;
+    if (!RFFrontEnd::hasAgcResetIntervalControl()) return;
 
-    uint32_t now = millis();
-    uint32_t intervalMs = (uint32_t)intervalSec * 1000U;
-    if (lastAgcResetMs == 0) {
-        lastAgcResetMs = now;
-        return;
+    AgcMaintenance::Conditions conditions;
+    conditions.radioReady = radioReady;
+    conditions.intentionalStandby = radioStandby;
+    conditions.txActive = isTxActive;
+    conditions.dio1Pending = dio1Flag;
+    conditions.intervalSec = RFFrontEnd::getAgcResetIntervalSec();
+    conditions.nowMs = millis();
+    conditions.lastPacketMs = lastPacketTime;
+
+#if defined(BOARD_STATION_G2) || defined(BOARD_STATION_G3)
+    conditions.lastTxCompleteMs = lastTxCompleteMs;
+    conditions.postTxQuietMs = AgcMaintenance::STATION_POST_TX_QUIET_MS;
+    if (!AgcMaintenance::shouldAttempt(
+            agcMaintenanceSchedule, conditions,
+            []() { return isReceivingPacket() || dio1Flag; })) return;
+
+    // SetSleep is valid only from SX126x standby. Bypass the external LNA,
+    // enter radio standby explicitly, then let RadioLib perform its warm-sleep
+    // AGC calibration. Always use OpenHop's RX path afterward so failures also
+    // get a best-effort recovery and the configured front end is restored.
+    const auto result = AgcMaintenance::run(
+        RADIOLIB_ERR_NONE,
+        []() { RFFrontEnd::prepareStandby(); },
+        []() { return radio.standby(); },
+        []() { return radio.resetAGC(); },
+        []() { return startReceive(); });
+    const uint32_t attemptedAt = millis();
+    agcMaintenanceSchedule.recordAttempt(attemptedAt);
+    if (result.standbyState != RADIOLIB_ERR_NONE) {
+        Serial.printf("[AGC] standby failed: %d\n", result.standbyState);
     }
-    if ((uint32_t)(now - lastAgcResetMs) < intervalMs) return;
-    if ((uint32_t)(now - lastPacketTime) < 500) return;
-    if (dio1Flag) return;
+    if (result.resetAttempted && result.resetState != RADIOLIB_ERR_NONE) {
+        Serial.printf("[AGC] reset failed: %d\n", result.resetState);
+    }
+    if (!result.rxRestarted) {
+        Serial.println("[AGC] RX restart failed");
+    }
+    if (!result.succeeded(RADIOLIB_ERR_NONE)) return;
+
+    lastSuccessfulAgcResetMs = attemptedAt;
+    ++agcResetCount;
+    noiseFloorSum = 0.0f;
+    noiseFloorCount = 0;
+    if (agcResetCount == 1 ||
+        (uint32_t)(attemptedAt - lastAgcSuccessLogMs) >= 60000U) {
+        Serial.printf("[AGC] SX1262 AGC reset; RX restarted (count=%lu)\n",
+                      (unsigned long)agcResetCount);
+        lastAgcSuccessLogMs = attemptedAt;
+    }
+#else
+    if (!AgcMaintenance::shouldAttempt(
+            agcMaintenanceSchedule, conditions, []() { return false; })) return;
 
     // Heltec V4.3 can clamp its apparent noise floor after strong
     // out-of-band interference. A brief RX restart mirrors the
@@ -1907,10 +1982,12 @@ void maybeResetAgc() {
     radio.standby();
     delay(2);
     startReceive();
-    lastAgcResetMs = now;
+    agcMaintenanceSchedule.recordAttempt(millis());
     noiseFloorSum = 0.0f;
     noiseFloorCount = 0;
-    LOG_R_INFO("agc.reset.interval fired after %u s", (unsigned)intervalSec);
+    LOG_R_INFO("agc.reset.interval fired after %u s",
+               (unsigned)conditions.intervalSec);
+#endif
 }
 
 // ─── Main loop ───────────────────────────────────────────────
@@ -1948,6 +2025,12 @@ void loop() {
         }
     }
 
+    // Consume Wi-Fi event invalidation before servicing stale TCP bytes.
+    if (BOARD.has_wifi) WifiManager::loop();
+#ifdef ARDUINO_ARCH_ESP32
+    const uint32_t invalidSTA = WifiManager::consumeSTAInvalidation();
+    if (invalidSTA) TCPServer::invalidateInterface(IPAddress(invalidSTA));
+#endif
     if (tcpStarted) TCPServer::loop();
 #if defined(OPENHOP_ETHERNET_W5100S)
     W5100sHttpServer::loop();
@@ -1960,11 +2043,11 @@ void loop() {
 
     sampleNoiseFloor();
     maybeResetAgc();
-    if (BOARD.has_wifi) WifiManager::loop();
     EthernetManager::loop();
     // Low-priority I2C telemetry runs only after radio IRQs and all host
     // transports have been drained for this iteration.
     StationG3Power::loop();
+    EnvironmentSensor::loop();
     BatteryMonitor::loop(BOARD.battery);
 
     // Lazy TCP + OTA start if STA or Ethernet came up after boot.
@@ -2075,9 +2158,11 @@ void loop() {
                     ip       = BOARD.has_wifi ? WifiManager::getIPString(): "---";
                 }
                 uint16_t batteryMv = BatteryMonitor::readMilliVolts(BOARD.battery);
+                const float boardTemperatureC = TBeam1WFan::temperatureC();
                 status.battery_mv = batteryMv;
                 oled.showStatus(status.rx_count, status.tx_count,
-                                ssid, ip, stateTag, fwVersion.c_str(), batteryMv);
+                                ssid, ip, stateTag, fwVersion.c_str(), batteryMv,
+                                boardTemperatureC);
             } else if (currentScreen == Screen::RADIO) {
                 oled.showRadioConfig(currentConfig.freq_hz,
                                      currentConfig.bandwidth_hz,
@@ -2093,9 +2178,13 @@ void loop() {
                 uint32_t usb_idle = (lastUsbCmdMs == 0)
                     ? UINT32_MAX
                     : (millis() - lastUsbCmdMs) / 1000;
+                const uint16_t batteryMv =
+                    BatteryMonitor::readMilliVolts(BOARD.battery);
+                const float boardTemperatureC = TBeam1WFan::temperatureC();
                 oled.showDiagnostics(uptime, ip.c_str(), usb_idle,
                                      status.rx_count, status.tx_count,
-                                     status.crc_errors, fwVersion.c_str());
+                                     status.crc_errors, batteryMv,
+                                     boardTemperatureC, fwVersion.c_str());
             }
         }
     }

@@ -21,6 +21,7 @@ openHop application and its access to USB or the modem's network.
 | **MeshSmith Photon-1W ESP32-C6**                                                                            | XIAO ESP32-C6                | SX1262/E22P class 1 W      | Wi-Fi    |
 | **LilyGO T-LoRa T3-S3** v1.2/v1.3                                                                           | ESP32-S3                     | bare SX1262 + OLED         | Wi-Fi    |
 | **LilyGO T-Beam-S3 Supreme**                                                                                | ESP32-S3                     | bare SX1262 + L76K GNSS + 1.3" OLED, AXP2101 PMU | Wi-Fi |
+| **LilyGO T-Beam 1W**                                                                                        | ESP32-S3                     | SX1262 + external 1 W PA + L76K GNSS + SH1106/NTC fan | Wi-Fi |
 | **RAK3112 WisMesh**                                                                                         | ESP32-S3 (module)            | SX1262 in-module           | Wi-Fi    |
 | **B&Q Consulting Station G2**                                                                                | ESP32-S3                     | SX1262 + 35 dBm PA/LNA     | Wi-Fi    |
 | **BQ Voyage Station G3**                                                                                     | ESP32-S3 daughterboard       | SX1262 + selectable PA/LNA | Wi-Fi    |
@@ -127,9 +128,32 @@ Per-board highlights (full pin numbers in the headers, mDNS prefix is
 - **MeshSmith Photon-1W ESP32-C6** — Seeed XIAO ESP32-C6 + Photon 1 W SX1262/E22P class front end, Photon XIAO pinout (D1 DIO1, D2 reset, D3 busy, D4 NSS, D5 RXEN, D8/D9/D10 SPI), Wi-Fi/TCP + AP provisioning + web UI/stats/OTA.
 - **LilyGO T3-S3** — bare SX1262 + onboard SSD1306, native USB-CDC.
 - **LilyGO T-Beam-S3 Supreme** — bare SX1262 + onboard L76K GNSS + 1.3" SH1106 OLED, native USB-CDC. LoRa/GNSS/OLED power rails are gated by an onboard AXP2101 PMU chip (`pmu_manager.cpp` / `BoardConfig.pmu`) on its own I2C bus rather than plain GPIOs — the only board in this fleet wired that way.
+- **LilyGO T-Beam 1W** — ESP32-S3 + SX1262 external PA, L76K GNSS, SH1106 OLED, board NTC on GPIO14, and fan on GPIO41. The SX1262 is capped at 22 dBm chip drive; the external PA produces the antenna-side 1 W output. The fan starts fail-safe ON, turns on at or above 45 C, turns off below 40 C, and holds its previous state between those thresholds. USB-C input (3.9-6 V) is marginal for sustained high-power TX; use a 7.4 V pack capable of 2 A or more discharge. Battery telemetry is calibrated voltage only; no percentage is inferred.
 - **RAK3112 WisMesh** — SX1262 inside the RAK3112 module, no OLED.
 - **Station G2** — SX1262 + high-power PA/LNA, SH1106 display, max SX1262 drive capped at 19 dBm.
-- **Station G3** — BQESP32V1M N16R8 (16 MB flash + 8 MB octal PSRAM) + BQ35LORA900V1M, Station G2-compatible radio/display pins, persistent Station G3-only web/API selection of lower or higher PA PL1 mode on GPIO9 (lower by default), persistent RX-only external LNA enable/bypass on GPIO10, onboard INA219 input-voltage/current/power telemetry with since-boot minimum voltage and maximum current, optional GROVE GPS on IO7/IO15, and max SX1262 drive capped at 19 dBm. The LNA is always bypassed before TX. Remove the PA PL1/LNA P jumpers for software GPIO control; PA PL2 remains a physical jumper.
+- **Station G3** — BQESP32V1M N16R8 (16 MB flash + 8 MB octal PSRAM) + BQ35LORA900V1M, Station G2-compatible radio/display pins, persistent Station G3-only web/API selection of lower or higher PA PL1 mode on GPIO9 (lower by default), persistent RX-only external LNA enable/bypass on GPIO10, onboard INA219 input-voltage/current/power telemetry with since-boot minimum voltage and maximum current, optional GROVE GPS on IO7/IO15, and max SX1262 drive capped at 19 dBm. The LNA is always bypassed before TX and during periodic AGC maintenance. Remove the PA PL1/LNA P jumpers for software GPIO control; PA PL2 remains a physical jumper.
+
+Station G2 and G3 can experience a reported SX1262 receiver failure mode in
+which the apparent noise floor rises by roughly 20–30 dB and packet reception
+stops until the radio is reinitialized. The optional workaround calls
+RadioLib's `resetAGC()` during idle RX, then resumes continuous receive. Resets
+are deferred during TX, standby, detected packet reception, and for 10 seconds
+after a Station transmits so maintenance cannot interrupt the usual repeater
+forwarding/response window. Each reset still creates a brief listening gap, so
+periodic maintenance is disabled by default. Set `agc_reset_interval_sec` to
+`4` in `/api/config` or use the Station AGC Recovery control in the modem
+WebUI to enable the recommended four-second interval; changes apply
+immediately without rebooting the modem, and `0` disables the workaround.
+
+Station G2 and G3 support an optional Seeed Grove BME280 on the **Grove I2C**
+connector (SDA GPIO5, SCL GPIO6, shared with the OLED and, on G3, the INA219).
+It provides cached temperature, relative humidity, and pressure in
+[`/api/stats` → `environment`](API.md#get-apistats). Both `0x76` (default) and
+`0x77` are supported. The separate Grove GPS/UART connector is not suitable.
+No sensor configuration is required; an absent sensor leaves the modem
+operational and reports unavailable readings. Run the Station G2/G3 host
+regressions with `python3 firmware/tools/test_environment_sensor.py` (requires
+PlatformIO, gcc, and g++; the runner fetches the pinned Bosch library if needed).
 - **WaveShare ESP32-P4-Nano** — RISC-V P4 + C6 + IP101GRI Ethernet PHY + off-board E22, runtime ETH-or-Wi-Fi (never both, see below).
 - **Heltec T114** — nRF52840 + bare SX1262 + ST7789 TFT 135×240, **no Wi-Fi/TCP/network OTA**; USB-CDC + UART transport only, OTA via Adafruit nRF52 DFU (USB) or in-app `CMD_OTA_*` over the protocol transport.
 - **RAK4631 USB** — RAK4631 nRF52840 core on a compatible WisBlock base, using the same proven internal SX1262 pins, DIO2 RF-switch policy, SPIM2 radio bus, and 22 dBm ceiling as the Ethernet build. The `rak4631_usb` environment omits the RAK13800 dependency and all W5100S/TCP/network initialization; native USB-CDC is the only modem transport.
@@ -213,6 +237,60 @@ inside the LAN range from the modem's point of view.
 T114 has no IP stack at all — the only paths in are USB-CDC and the
 secondary UART, and updates are either Adafruit DFU over USB or the
 in-app `OTA_*` commands carried over the same transport.
+
+### Wi-Fi outage recovery
+
+Saved Wi-Fi connects asynchronously: USB/radio/main-loop work does not wait for
+association or DHCP. Each attempt has a 30-second deadline, followed by retry
+backoff of 5, 10, 20, 40 and then at most 60 seconds. Every third failed attempt
+recreates **only the station interface**, with a 250 ms cooperative settling
+interval. Arduino's reason-dependent automatic reconnect is disabled; its initial
+one-time retry can still occur within the firmware deadline. Authentication
+failure and lost-IP events therefore cannot leave the manager passively waiting
+forever. Recovery neither erases credentials nor primarily relies on MCU reboot.
+Driver API calls are still synchronous; this is a cooperative recovery policy,
+not a hard real-time guarantee for the underlying Wi-Fi driver.
+
+If the initial connection fails, the open `openHop-Modem-XXXX` setup AP stays
+available while the saved network is retried in AP+STA mode. The setup HTTP server
+checks each accepted socket's local address against the current nonzero AP IPv4
+address before reading configuration, scanning, or saving changes, and requires
+AP mode to remain enabled. STA, IPv6, and missing/stale local addresses are
+rejected, independently of listener binding (the framework may wildcard-bind).
+On STA success it is stopped/deleted and the AP is removed before normal
+management HTTP/OTA starts. Failed AP startup
+or shutdown is retried at five-second intervals. An empty configuration stays in
+intentional setup mode without attempting STA. After the first successful STA
+connection, later outages retry STA without opening a new unauthenticated portal.
+
+Disconnect/stop/lost-IP events and address changes invalidate the old Wi-Fi TCP
+session, including parser and authentication state, even when an outage completes
+between loop polls. The next client must authenticate again when a token is set.
+Sessions bound to a different interface address (Ethernet) and the wildcard TCP
+and management listeners are not routinely restarted; an unchanged DHCP renewal
+alone does not drop the client. The displayed IP follows the current usable STA
+address (or the setup AP address), rather than retaining an obsolete lease.
+Static/DHCP selection, hostname, antenna selection and the saved/default-on
+Wi-Fi power-save policy are unchanged.
+
+Host regression checks (C++17 compiler required):
+
+```bash
+python3 firmware/tools/test_wifi_recovery.py
+```
+
+These compile the production Wi-Fi manager, TCP server and frame parser with
+recording hardware stubs, plus the complete production portal handlers and
+extracted lifecycle functions. Portal admission tests deliberately use a wildcard
+listener and exercise AP, STA, IPv6, missing/stale address, and disabled AP cases
+on every route, checking rejected requests have no scan/configuration/RF effects.
+They cover deadlines/backoff and timer wrap, failures and station restarts,
+short event outages, address changes, AP setup/retry/teardown, and per-interface
+TCP authentication/parser cleanup. They do **not** simulate the ESP32 driver,
+prove RF/DHCP behavior or establish that a particular router/board's outage is
+fixed. Hardware validation must still exercise multi-minute AP outages, wrong
+credentials, DHCP expiry/address changes, HTTP/OTA and TCP recovery on the exact
+board and firmware build.
 
 ### Web UI / OTA / JSON API authentication (v0.8+)
 

@@ -1,5 +1,7 @@
 #include "w5100s_http_server.h"
 
+#include <cmath>
+
 #include <cstring>
 
 namespace W5100sHttpServer {
@@ -137,6 +139,12 @@ WebUiShared::Model buildModel() {
     model.connectedClientIp = TCPServer::getClientIP().c_str();
     model.uptimeSec = runtime.status.uptime_sec;
     model.dieTemperatureC = runtime.status.temp_c;
+    model.boardTemperatureAvailable = runtime.hasBoardTemperature &&
+                                      std::isfinite(runtime.boardTemperatureC);
+    model.boardTemperatureC = runtime.boardTemperatureC;
+    model.capabilities.boardTemperature = runtime.hasBoardTemperature;
+    model.boardFanEnabled = runtime.boardFanEnabled;
+    model.capabilities.boardFan = runtime.hasBoardFan;
     model.capabilities.ethernet = true;
     model.capabilities.battery = BOARD.battery.pin >= 0;
     model.capabilities.gps = GPSManager::hasGpsPins();

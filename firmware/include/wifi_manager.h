@@ -41,12 +41,16 @@ void checkResetButton();
 // the firmware can still read the saved tcpPort/tcpToken.
 void loadConfigOnly();
 
-// Load NVS config, try STA connect; on failure or empty config, start AP mode with
-// on-device configuration web UI. Blocks up to ~30s during STA attempt.
+// Load config and start a nonblocking STA attempt; loop owns recovery deadlines.
+// Empty config starts setup AP; boot STA timeout adds AP while retrying STA.
 void begin();
 
 // Service background WiFi state transitions and config portal. Call every loop().
 void loop();
+
+// Main-loop-only: consume the old STA IPv4 address whose sessions are stale.
+// Sticky across short event outages, zero when none. Call once after loop().
+uint32_t consumeSTAInvalidation();
 
 Mode        getMode();
 const char* getSSID();        // current STA SSID, or AP SSID in AP_CONFIG

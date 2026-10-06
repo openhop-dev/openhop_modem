@@ -194,6 +194,13 @@ uint16_t readMilliVolts(const BatterySenseConfig& config) {
 
     if (usesRawAdc(config)) return cachedAdcMillivolts;
 
+#if defined(ARDUINO_ARCH_ESP32)
+    // Validate the calibrated path before claiming any GPIO. Raw ADC and fuel
+    // gauges above do not use this multiplier. Reject NaN and infinity too.
+    if (!(config.multiplier > 0.0f) ||
+        config.multiplier > std::numeric_limits<float>::max()) {
+        return MILLIVOLTS_UNAVAILABLE;
+    }
     if (config.enable_pin >= 0) {
         pinMode(config.enable_pin, OUTPUT);
         digitalWrite(config.enable_pin,
@@ -201,13 +208,12 @@ uint16_t readMilliVolts(const BatterySenseConfig& config) {
         delay(5);
     }
 
-#if defined(ARDUINO_ARCH_ESP32)
     // Preserve the existing calibrated ESP analogReadMilliVolts path.
-    if (config.multiplier <= 0.0f) {
-        return MILLIVOLTS_UNAVAILABLE;
+    if (config.adc_attenuation_db == 11) {
+        analogSetPinAttenuation(config.pin, ADC_11db);
     }
     uint32_t totalMillivolts = 0;
-    constexpr uint8_t sampleCount = 8;
+    const uint8_t sampleCount = config.sample_count == 0 ? 8 : config.sample_count;
     for (uint8_t i = 0; i < sampleCount; ++i) {
         totalMillivolts += analogReadMilliVolts(config.pin);
         delay(1);
