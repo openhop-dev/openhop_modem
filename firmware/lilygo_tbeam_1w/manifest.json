@@ -1,6 +1,6 @@
 {
   "name": "LilyGO T-Beam 1W openHop Modem",
-  "version": "v1.3.1-lilygo_tbeam_1w",
+  "version": "v1.4.0-lilygo_tbeam_1w",
   "new_install_prompt_erase": true,
   "builds": [
     {
