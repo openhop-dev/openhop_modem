@@ -330,11 +330,12 @@ RAK JSON responses expose `tcp_token_set`, never the token.
 Pre-v0.8 firmware used `heltec:<tcp_token>` on `/update` only — that
 scheme is gone, the same credential pair now covers every HTTP path.
 
-## Wire protocol v0.7
+## Wire protocol v0.8
 
 *(Full command list in `firmware/include/protocol.h`; the section below is
-summarised. Reported firmware version is `v0.8.0-<BoardConfig.fw_suffix>`,
-e.g. `v0.8.0-heltec_t114`.)*
+summarised. Reported firmware version is `<FW_VERSION_BASE>-<BoardConfig.fw_suffix>`,
+e.g. `v1.3.1-heltec-v43`. Hosts should probe `GET_RF_CAPS` for the v0.8 RF
+controls rather than compare versions.)*
 
 ### Frame format
 
@@ -353,6 +354,13 @@ CRC-16/CCITT (poly 0x1021, init 0xFFFF) over CMD+LEN+PAYLOAD.
 | 0x01 | TX_REQUEST        | Raw LoRa data (1–255 B)               |
 | 0x10 | SET_CONFIG        | `RadioConfig` (14 B)                  |
 | 0x11 | GET_CONFIG        | —                                     |
+| 0x14 | GET_RF_CAPS       | — (v0.8)                              |
+| 0x16 | SET_AGC_INTERVAL  | uint16 LE seconds, 0 disables (v0.8)  |
+| 0x17 | GET_AGC_INTERVAL  | — (v0.8)                              |
+| 0x19 | SET_FEM_STATE     | apply mask + value mask (v0.8)        |
+| 0x1A | GET_FEM_STATE     | — (v0.8)                              |
+| 0x1C | SET_RX_BOOST      | 1 B: 0 = power-saving, 1 = boosted    |
+| 0x1D | GET_RX_BOOST      | — (v0.8)                              |
 | 0x20 | STATUS_REQ        | —                                     |
 | 0x22 | NOISE_REQ         | —                                     |
 | 0x30 | CAD_REQUEST       | — (Listen Before Talk)                |
@@ -376,6 +384,8 @@ CRC-16/CCITT (poly 0x1021, init 0xFFFF) over CMD+LEN+PAYLOAD.
 | 0x98 | OTA_ABORT         | — (v0.7)                              |
 | 0xFF | PING              | —                                     |
 
+v0.8 frame commands probe and set the AGC reset interval on every radio board, the FEM RX LNA on Heltec V4.3 and Station G3, the FEM TX PA on Station G3, and SX1262 boosted RX gain on every radio board; other boards report those bits clear, reject the matching set with `ERR_UNSUPPORTED` (`0x0F`), and these frame writes are not stored in NVS.
+
 The RAK4631 staged writer is not connected to `CMD_OTA_*` or HTTP `/update`.
 Those update commands and routes are disabled and unsupported on that target;
 supporting safe staged activation and recovery would require a custom openHop
@@ -390,6 +400,10 @@ Modem bootloader, which is not currently planned. Use the generated
 | 0x03 | TX_FAIL           | —                                     |
 | 0x04 | RX_PACKET         | RSSI(2) + SNR(2) + sigRSSI(2) + data  |
 | 0x12 | CONFIG_RESP       | `RadioConfig` (14 B)                  |
+| 0x15 | RF_CAPS_RESP      | uint32 LE capability bits (v0.8)      |
+| 0x18 | AGC_INTERVAL_RESP | uint16 LE effective seconds (v0.8)    |
+| 0x1B | FEM_STATE_RESP    | capability mask + value mask (v0.8)   |
+| 0x1E | RX_BOOST_RESP     | 1 B: 0 = power-saving, 1 = boosted    |
 | 0x21 | STATUS_RESP       | `StatusResp` (24 B)                   |
 | 0x23 | NOISE_RESP        | int16 LE (dBm × 10)                   |
 | 0x32 | CAD_RESP          | 1 B (0=clear, 1=busy)                 |
@@ -408,7 +422,7 @@ Modem bootloader, which is not currently planned. Use the generated
 | 0x93 | OTA_CHUNK_RESP    | — (v0.7)                              |
 | 0x95 | OTA_VERIFY_RESP   | — (v0.7)                              |
 | 0x97 | OTA_APPLY_RESP    | — (v0.7)                              |
-| 0xFE | ERROR             | error code (1 B; `0x0B` = `ERR_NO_RADIO` for boards without LoRa hardware) |
+| 0xFE | ERROR             | error code (1 B; `0x0B` = `ERR_NO_RADIO`, `0x0F` = `ERR_UNSUPPORTED`) |
 | 0xFF | PONG              | —                                     |
 
 ## Default radio parameters

@@ -9,6 +9,11 @@
 //        / CHUNK / VERIFY / APPLY / ABORT). Wire format and existing
 //        CMD_* values unchanged — pre-v0.7 hosts work against v0.7
 //        firmware and vice versa, they just skip the new commands.
+// v0.8 — RF front-end commands: capability probe, AGC reset interval,
+//        FEM RX LNA / TX PA state, and SX1262 boosted RX gain. Existing
+//        CMD_* values are unchanged. Frame writes are not stored in NVS;
+//        the host re-applies them after reconnect. The web UI still
+//        persists the V4.3 and Station G3 settings it already owned.
 // =============================================================
 #pragma once
 
@@ -21,6 +26,13 @@
 #define CMD_TX_REQUEST      0x01    // Send LoRa packet (payload = raw bytes)
 #define CMD_SET_CONFIG      0x10    // Set radio parameters
 #define CMD_GET_CONFIG      0x11    // Request current config
+#define CMD_GET_RF_CAPS     0x14    // v0.8 — RF capability bitmask
+#define CMD_SET_AGC_INTERVAL 0x16   // v0.8 — uint16 LE seconds; 0 disables
+#define CMD_GET_AGC_INTERVAL 0x17   // v0.8 — current AGC reset interval
+#define CMD_SET_FEM_STATE   0x19    // v0.8 — apply mask + value mask
+#define CMD_GET_FEM_STATE   0x1A    // v0.8 — FEM capability + value masks
+#define CMD_SET_RX_BOOST    0x1C    // v0.8 — 1B: 0 = power-saving, 1 = boosted
+#define CMD_GET_RX_BOOST    0x1D    // v0.8 — current boosted RX gain state
 #define CMD_STATUS_REQ      0x20    // Request status
 #define CMD_NOISE_REQ       0x22    // Request noise floor value
 #define CMD_CAD_REQUEST     0x30    // Perform CAD (Listen Before Talk)
@@ -51,6 +63,10 @@
 #define CMD_TX_FAIL         0x03    // TX failed
 #define CMD_RX_PACKET       0x04    // Received LoRa packet
 #define CMD_CONFIG_RESP     0x12    // Config response
+#define CMD_RF_CAPS_RESP    0x15    // v0.8 — uint32 LE capability bits
+#define CMD_AGC_INTERVAL_RESP 0x18  // v0.8 — uint16 LE effective seconds
+#define CMD_FEM_STATE_RESP  0x1B    // v0.8 — capability mask + value mask
+#define CMD_RX_BOOST_RESP   0x1E    // v0.8 — 1B: 0 = power-saving, 1 = boosted
 #define CMD_STATUS_RESP     0x21    // Status response
 #define CMD_NOISE_RESP      0x23    // Noise floor value (int16 LE, dBm × 10)
 #define CMD_CAD_RESP        0x32    // CAD result (1 byte: 0=clear, 1=busy)
@@ -79,12 +95,12 @@
 // ─── Error codes ─────────────────────────────────────────────
 #define ERR_CRC_MISMATCH    0x01
 #define ERR_INVALID_CMD     0x02
-#define ERR_RADIO_BUSY      0x03
+#define ERR_RADIO_BUSY      0x03    // radio busy, or FEM request queue full
 #define ERR_TX_TIMEOUT      0x04
 #define ERR_PAYLOAD_TOO_BIG 0x05
 #define ERR_INVALID_CONFIG  0x06
 #define ERR_CAD_FAILED      0x07
-#define ERR_RADIO_INIT      0x08
+#define ERR_RADIO_INIT      0x08    // SX1262 init failed, or SET_RX_BOOST was rejected
 #define ERR_UNAUTHORIZED    0x09    // TCP client did not authenticate
 #define ERR_INVALID_WIFI    0x0A    // SET_WIFI payload malformed
 #define ERR_NO_RADIO        0x0B    // board has no LoRa radio attached
@@ -92,6 +108,18 @@
 #define ERR_OTA_UNSUPPORTED 0x0C    // OTA flash writer not implemented for this board
 #define ERR_OTA_NO_BUFFER   0x0D    // image too big or no PSRAM/flash space
 #define ERR_CHANNEL_BUSY    0x0E    // auto-CAD detected busy after all retries
+#define ERR_UNSUPPORTED     0x0F    // v0.8 — command known, control absent on this board
+
+// RF_CAPS_RESP feature bits. Hosts probe these rather than the firmware version.
+#define RF_CAP_AGC              0x00000001u
+#define RF_CAP_FEM_RX_LNA       0x00000002u
+#define RF_CAP_FEM_TX_PA        0x00000004u
+#define RF_CAP_RX_BOOSTED_GAIN  0x00000008u
+
+// FEM_STATE apply/value bits. Separate from RF_CAP_* so a 1-byte mask
+// can change LNA and PA independently.
+#define FEM_STATE_RX_LNA        0x01
+#define FEM_STATE_TX_PA         0x02
 
 // Max payload sizes
 #define MAX_LORA_PAYLOAD    255
@@ -137,6 +165,44 @@
 //  [host_len(1B) | hostname(H)]   // optional; blank/omitted = MAC-derived default
 //
 //  Modem ACKs with WIFI_STATUS (new pending config), then reboots.
+//
+// ─── RF capability bits (RF_CAPS_RESP, uint32 LE) ───────────
+//
+//  bit 0  RF_CAP_AGC             AGC reset interval
+//  bit 1  RF_CAP_FEM_RX_LNA      external FEM RX LNA
+//  bit 2  RF_CAP_FEM_TX_PA       external FEM TX PA high-power
+//  bit 3  RF_CAP_RX_BOOSTED_GAIN SX1262 boosted RX gain
+//
+// ─── AGC interval (SET_AGC_INTERVAL / AGC_INTERVAL_RESP) ────
+//
+//  uint16 LE seconds. 0 disables. 1–3600 are one-second steps.
+//  Above 3600 is ERR_INVALID_CONFIG. Not persisted.
+//
+// ─── FEM state masks ────────────────────────────────────────
+//
+//  bit 0  FEM_STATE_RX_LNA   1 = RX LNA enabled
+//  bit 1  FEM_STATE_TX_PA    1 = PA high-power enabled
+//
+//  SET_FEM_STATE: apply(1B) | value(1B). Bits outside the board
+//  capability mask return ERR_UNSUPPORTED and change nothing.
+//  A set that arrives during an in-progress reception is held and
+//  applied once the reception ends. GET/SET_FEM_STATE and
+//  GET/SET_RX_BOOST share one queue: their replies, errors
+//  included, go out in the order the requests arrived. Up to 4
+//  of these requests can wait; beyond that the modem replies
+//  ERR_RADIO_BUSY immediately, ahead of the waiting replies.
+//  FEM_STATE_RESP: capability(1B) | value(1B). Uncontrollable
+//  value bits are 0. Not persisted.
+//
+// ─── RX boosted gain (SET_RX_BOOST / RX_BOOST_RESP) ─────────
+//
+//  1 byte: 0 = power-saving, 1 = boosted. Any other value is
+//  ERR_INVALID_CONFIG. A set during an in-progress reception is held
+//  and applied once the reception ends, in order with FEM requests
+//  (see above). If the SX1262 rejects the write, the
+//  modem restores RX when it left it and replies ERR_RADIO_INIT;
+//  the previous mode stays in effect. Success replies with the
+//  applied state. Not persisted. An AGC reset re-applies it.
 //
 // ─── WIFI_STATUS payload (variable) ─────────────────────────
 //
