@@ -220,6 +220,24 @@ std::string renderRootPage(const Model& m) {
                 "Resets are deferred during active reception and for 10 seconds after TX.</p>"
                 "</div></details>";
     }
+    if (m.capabilities.stationG3RfControls && m.capabilities.writableManagement) {
+        body += "<details open><summary>Station G3 RF Front-End</summary><div class='inside'>"
+                "<p>Configure the Station G3 PA level on GPIO9 and receive-only external LNA on GPIO10.</p>"
+                "<form method='POST' action='/rf-pa'>"
+                "<div class='checkline'><input type='checkbox' id='g3_pa_high' name='g3_pa_high' value='1'";
+        if (m.config.stationG3PaHighPowerEnabled) body += " checked";
+        body += "><label for='g3_pa_high'>Enable higher PA mode</label></div>"
+                "<div class='checkline'><input type='checkbox' id='g3_lna_on' name='g3_lna_on' value='1'";
+        if (m.config.stationG3LnaEnabled) body += " checked";
+        body += "><label for='g3_lna_on'>Enable Station G3 external RX LNA</label></div>"
+                "<button type='submit'>Save RF front-end settings</button>"
+                "</form><p class='m'>The external LNA is receive-only and is always bypassed before transmit. "
+                "Disable it when local RF noise reduces SNR.</p>"
+                "<p class='m'><strong>RF safety:</strong> remove the PA PL1 and LNA P jumpers for GPIO control. "
+                "PA PL2 remains a physical jumper. Higher PA mode can produce substantially more antenna power; "
+                "use a suitable antenna/load and comply with regional limits. The lower PA mode is the default.</p>"
+                "</div></details>";
+    }
     if (m.capabilities.heltecV43Controls) {
         body += "<details open><summary>Heltec V4.3 RF Front-End</summary><div class='inside'><p>Toggle the KCT8103L external RX LNA for receive only. The firmware always bypasses the FEM LNA during transmit so the TX path remains available.</p><form method='POST' action='/rf-lna'><div class='checkline'><input type='checkbox' id='v43_lna_on' name='v43_lna_on' value='1'" + std::string(m.config.heltecV43ExternalLnaEnabled ? " checked" : "") + "><label for='v43_lna_on'>Enable external FEM RX LNA</label></div><label>agc.reset.interval (seconds, 0 disables)<input name='agc_reset_interval_sec' type='number' min='0' max='3600' step='1' value='" + number(m.config.agcResetIntervalSec) + "'></label><p class='m'>Periodically restarts RX gain control during long idle periods to prevent strong out-of-band interference from clamping the noise floor.</p><button type='submit'>Save RF front-end settings</button></form><p class='m'>Settings apply immediately and persist across reboots. Unchecked LNA = GPIO5/CTX HIGH, external LNA bypassed.</p></div></details>";
     }
