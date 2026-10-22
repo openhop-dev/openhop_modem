@@ -99,6 +99,28 @@ void testRxBoostSetHoldsFemRepliesInOrder() {
     assert(answered[1].target == Target::Fem && answered[1].kind == Kind::Get);
 }
 
+void testDiscardPreservesEveryWrappedSubset() {
+    for (uint8_t head = 0; head < 4; ++head) {
+        for (uint8_t mask = 0; mask < 16; ++mask) {
+            Queue queue;
+            for (uint8_t i = 0; i < head; ++i) assert(queue.push(get(99)));
+            drain(queue, false); // exercise each physical ring-head position
+            for (uint8_t i = 0; i < 4; ++i) assert(queue.push(set(1, 1, i)));
+            queue.discardIf([&](const Request& r) { return (mask & (1u << r.src)) != 0; });
+            std::vector<uint8_t> expected;
+            for (uint8_t i = 0; i < 4; ++i)
+                if ((mask & (1u << i)) == 0) expected.push_back(i);
+            assert(queue.size() == expected.size());
+            // Fill reclaimed slots before draining, including the all-discarded case.
+            for (uint8_t i = expected.size(); i < 4; ++i) assert(queue.push(get(20 + i)));
+            const auto answered = drain(queue, false);
+            assert(answered.size() == 4);
+            for (size_t i = 0; i < expected.size(); ++i) assert(answered[i].src == expected[i]);
+            for (size_t i = expected.size(); i < 4; ++i) assert(answered[i].src == 20 + i);
+        }
+    }
+}
+
 }  // namespace
 
 int main() {
@@ -107,6 +129,7 @@ int main() {
     testSetHoldsLaterRequestsInOrder();
     testFullQueueRejectsAndWraps();
     testRxBoostSetHoldsFemRepliesInOrder();
+    testDiscardPreservesEveryWrappedSubset();
     std::cout << "rf request queue tests passed\n";
     return 0;
 }

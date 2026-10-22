@@ -40,8 +40,14 @@ public:
 
     template <typename MustWaitFn, typename AnswerFn>
     void drain(MustWaitFn mustWait, AnswerFn answer) {
+        drain(mustWait, answer, [](const Request<Source>&) { return true; });
+    }
+
+    template <typename MustWaitFn, typename AnswerFn, typename CanAnswerFn>
+    void drain(MustWaitFn mustWait, AnswerFn answer, CanAnswerFn canAnswer) {
         while (count_ > 0) {
             const Request<Source> request = items_[head_];
+            if (!canAnswer(request)) return;
             if (request.kind == Kind::Set && mustWait()) return;
             head_ = (uint8_t)((head_ + 1) % Depth);
             --count_;
@@ -50,6 +56,21 @@ public:
     }
 
     uint8_t size() const { return count_; }
+
+    // Reclaim canceled requests even behind a live Set that is still waiting.
+    // Compact in place without changing the FIFO order of surviving requests.
+    template <typename DiscardFn>
+    void discardIf(DiscardFn discard) {
+        uint8_t kept = 0;
+        for (uint8_t i = 0; i < count_; ++i) {
+            const Request<Source> request = items_[(head_ + i) % Depth];
+            if (!discard(request)) {
+                items_[(head_ + kept) % Depth] = request;
+                ++kept;
+            }
+        }
+        count_ = kept;
+    }
 
 private:
     Request<Source> items_[Depth] = {};

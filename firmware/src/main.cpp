@@ -229,6 +229,9 @@ namespace TCPServer {
     inline void loop() {}
     inline void end()  {}
     inline bool isClientReady() { return false; }
+    inline uint32_t connectionGeneration() { return 0; }
+    inline bool isConnectionCurrent(uint32_t) { return false; }
+    inline bool canQueueResponse() { return false; }
     inline void write(const uint8_t*, size_t) {}
     inline String getClientIP() { return String(); }
 }
@@ -1053,37 +1056,49 @@ void handleLoRaRx() {
 // instead of being rejected. TX needs no check here: TX_REQUEST holds the
 // loop until TX_DONE, so a request sent during TX is read after it.
 static constexpr uint8_t RF_REQUEST_QUEUE_DEPTH = 4;
-static RfRequests::Queue<TransportSource, RF_REQUEST_QUEUE_DEPTH> rfRequests;
+struct RfRequestSource {
+    TransportSource transport;
+    uint32_t tcpGeneration;
+};
+static RfRequests::Queue<RfRequestSource, RF_REQUEST_QUEUE_DEPTH> rfRequests;
 
-static void answerFemRequest(const RfRequests::Request<TransportSource>& req) {
+static bool isRfRequestCurrent(const RfRequestSource& src) {
+    return src.transport != TransportSource::TCP ||
+           TCPServer::isConnectionCurrent(src.tcpGeneration);
+}
+
+static void answerFemRequest(const RfRequests::Request<RfRequestSource>& req) {
     RFFrontEnd::FemState fem;
     if (req.kind == RfRequests::Kind::Set) {
         if (!RFFrontEnd::setFemState(req.apply, req.value, false, fem)) {
-            sendError(ERR_UNSUPPORTED, req.src);
+            sendError(ERR_UNSUPPORTED, req.src.transport);
             return;
         }
     } else {
         fem = RFFrontEnd::getFemState();
     }
     uint8_t buf[2] = { fem.capability, fem.value };
-    sendFrame(CMD_FEM_STATE_RESP, buf, sizeof(buf), req.src);
+    sendFrame(CMD_FEM_STATE_RESP, buf, sizeof(buf), req.src.transport);
 }
 
-static void answerRxBoostRequest(const RfRequests::Request<TransportSource>& req) {
+static void answerRxBoostRequest(const RfRequests::Request<RfRequestSource>& req) {
     const RxBoostControl::Reply reply = req.kind == RfRequests::Kind::Set
         ? RxBoostControl::replyFor(
               rxBoost, setRxBoostedGain(req.value != 0, !radioStandby).outcome)
         : RxBoostControl::replyForGet(rxBoost);
     if (reply.error != 0) {
-        sendError(reply.error, req.src);
+        sendError(reply.error, req.src.transport);
         return;
     }
-    sendFrame(CMD_RX_BOOST_RESP, &reply.enabled, 1, req.src);
+    sendFrame(CMD_RX_BOOST_RESP, &reply.enabled, 1, req.src.transport);
 }
 
-static void answerRfRequest(const RfRequests::Request<TransportSource>& req) {
+static void answerRfRequest(const RfRequests::Request<RfRequestSource>& req) {
+    // Cancel before RF mutation as well as before sending any reply. The TCP
+    // slot may already belong to a different, possibly unauthenticated client.
+    if (!isRfRequestCurrent(req.src)) return;
     if (req.kind == RfRequests::Kind::Error) {
-        sendError(req.value, req.src);
+        sendError(req.value, req.src.transport);
     } else if (req.target == RfRequests::Target::Fem) {
         answerFemRequest(req);
     } else {
@@ -1091,16 +1106,31 @@ static void answerRfRequest(const RfRequests::Request<TransportSource>& req) {
     }
 }
 
+static void discardStaleRfRequests() {
+    rfRequests.discardIf([](const RfRequests::Request<RfRequestSource>& req) {
+        return !isRfRequestCurrent(req.src);
+    });
+}
+
 static void processRfRequests() {
+    discardStaleRfRequests();
     if (rfRequests.size() == 0) return;
     rfRequests.drain(
         []() { return !radioStandby && isReceivingPacket(); },
-        answerRfRequest);
+        answerRfRequest,
+        [](const RfRequests::Request<RfRequestSource>& req) {
+            return req.src.transport != TransportSource::TCP ||
+                   TCPServer::canQueueResponse();
+        });
 }
 
 static void submitRfRequest(RfRequests::Kind kind, RfRequests::Target target,
                             uint8_t apply, uint8_t value, TransportSource src) {
-    if (!rfRequests.push({ kind, target, apply, value, src })) {
+    const RfRequestSource origin{src, src == TransportSource::TCP
+        ? TCPServer::connectionGeneration() : 0};
+    if (!isRfRequestCurrent(origin)) return;
+    discardStaleRfRequests();
+    if (!rfRequests.push({ kind, target, apply, value, origin })) {
         sendError(ERR_RADIO_BUSY, src);
         return;
     }
@@ -2188,6 +2218,14 @@ void loop() {
         handleLoRaRx();
     }
 
+    // Invalidate stale TCP ownership before any USB/UART callback can drain
+    // deferred RF work. Socket.connected() alone can survive a STA outage.
+    if (BOARD.has_wifi) WifiManager::loop();
+#ifdef ARDUINO_ARCH_ESP32
+    const uint32_t invalidSTA = WifiManager::consumeSTAInvalidation();
+    if (invalidSTA) TCPServer::invalidateInterface(IPAddress(invalidSTA));
+#endif
+
     while (Serial.available()) {
         uint8_t b = (uint8_t)Serial.read();
         frameparser_feed(serialParser, b, TransportSource::USB,
@@ -2202,12 +2240,6 @@ void loop() {
         }
     }
 
-    // Consume Wi-Fi event invalidation before servicing stale TCP bytes.
-    if (BOARD.has_wifi) WifiManager::loop();
-#ifdef ARDUINO_ARCH_ESP32
-    const uint32_t invalidSTA = WifiManager::consumeSTAInvalidation();
-    if (invalidSTA) TCPServer::invalidateInterface(IPAddress(invalidSTA));
-#endif
     if (tcpStarted) TCPServer::loop();
 #if defined(OPENHOP_ETHERNET_W5100S)
     W5100sHttpServer::loop();

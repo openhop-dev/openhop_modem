@@ -337,6 +337,23 @@ summarised. Reported firmware version is `<FW_VERSION_BASE>-<BoardConfig.fw_suff
 e.g. `v1.3.1-heltec-v43`. Hosts should probe `GET_RF_CAPS` for the v0.8 RF
 controls rather than compare versions.)*
 
+### Deferred RF controls
+
+FEM and RX-boost GET/SET requests share a four-entry queue. Setters wait for
+reception to finish; queued replies and validation errors retain arrival order.
+The existing full-queue exception remains: `ERR_RADIO_BUSY` is returned
+immediately when all four slots are occupied.
+Queued TCP requests belong to the connection that submitted them. Disconnect,
+interface invalidation, or server restart cancels pending work from that
+connection without applying it or forwarding its reply to a replacement client.
+Canceled entries are reclaimed even while another request is waiting for RX.
+USB/UART requests are unaffected. Reconnecting hosts must submit their desired
+runtime settings again; no wire-format or NVS behavior changes.
+
+On W5100S, deferred requests also wait until the previous TCP response has
+finished sending before applying the next request. This preserves response
+order without overflowing the transport's single asynchronous frame buffer.
+
 ### Frame format
 
 ```

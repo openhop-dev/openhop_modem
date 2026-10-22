@@ -7,6 +7,7 @@ import pathlib
 import re
 import shutil
 import subprocess
+import sys
 import tempfile
 
 ROOT = pathlib.Path(__file__).resolve().parents[2]
@@ -107,7 +108,7 @@ def main() -> int:
     assert "RxBoostControl::replyFor(" in boost_answer
     assert "setRxBoostedGain(req.value != 0, !radioStandby)" in boost_answer
     assert "RxBoostControl::replyForGet(rxBoost)" in boost_answer
-    assert "sendError(reply.error, req.src)" in boost_answer
+    assert "sendError(reply.error, req.src.transport)" in boost_answer
 
     compiler = shutil.which("g++")
     if compiler is None:
@@ -131,6 +132,7 @@ def main() -> int:
             )
             subprocess.run([str(executable)], check=True)
 
+    subprocess.run([sys.executable, str(FIRMWARE / "tools/test_rf_request_connections.py")], check=True)
     print("RF frame control contract: PASS")
     return 0
 
