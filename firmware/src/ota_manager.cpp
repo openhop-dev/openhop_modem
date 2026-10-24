@@ -235,6 +235,8 @@ static WebUiShared::Model buildWebUiModel() {
 #if defined(BOARD_STATION_G2) || defined(BOARD_STATION_G3)
     model.capabilities.stationAgcControls = RFFrontEnd::hasAgcResetIntervalControl();
 #endif
+    model.capabilities.stationG3RfControls =
+        RFFrontEnd::hasPaModeControl() && RFFrontEnd::hasStationG3LnaControl();
     model.capabilities.gps = GPSManager::hasGpsPins();
     model.capabilities.battery = BOARD.battery.pin >= 0 || BOARD.battery.fuel_gauge_i2c_addr != 0;
     model.capabilities.radio = true;
@@ -291,6 +293,8 @@ static WebUiShared::Model buildWebUiModel() {
     model.config.gpsEnabled = cfg.gpsEnabled;
     model.config.heltecV43ExternalLnaEnabled = RFFrontEnd::isExternalLnaEnabled();
     model.config.heltecV43FemLnaBypassed = RFFrontEnd::isFemLnaBypassed();
+    model.config.stationG3PaHighPowerEnabled = RFFrontEnd::isPaHighPowerEnabled();
+    model.config.stationG3LnaEnabled = RFFrontEnd::isStationG3LnaEnabled();
     model.config.agcResetIntervalSec = RFFrontEnd::getAgcResetIntervalSec();
 
     model.battery.available = model.capabilities.battery;
