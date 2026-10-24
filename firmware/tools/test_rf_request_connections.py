@@ -224,7 +224,11 @@ int main(int argc, char** argv) {
         loop = main[main.index('void loop() {'):]
         start = loop.index('        handleLoRaRx();\n    }\n') + len('        handleLoRaRx();\n    }\n')
         service = loop[start:loop.index('    if (tcpStarted) TCPServer::loop();')]
-        service = '''
+        # Keep the production watchdog call in the extracted service block.
+        # This socket/RF harness has no HWCDC peripheral; its disabled branch
+        # is compiled here, while test_usb_tx_stall_watch.py covers the timer.
+        watchdog = function(main, "static void kickStalledUsbSerialTx()")
+        service = watchdog + '\n' + '''
 FrameParser serialParser, uartParser;
 bool uartEnabled = true;
 struct InputStream {

@@ -6,6 +6,8 @@ over USB-CDC, Wi-Fi/TCP, or (on boards with native Ethernet) wired LAN.
 The transport is host-platform agnostic; platform support depends on the
 openHop application and its access to USB or the modem's network.
 
+See [CHANGELOG.md](CHANGELOG.md) for development and release changes.
+
 **Supported boards** (one source tree, picked at compile time via
 `-DBOARD_<name>` in `platformio.ini`):
 
