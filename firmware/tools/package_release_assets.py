@@ -8,6 +8,8 @@ import re
 import zipfile
 from pathlib import Path
 
+from p4_firmware import P4_PROFILES, PART_OFFSETS, validate_p4_bundle
+
 from package_nrf52_ota import (
     PackageError,
     firmware_version_from_source,
@@ -87,6 +89,15 @@ def checksummed_files(asset_dir: Path) -> list[Path]:
         files.append(source)
     if not files:
         raise SystemExit(f"No assets listed in {sums_path}")
+    if asset_dir.name in P4_PROFILES:
+        required = {*PART_OFFSETS, "firmware.factory.bin", "firmware.json"}
+        missing = required - {path.name for path in files}
+        if missing:
+            raise SystemExit(f"P4 bundle {asset_dir.name} lacks checksummed files: {', '.join(sorted(missing))}")
+        try:
+            validate_p4_bundle(asset_dir.name, asset_dir)
+        except (ValueError, KeyError, TypeError, OSError) as exc:
+            raise SystemExit(f"Invalid P4 bundle {asset_dir.name}: {exc}") from exc
     ota_files = [path for path in files if path.name == "firmware.ota"]
     if asset_dir.name == "rak4631_wismesh_eth":
         names = {path.name for path in files}

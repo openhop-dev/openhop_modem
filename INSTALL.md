@@ -23,8 +23,8 @@ your board:
 | RAK3112 WisMesh | `rak3112_wismesh` | `rak3112-<mac3>.local` | Wi-Fi |
 | B&Q Consulting Station G2 | `station_g2` | `station-g2-<mac3>.local` | Wi-Fi |
 | BQ Voyage Station G3 | `station_g3` | `station-g3-<mac3>.local` | Wi-Fi |
-| WaveShare ESP32-P4-Nano (+ off-board E22) | `esp32_p4_nano` | `p4nano-<mac3>.local` | **Ethernet or Wi-Fi** (runtime auto-select; cable plugged → ETH, no link → WiFi fallback. Both at once is unstable with radio active — see README "Porting to another ESP32-P4 board") |
-| MeshSmith EtherMesh-1W | `ethermesh_1w` | `ethermesh-1w-<mac3>.local` | **Ethernet** |
+| WaveShare ESP32-P4-Nano (+ off-board E22) | `esp32_p4_nano` (legacy), `esp32_p4_nano_v3` (v3.1/v3.2) | `p4nano-<mac3>.local` | **Ethernet or Wi-Fi** (runtime auto-select; cable plugged → ETH, no link → WiFi fallback. Both at once is unstable with radio active — see README "Porting to another ESP32-P4 board") |
+| MeshSmith EtherMesh-1W | `ethermesh_1w` (legacy), `ethermesh_1w_v3` (v3.1/v3.2) | `ethermesh-1w-<mac3>.local` | **Ethernet** |
 | Heltec T114 | `heltec_t114` | n/a | none — USB-CDC + UART only |
 | RAK4631 USB | `rak4631_usb` | n/a | none — USB-CDC only |
 | RAK4631 WisMesh Ethernet Gateway | `rak4631_wismesh_eth` | n/a (use DHCP lease/IP) | **Ethernet** (W5100S, TCP 5055 + WebUI/API 80) — no mDNS; WebUI OTA disabled; Bluetooth DFU OTA supported |
@@ -35,6 +35,15 @@ The `esp32_p4_nano`, `ethermesh_1w`, `station_g2`, `station_g3`, and `photon_1w_
 [pioarduino fork](https://github.com/pioarduino/platform-espressif32)
 (pinned in `platformio.ini`) for the Arduino-ESP32 3.x / ESP-IDF 5.x
 toolchain; first build will fetch the platform package once.
+
+**P4 silicon selection:** identify the chip revision before flashing. The existing
+P4 targets retain their pre-v3 SDK (compiled revision range 1–199). Their `_v3`
+siblings use Arduino 3.3.11 / IDF 5.5.5 and matching production bootloaders
+(compiled range 301–399); literal v3.0 is not supported by these stock SDKs.
+Do not reuse a legacy bundle or app-only update across silicon families. See
+[P4 silicon profiles](docs/p4-silicon.md) for exact settings, metadata, manual
+recovery and the still-pending flasher/hardware acceptance. Adding these source
+environments does not make them available in an existing published release.
 
 ### 1a. Browser flasher (recommended)
 
@@ -73,6 +82,13 @@ a generic hand-written multi-image command for a fresh P4 install.
 `heltec_tracker_v2`, `ikoka_stick`, `xiao_wio_sx1262`, `photon_1w_xiao_esp32c6`,
 `lilygo_t3s3`, `lilygo_tbeam_s3_supreme`, `lilygo_tbeam_1w`, `rak3112_wismesh`, `esp32_p4_nano`,
 `ethermesh_1w`, `station_g2`, or `station_g3`.
+
+P4 production-silicon builds additionally use `esp32_p4_nano_v3` and
+`ethermesh_1w_v3`. All P4 bundles add checksummed `firmware.json` compatibility
+metadata and `boot_app0.bin`; match both board and silicon revision before
+writing. Use esptool 5.3.0 or newer for v3.2 hardware. The complete factory image
+can overwrite configuration/NVS; an app-only update cannot replace an
+incompatible bootloader or partition table.
 
 nRF52 targets ship `firmware.hex`, `firmware.zip`, `firmware.uf2`, and
 `SHA256SUMS.txt` in `firmware/<env>/` after the firmware asset workflow runs.

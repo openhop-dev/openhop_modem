@@ -11,6 +11,10 @@ This changelog starts with development toward v1.4.1. For earlier releases, see
 
 ### Added
 
+- Separate production-silicon builds for EtherMesh-1W and ESP32-P4 Nano, with
+  matching SDKs/bootloaders and checked board/revision metadata. Existing legacy
+  builds are retained; automatic flasher selection and physical acceptance are
+  separate rollout steps. (#88)
 - Runtime host-protocol controls and capability queries for AGC, supported RF
   front-end settings, and SX1262 RX boost. Host-protocol changes are not persisted
   across reboot. (#81)

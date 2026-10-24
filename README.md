@@ -191,6 +191,15 @@ sets `rx_pin` / `tx_pin` in `RfSwitchPolicy`.
 
 ## Porting to another ESP32-P4 board
 
+ESP32-P4 engineering-sample/pre-v3 and production-silicon binaries are not
+interchangeable. Existing `esp32_p4_nano` / `ethermesh_1w` targets retain their
+legacy SDK; `esp32_p4_nano_v3` / `ethermesh_1w_v3` use the production SDK and
+matching bootloader with the v3.2 compatibility fixes. Stock compiled limits
+are 1–199 and 301–399 respectively, not every revision below/above v3. Read the
+[P4 silicon matrix, artifact contract and remaining flasher/hardware gates](docs/p4-silicon.md)
+before selecting firmware. Source support does not publish a new release or
+enable automatic selection in the public flasher.
+
 The WaveShare ESP32-P4-Nano is the reference; copy
 `firmware/include/boards/esp32_p4_nano.h` and adjust pins. Quirks
 that differ from the ESP32-S3 family:
