@@ -22,6 +22,7 @@ static constexpr uint8_t STATION_G3_LNA_ENABLED_BIT = 0x02;
 static bool paHighPowerEnabled = false;
 static bool stationG3LnaEnabled = true;
 static bool stationG3InReceive = false;
+static uint16_t agcResetIntervalSec = 0;
 
 static void writeConfiguredLevel(int8_t pin, bool active, bool activeHigh) {
     if (pin < 0) return;
@@ -59,7 +60,6 @@ static void applyHeltecV43LnaState() {
 #endif
 
 #if (defined(BOARD_HELTEC_V43) || defined(BOARD_STATION_G2) || defined(BOARD_STATION_G3)) && defined(ARDUINO_ARCH_ESP32)
-static constexpr uint16_t MAX_AGC_RESET_INTERVAL_SEC = 3600;
 #if defined(BOARD_HELTEC_V43)
 static constexpr const char* AGC_RESET_INTERVAL_KEY = "v43_agc_sec";
 #elif defined(BOARD_STATION_G3)
@@ -67,7 +67,6 @@ static constexpr const char* AGC_RESET_INTERVAL_KEY = "g3_agc_sec";
 #else
 static constexpr const char* AGC_RESET_INTERVAL_KEY = "g2_agc_sec";
 #endif
-static uint16_t agcResetIntervalSec = 0;
 #endif
 
 }  // namespace
@@ -238,6 +237,72 @@ bool isExternalLnaEnabled() {
     return hasHeltecV43LnaControl() && !isFemLnaBypassed();
 }
 
+FemState getFemState() {
+    FemState state;
+    // Station G3 LNA writes go through setStationG3RfConfig(), which also
+    // needs PA control; without it the bit could be read but never set.
+    if (hasHeltecV43LnaControl() ||
+        (hasStationG3LnaControl() && hasPaModeControl())) {
+        state.capability |= FEM_STATE_RX_LNA;
+    }
+    if (hasPaModeControl()) {
+        state.capability |= FEM_STATE_TX_PA;
+    }
+    if (hasHeltecV43LnaControl() && isExternalLnaEnabled()) {
+        state.value |= FEM_STATE_RX_LNA;
+    }
+    if (hasStationG3LnaControl() && isStationG3LnaEnabled()) {
+        state.value |= FEM_STATE_RX_LNA;
+    }
+    if (isPaHighPowerEnabled()) {
+        state.value |= FEM_STATE_TX_PA;
+    }
+    state.value &= state.capability;
+    return state;
+}
+
+bool setFemState(uint8_t apply, uint8_t value, bool persist, FemState& out) {
+    const FemState current = getFemState();
+    uint8_t next = current.value;
+    if (applyFemMask(current.capability, current.value, apply, value, next) !=
+        FemApplyStatus::Applied) {
+        out = current;
+        return false;
+    }
+
+    const bool lnaOn = (next & FEM_STATE_RX_LNA) != 0;
+    const bool paHigh = (next & FEM_STATE_TX_PA) != 0;
+
+    if ((apply & FEM_STATE_RX_LNA) != 0 && hasHeltecV43LnaControl()) {
+        if (!setFemLnaBypassed(!lnaOn, persist)) {
+            out = getFemState();
+            return false;
+        }
+    }
+
+    if (hasPaModeControl() && hasStationG3LnaControl()) {
+        if ((apply & (FEM_STATE_RX_LNA | FEM_STATE_TX_PA)) != 0) {
+            if (!setStationG3RfConfig(paHigh, lnaOn, persist)) {
+                out = getFemState();
+                return false;
+            }
+        }
+    } else if ((apply & FEM_STATE_TX_PA) != 0 && hasPaModeControl()) {
+        if (!setPaHighPowerEnabled(paHigh, persist)) {
+            out = getFemState();
+            return false;
+        }
+    } else if ((apply & FEM_STATE_RX_LNA) != 0 && hasStationG3LnaControl()) {
+        if (!setStationG3LnaEnabled(lnaOn, persist)) {
+            out = getFemState();
+            return false;
+        }
+    }
+
+    out = getFemState();
+    return true;
+}
+
 bool setFemLnaBypassed(bool bypass, bool persist) {
 #if defined(BOARD_HELTEC_V43) && defined(ARDUINO_ARCH_ESP32)
     if (persist) {
@@ -288,11 +353,7 @@ void prepareStandby() {
 }
 
 uint16_t getAgcResetIntervalSec() {
-#if (defined(BOARD_HELTEC_V43) || defined(BOARD_STATION_G2) || defined(BOARD_STATION_G3)) && defined(ARDUINO_ARCH_ESP32)
     return agcResetIntervalSec;
-#else
-    return 0;
-#endif
 }
 
 bool hasAgcResetIntervalControl() {
@@ -304,10 +365,10 @@ bool hasAgcResetIntervalControl() {
 }
 
 bool setAgcResetIntervalSec(uint16_t intervalSec, bool persist) {
-#if (defined(BOARD_HELTEC_V43) || defined(BOARD_STATION_G2) || defined(BOARD_STATION_G3)) && defined(ARDUINO_ARCH_ESP32)
     if (intervalSec > MAX_AGC_RESET_INTERVAL_SEC) {
         intervalSec = MAX_AGC_RESET_INTERVAL_SEC;
     }
+#if (defined(BOARD_HELTEC_V43) || defined(BOARD_STATION_G2) || defined(BOARD_STATION_G3)) && defined(ARDUINO_ARCH_ESP32)
     if (persist) {
         Preferences p;
         if (!p.begin(NVS_NAMESPACE, false)) return false;
@@ -315,14 +376,12 @@ bool setAgcResetIntervalSec(uint16_t intervalSec, bool persist) {
         p.end();
         if (!ok) return false;
     }
+#else
+    (void)persist;
+#endif
 
     agcResetIntervalSec = intervalSec;
     return true;
-#else
-    (void)intervalSec;
-    (void)persist;
-    return false;
-#endif
 }
 
 }  // namespace RFFrontEnd

@@ -14,6 +14,7 @@ struct Capabilities {
     bool wifiAntennaSelection = false;
     bool heltecV43Controls = false;
     bool stationAgcControls = false;
+    bool stationG3RfControls = false;
     bool gps = false;
     bool battery = false;
     bool radio = false;
@@ -39,6 +40,8 @@ struct NetworkModel {
     std::string linkState;
     std::string mac;
     std::string tcpStatus;
+    // Learned RFC 3442 routes, pre-formatted as "destination/prefix via next-hop".
+    std::vector<std::string> dhcpRoutes;
 };
 
 struct ConfigModel {
@@ -57,6 +60,8 @@ struct ConfigModel {
     bool gpsEnabled = false;
     bool heltecV43ExternalLnaEnabled = false;
     bool heltecV43FemLnaBypassed = false;
+    bool stationG3PaHighPowerEnabled = false;
+    bool stationG3LnaEnabled = false;
     uint16_t agcResetIntervalSec = 0;
 };
 

@@ -2,7 +2,7 @@
 #include "IPAddress.h"
 #include <functional>
 enum arduino_event_id_t {ARDUINO_EVENT_WIFI_STA_START, ARDUINO_EVENT_WIFI_STA_STOP, ARDUINO_EVENT_WIFI_STA_CONNECTED, ARDUINO_EVENT_WIFI_STA_DISCONNECTED, ARDUINO_EVENT_WIFI_STA_GOT_IP, ARDUINO_EVENT_WIFI_STA_LOST_IP, ARDUINO_EVENT_WIFI_AP_START, ARDUINO_EVENT_WIFI_AP_STOP};
-struct arduino_event_info_t { struct {int channel=1;} wifi_sta_connected; struct {int reason=0;} wifi_sta_disconnected; struct {bool ip_changed=false;} got_ip; };
+struct arduino_event_info_t { struct {int channel=1;} wifi_sta_connected; struct {int reason=0;} wifi_sta_disconnected; struct {bool ip_changed=false; struct { struct {uint32_t addr=0;} ip; } ip_info; } got_ip; };
 enum {WL_IDLE_STATUS=0,WL_NO_SSID_AVAIL=1,WL_CONNECTED=3,WL_CONNECT_FAILED=4,WL_DISCONNECTED=6, WIFI_OFF=0,WIFI_STA=1,WIFI_AP=2,WIFI_AP_STA=3};
 struct WifiStub {
  int statusValue=WL_DISCONNECTED, modeValue=WIFI_OFF, begins=0, disconnects=0, stationStops=0;
@@ -18,7 +18,7 @@ struct WifiStub {
  int RSSI(int){return -50;}
  std::function<void(arduino_event_id_t,arduino_event_info_t)> callback;
  void onEvent(decltype(callback) cb){callback=cb;}
- void event(arduino_event_id_t e,int reason=0){arduino_event_info_t i; i.wifi_sta_disconnected.reason=reason;callback(e,i);}
+ void event(arduino_event_id_t e,int reason=0,bool ipChanged=false){arduino_event_info_t i; i.wifi_sta_disconnected.reason=reason;i.got_ip.ip_changed=ipChanged;i.got_ip.ip_info.ip.addr=uint32_t(ip);callback(e,i);}
  void persistent(bool){}
  bool setSleep(bool b){sleep=b;return true;}
  bool setAutoReconnect(bool b){autoReconnect=b;return true;}

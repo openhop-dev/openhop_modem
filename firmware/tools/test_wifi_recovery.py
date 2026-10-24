@@ -79,6 +79,53 @@ int main(){
         result = subprocess.run([str(self.binary), name], text=True, capture_output=True)
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
 
+    def test_main_preserves_real_outage_invalidation_but_not_gateway_only_renewal(self):
+        # Execute the actual main-loop consumer with real Wi-Fi manager and
+        # TCP server, not a direct call to invalidateInterface in the fixture.
+        main = (ROOT / 'src/main.cpp').read_text()
+        start = main.index('    const uint32_t invalidSTA = WifiManager::consumeSTAInvalidation();')
+        consumer = main[start:main.index('\n#endif', start)]
+        preamble = (STUBS / 'recovery.cpp').read_text().split('int main(', 1)[0]
+        harness = preamble + '\nvoid consumeFromMain(){\n' + consumer + r'''
+}
+int main(int argc,char** argv){
+ if(argc!=2)return 2;
+ const std::string scenario=argv[1];
+ WifiManager::begin(); connected(); consumeFromMain();
+ TCPServer::begin(5055,"secret");
+ incomingClient.s=std::make_shared<SocketStub>(); auto socket=incomingClient.s;
+ TCPServer::loop(); TCPServer::authenticated=true;
+ TCPServer::parser.state=FrameParser::READ_PAYLOAD;
+ if(scenario=="same_ip_after_loss"){
+  WiFi.event(ARDUINO_EVENT_WIFI_STA_DISCONNECTED);
+  WiFi.event(ARDUINO_EVENT_WIFI_STA_GOT_IP,0,true);
+ }else if(scenario=="gateway_only_renewal"){
+  // SDK ip_changed includes netmask/gateway changes, not only local IP.
+  WiFi.event(ARDUINO_EVENT_WIFI_STA_GOT_IP,0,true);
+ }else if(scenario=="transient_address_change"){
+  auto old=WiFi.ip; WiFi.ip=IPAddress(192,168,1,99);
+  WiFi.event(ARDUINO_EVENT_WIFI_STA_GOT_IP,0,true);
+  WiFi.ip=old; WiFi.event(ARDUINO_EVENT_WIFI_STA_GOT_IP,0,true);
+ }else return 2;
+ WifiManager::loop(); consumeFromMain();
+ const bool preserve=scenario=="gateway_only_renewal";
+ CHECK(socket->open==preserve);
+ CHECK(TCPServer::authenticated==preserve);
+ CHECK((TCPServer::parser.state==FrameParser::READ_PAYLOAD)==preserve);
+ return 0;
+}
+'''
+        path = Path(self.tmp.name) / 'main_invalidation.cpp'
+        path.write_text(harness)
+        binary = path.with_suffix('')
+        subprocess.run(['g++', '-std=c++17', '-Wall', '-Wextra', '-Werror',
+                        '-I' + str(STUBS), '-I' + str(ROOT / 'include'),
+                        str(path), '-o', str(binary)], check=True)
+        for case in ['same_ip_after_loss', 'gateway_only_renewal', 'transient_address_change']:
+            with self.subTest(case=case):
+                result = subprocess.run([str(binary), case], text=True, capture_output=True)
+                self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+
 for name in ['nonblocking_boot', 'startup_fallback_retry', 'no_config_ap',
              'outage_retry', 'auth_failure', 'lost_ip', 'ip_refresh',
              'short_outage', 'backoff_wrap', 'persistent_restart',

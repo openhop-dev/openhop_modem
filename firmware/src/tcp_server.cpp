@@ -24,6 +24,7 @@ static String      requiredToken  = "";
 static bool        authenticated  = false;
 static FrameParser parser;
 static uint32_t    acceptedCount  = 0;
+static uint32_t    clientGeneration = 0;
 static uint32_t    frameCount     = 0;
 static uint32_t    parsedFrameCount = 0;
 
@@ -171,6 +172,7 @@ void loop() {
                 return;
             }
             client = incoming;
+            if (++clientGeneration == 0) ++clientGeneration;
             clientLocalIP = static_cast<uint32_t>(client.localIP());
             client.setNoDelay(true);
             parser.reset();
@@ -202,6 +204,18 @@ void loop() {
 bool isClientReady() {
     if (!client || !client.connected()) return false;
     return !requiresAuth() || authenticated;
+}
+
+uint32_t connectionGeneration() {
+    return isClientReady() ? clientGeneration : 0;
+}
+
+bool isConnectionCurrent(uint32_t generation) {
+    return generation != 0 && generation == clientGeneration && isClientReady();
+}
+
+bool canQueueResponse() {
+    return isClientReady();
 }
 
 String getClientIP() {

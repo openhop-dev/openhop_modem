@@ -57,6 +57,9 @@ namespace TCPServer {
     void loop();
     void end();
     bool isClientReady();
+    uint32_t connectionGeneration();
+    bool isConnectionCurrent(uint32_t generation);
+    bool canQueueResponse();
     void write(const uint8_t* data, size_t len);
     String getClientIP();
 }

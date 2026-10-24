@@ -20,6 +20,8 @@
 #include "frame_parser.h"
 #include "compat.h"
 #include "rf_frontend.h"
+#include "rf_request_queue.h"
+#include "rx_boost_control.h"
 #include "agc_maintenance.h"
 #include "station_g3_power.h"
 #include "environment_sensor.h"
@@ -51,9 +53,15 @@
 #  include "tcp_server.h"
 #  include "ota_manager.h"
 #  include "ethernet_manager.h"
+#  include "dhcp_routes.h"
 #  include "runtime_stats.h"
 #  include "gps_manager.h"
 #  include "pmu_manager.h"
+#  if ARDUINO_USB_MODE && ARDUINO_USB_CDC_ON_BOOT && SOC_USB_SERIAL_JTAG_SUPPORTED
+#    include "hal/usb_serial_jtag_ll.h"
+#    include "usb_tx_stall_watch.h"
+#    define OPENHOP_HWCDC_TX_KICK 1
+#  endif
 #else
 // nRF52 builds exclude the ESP32 Wi-Fi/OTA/display managers via
 // platformio.ini's build_src_filter. Most nRF52 targets are
@@ -227,6 +235,9 @@ namespace TCPServer {
     inline void loop() {}
     inline void end()  {}
     inline bool isClientReady() { return false; }
+    inline uint32_t connectionGeneration() { return 0; }
+    inline bool isConnectionCurrent(uint32_t) { return false; }
+    inline bool canQueueResponse() { return false; }
     inline void write(const uint8_t*, size_t) {}
     inline String getClientIP() { return String(); }
 }
@@ -276,8 +287,8 @@ static _WiFiStub WiFi;
 
 // ─── Version ─────────────────────────────────────────────────
 // Base version is shared by every board; the board's fw_suffix
-// distinguishes one binary from another (e.g. "v1.4.0-ikoka").
-#define FW_VERSION_BASE "v1.4.0"
+// distinguishes one binary from another (e.g. "v1.4.1-ikoka").
+#define FW_VERSION_BASE "v1.4.1"
 static String fwVersion;   // populated in setup()
 
 // ─── Task watchdog — self-heal on loop() hang ───────────────
@@ -362,6 +373,7 @@ static volatile bool dio1Flag    = false;
 static volatile uint32_t dio1IrqCount = 0;
 static bool        radioReady    = false;
 static bool        isTxActive    = false;
+static RxBoostControl::State rxBoost;
 static bool        radioTxReady  = false;
 
 // ─── Noise floor sampling ────────────────────────────────────
@@ -507,7 +519,7 @@ Snapshot capture() {
     snap.status.uptime_sec = millis() / 1000;
     // StatusResp reserves state 2 for errors; standby remains a healthy idle
     // state and is exposed separately in this richer runtime snapshot.
-    snap.status.radio_state = isTxActive ? 1 : 0;
+    snap.status.radio_state = isTxActive ? 1 : (rxBoost.fault ? 2 : 0);
     snap.status.temp_c = RuntimeStatsValues::cpuTemperatureC(
         compatReadCpuTemperature());
     snap.status.noise_floor_x10 = (int16_t)(noiseFloor * 10.0f);
@@ -675,6 +687,39 @@ static void rfSwitchConfigureRadio() {
     }
 }
 
+bool startReceive();
+
+// Every boosted-gain write goes through RxBoostControl::set so a failed
+// write, rollback, or RX restart leaves rxBoost.fault set rather than a
+// cached mode the chip may not be in. settleMs is a pause after standby.
+static RxBoostControl::Result setRxBoostedGain(bool enabled, bool resumeRx,
+                                               uint32_t settleMs = 0) {
+    const auto result = RxBoostControl::set(
+        rxBoost, enabled, resumeRx, (int16_t)RADIOLIB_ERR_NONE,
+        [settleMs]() {
+            const int16_t state = radio.standby();
+            if (settleMs != 0) delay(settleMs);
+            return state;
+        },
+        [](bool on) {
+            const int16_t state = radio.setRxBoostedGainMode(on);
+            Serial.printf("[INFO] setRxBoostedGainMode(%s) -> %d\n",
+                          on ? "true" : "false", state);
+            return state;
+        },
+        []() { return startReceive(); });
+    if (result.standbyState != RADIOLIB_ERR_NONE) {
+        Serial.printf("[RXBOOST] standby failed: %d\n", result.standbyState);
+    }
+    if (result.rollbackAttempted && result.rollbackState != RADIOLIB_ERR_NONE) {
+        Serial.printf("[RXBOOST] rollback failed: %d\n", result.rollbackState);
+    }
+    if (result.rxRestartAttempted && !result.rxRestarted) {
+        Serial.println("[RXBOOST] RX restart failed");
+    }
+    return result;
+}
+
 static void configureBoardRadioOptions() {
     if (BOARD.sx126x_current_limit_ma > 0) {
         int state = radio.setCurrentLimit(BOARD.sx126x_current_limit_ma);
@@ -682,9 +727,10 @@ static void configureBoardRadioOptions() {
                       (int)BOARD.sx126x_current_limit_ma, state);
     }
 
+    rxBoost = RxBoostControl::State();
     if (BOARD.sx126x_rx_boosted_gain) {
-        int state = radio.setRxBoostedGainMode(true);
-        Serial.printf("[INFO] setRxBoostedGainMode(true) -> %d\n", state);
+        // setup() starts RX after the config is applied.
+        setRxBoostedGain(true, false);
     }
 
     if (BOARD.sx126x_register_patch) {
@@ -724,6 +770,23 @@ static void writeFrame(uint8_t cmd, const uint8_t* payload, uint16_t len,
     if (toUart && uartEnabled) {
         PROTO_UART.write(buf, i);
     }
+}
+
+// HWCDC (arduino-esp32 3.3.x) can leave written bytes in its TX ring buffer
+// with nothing telling the USB Serial/JTAG FIFO to send them, so a reply sits
+// on the modem until the next Serial write. Re-arming the IN_EMPTY interrupt
+// alone does not release it; a FIFO flush does, as HWCDC::write() and
+// HWCDC::flush() do. Kick the FIFO when bytes have been waiting too long.
+#if defined(OPENHOP_HWCDC_TX_KICK)
+static UsbTxStallWatch usbTxStallWatch(20);
+#endif
+
+static void kickStalledUsbSerialTx() {
+#if defined(OPENHOP_HWCDC_TX_KICK)
+    if (!usbTxStallWatch.update(Serial.availableForWrite(), millis())) return;
+    usb_serial_jtag_ll_txfifo_flush();
+    usb_serial_jtag_ll_ena_intr_mask(USB_SERIAL_JTAG_INTR_SERIAL_IN_EMPTY);
+#endif
 }
 
 void sendFrame(uint8_t cmd, const uint8_t* payload, uint16_t len, TransportSource dest) {
@@ -1009,6 +1072,94 @@ void handleLoRaRx() {
     startReceive();
 }
 
+// ─── RF requests ────────────────────────────────────────────
+// Switching the FEM LNA or PA mid-packet would corrupt the frame on air, and
+// an RX boost write has to drop the radio to standby, so a SET_FEM_STATE or
+// SET_RX_BOOST that arrives during a reception waits for it to finish
+// instead of being rejected. TX needs no check here: TX_REQUEST holds the
+// loop until TX_DONE, so a request sent during TX is read after it.
+static constexpr uint8_t RF_REQUEST_QUEUE_DEPTH = 4;
+struct RfRequestSource {
+    TransportSource transport;
+    uint32_t tcpGeneration;
+};
+static RfRequests::Queue<RfRequestSource, RF_REQUEST_QUEUE_DEPTH> rfRequests;
+
+static bool isRfRequestCurrent(const RfRequestSource& src) {
+    return src.transport != TransportSource::TCP ||
+           TCPServer::isConnectionCurrent(src.tcpGeneration);
+}
+
+static void answerFemRequest(const RfRequests::Request<RfRequestSource>& req) {
+    RFFrontEnd::FemState fem;
+    if (req.kind == RfRequests::Kind::Set) {
+        if (!RFFrontEnd::setFemState(req.apply, req.value, false, fem)) {
+            sendError(ERR_UNSUPPORTED, req.src.transport);
+            return;
+        }
+    } else {
+        fem = RFFrontEnd::getFemState();
+    }
+    uint8_t buf[2] = { fem.capability, fem.value };
+    sendFrame(CMD_FEM_STATE_RESP, buf, sizeof(buf), req.src.transport);
+}
+
+static void answerRxBoostRequest(const RfRequests::Request<RfRequestSource>& req) {
+    const RxBoostControl::Reply reply = req.kind == RfRequests::Kind::Set
+        ? RxBoostControl::replyFor(
+              rxBoost, setRxBoostedGain(req.value != 0, !radioStandby).outcome)
+        : RxBoostControl::replyForGet(rxBoost);
+    if (reply.error != 0) {
+        sendError(reply.error, req.src.transport);
+        return;
+    }
+    sendFrame(CMD_RX_BOOST_RESP, &reply.enabled, 1, req.src.transport);
+}
+
+static void answerRfRequest(const RfRequests::Request<RfRequestSource>& req) {
+    // Cancel before RF mutation as well as before sending any reply. The TCP
+    // slot may already belong to a different, possibly unauthenticated client.
+    if (!isRfRequestCurrent(req.src)) return;
+    if (req.kind == RfRequests::Kind::Error) {
+        sendError(req.value, req.src.transport);
+    } else if (req.target == RfRequests::Target::Fem) {
+        answerFemRequest(req);
+    } else {
+        answerRxBoostRequest(req);
+    }
+}
+
+static void discardStaleRfRequests() {
+    rfRequests.discardIf([](const RfRequests::Request<RfRequestSource>& req) {
+        return !isRfRequestCurrent(req.src);
+    });
+}
+
+static void processRfRequests() {
+    discardStaleRfRequests();
+    if (rfRequests.size() == 0) return;
+    rfRequests.drain(
+        []() { return !radioStandby && isReceivingPacket(); },
+        answerRfRequest,
+        [](const RfRequests::Request<RfRequestSource>& req) {
+            return req.src.transport != TransportSource::TCP ||
+                   TCPServer::canQueueResponse();
+        });
+}
+
+static void submitRfRequest(RfRequests::Kind kind, RfRequests::Target target,
+                            uint8_t apply, uint8_t value, TransportSource src) {
+    const RfRequestSource origin{src, src == TransportSource::TCP
+        ? TCPServer::connectionGeneration() : 0};
+    if (!isRfRequestCurrent(origin)) return;
+    discardStaleRfRequests();
+    if (!rfRequests.push({ kind, target, apply, value, origin })) {
+        sendError(ERR_RADIO_BUSY, src);
+        return;
+    }
+    processRfRequests();
+}
+
 // ─── Host command dispatch ──────────────────────────────────
 void processHostCommand(uint8_t cmd, const uint8_t* payload, uint16_t len,
                         TransportSource src) {
@@ -1022,6 +1173,9 @@ void processHostCommand(uint8_t cmd, const uint8_t* payload, uint16_t len,
     if (!BOARD.has_lora_radio || !radioReady) {
         switch (cmd) {
         case CMD_TX_REQUEST:  case CMD_SET_CONFIG:  case CMD_GET_CONFIG:
+        case CMD_GET_RF_CAPS: case CMD_SET_AGC_INTERVAL: case CMD_GET_AGC_INTERVAL:
+        case CMD_SET_FEM_STATE: case CMD_GET_FEM_STATE:
+        case CMD_SET_RX_BOOST: case CMD_GET_RX_BOOST:
         case CMD_STATUS_REQ:  case CMD_NOISE_REQ:   case CMD_CAD_REQUEST:
         case CMD_RX_START:    case CMD_SET_CAD_PARAMS:
             sendError(ERR_NO_RADIO, src);
@@ -1351,6 +1505,80 @@ void processHostCommand(uint8_t cmd, const uint8_t* payload, uint16_t len,
         break;
     }
 
+    case CMD_GET_RF_CAPS: {
+        uint32_t bits = RF_CAP_AGC | RF_CAP_RX_BOOSTED_GAIN;
+        const RFFrontEnd::FemState fem = RFFrontEnd::getFemState();
+        if ((fem.capability & FEM_STATE_RX_LNA) != 0) bits |= RF_CAP_FEM_RX_LNA;
+        if ((fem.capability & FEM_STATE_TX_PA) != 0) bits |= RF_CAP_FEM_TX_PA;
+        uint8_t buf[4];
+        memcpy(buf, &bits, sizeof(buf));
+        sendFrame(CMD_RF_CAPS_RESP, buf, sizeof(buf), src);
+        break;
+    }
+
+    case CMD_GET_AGC_INTERVAL: {
+        uint16_t sec = RFFrontEnd::getAgcResetIntervalSec();
+        uint8_t buf[2];
+        memcpy(buf, &sec, sizeof(buf));
+        sendFrame(CMD_AGC_INTERVAL_RESP, buf, sizeof(buf), src);
+        break;
+    }
+
+    case CMD_SET_AGC_INTERVAL: {
+        if (len != sizeof(uint16_t)) {
+            sendError(ERR_INVALID_CONFIG, src);
+            break;
+        }
+        if (isTxActive) {
+            sendError(ERR_RADIO_BUSY, src);
+            break;
+        }
+        uint16_t sec = 0;
+        memcpy(&sec, payload, sizeof(sec));
+        if (sec > RFFrontEnd::MAX_AGC_RESET_INTERVAL_SEC) {
+            sendError(ERR_INVALID_CONFIG, src);
+            break;
+        }
+        if (!RFFrontEnd::setAgcResetIntervalSec(sec, false)) {
+            sendError(ERR_UNSUPPORTED, src);
+            break;
+        }
+        agcMaintenanceSchedule.recordAttempt(millis());
+        uint8_t buf[2];
+        sec = RFFrontEnd::getAgcResetIntervalSec();
+        memcpy(buf, &sec, sizeof(buf));
+        sendFrame(CMD_AGC_INTERVAL_RESP, buf, sizeof(buf), src);
+        break;
+    }
+
+    case CMD_GET_FEM_STATE:
+        submitRfRequest(RfRequests::Kind::Get, RfRequests::Target::Fem, 0, 0, src);
+        break;
+
+    case CMD_SET_FEM_STATE:
+        if (len != 2) {
+            submitRfRequest(RfRequests::Kind::Error, RfRequests::Target::Fem,
+                            0, ERR_INVALID_CONFIG, src);
+            break;
+        }
+        submitRfRequest(RfRequests::Kind::Set, RfRequests::Target::Fem,
+                        payload[0], payload[1], src);
+        break;
+
+    case CMD_GET_RX_BOOST:
+        submitRfRequest(RfRequests::Kind::Get, RfRequests::Target::RxBoost, 0, 0, src);
+        break;
+
+    case CMD_SET_RX_BOOST:
+        if (len != 1 || (payload[0] != 0 && payload[0] != 1)) {
+            submitRfRequest(RfRequests::Kind::Error, RfRequests::Target::RxBoost,
+                            0, ERR_INVALID_CONFIG, src);
+            break;
+        }
+        submitRfRequest(RfRequests::Kind::Set, RfRequests::Target::RxBoost,
+                        0, payload[0], src);
+        break;
+
     case CMD_STATUS_REQ: {
         const RuntimeStats::Snapshot live = RuntimeStats::capture();
         status = live.status;
@@ -1597,6 +1825,10 @@ void setup() {
 #endif
 
     Serial.begin(921600);
+#if defined(OPENHOP_HWCDC_TX_KICK)
+    // Nothing has been written yet, so this is the empty TX buffer size.
+    usbTxStallWatch.prime(Serial.availableForWrite());
+#endif
     // On boards with native USB-CDC (Ikoka, LilyGO T3-S3) the first
     // Serial output races against the host opening the CDC endpoint —
     // anything printed before the host attaches is silently dropped.
@@ -1781,6 +2013,11 @@ void setup() {
     // and skip Wi-Fi; if no link we tear EMAC back down (so the RMII
     // GPIOs are released) and fall back to Wi-Fi. Boards without
     // Ethernet (`ethernet.enabled = false`) skip straight to Wi-Fi.
+    // Initialize the DHCP option 121 module before either interface starts.
+    // Its lifecycle hooks register on the lwIP core at DHCP PCB creation.
+#ifdef ARDUINO_ARCH_ESP32
+    DhcpRoutes::begin();
+#endif
     WifiManager::loadConfigOnly();
     const auto& netCfg = WifiManager::getConfig();
     bool useEthernet = false;
@@ -1920,8 +2157,6 @@ void sampleNoiseFloor() {
 }
 
 void maybeResetAgc() {
-    if (!RFFrontEnd::hasAgcResetIntervalControl()) return;
-
     AgcMaintenance::Conditions conditions;
     conditions.radioReady = radioReady;
     conditions.intentionalStandby = radioStandby;
@@ -1959,6 +2194,9 @@ void maybeResetAgc() {
     if (!result.rxRestarted) {
         Serial.println("[AGC] RX restart failed");
     }
+    RxBoostControl::noteAgcReset(
+        rxBoost, result.resetAttempted,
+        result.resetState == RADIOLIB_ERR_NONE, result.rxRestarted);
     if (!result.succeeded(RADIOLIB_ERR_NONE)) return;
 
     lastSuccessfulAgcResetMs = attemptedAt;
@@ -1972,16 +2210,17 @@ void maybeResetAgc() {
         lastAgcSuccessLogMs = attemptedAt;
     }
 #else
+    // Preamble or header can be on the air before DIO1 latches. Standby
+    // would drop that frame, so wait and retry on a later loop.
     if (!AgcMaintenance::shouldAttempt(
-            agcMaintenanceSchedule, conditions, []() { return false; })) return;
+            agcMaintenanceSchedule, conditions,
+            []() { return isReceivingPacket(); })) return;
 
-    // Heltec V4.3 can clamp its apparent noise floor after strong
-    // out-of-band interference. A brief RX restart mirrors the
-    // agc.reset.interval behaviour used by LoRa firmwares such as
-    // MeshCore/Meshtastic without disturbing TX or packet IRQ handling.
-    radio.standby();
-    delay(2);
-    startReceive();
+    // A strong out-of-band signal can clamp the SX1262 noise floor.
+    // A brief RX restart clears it without disturbing TX or packet IRQs.
+    // The boosted-gain register is written again because the restart
+    // drops the chip through standby.
+    setRxBoostedGain(rxBoost.enabled, true, 2);
     agcMaintenanceSchedule.recordAttempt(millis());
     noiseFloorSum = 0.0f;
     noiseFloorCount = 0;
@@ -2011,6 +2250,19 @@ void loop() {
         handleLoRaRx();
     }
 
+    // Invalidate stale TCP ownership before any USB/UART callback can drain
+    // deferred RF work. Socket.connected() alone can survive a STA outage.
+    if (BOARD.has_wifi) WifiManager::loop();
+#ifdef ARDUINO_ARCH_ESP32
+    const uint32_t invalidSTA = WifiManager::consumeSTAInvalidation();
+    if (invalidSTA) {
+        // A real outage remains invalid even after same-address recovery.
+        // WifiManager excludes gateway-only DHCP changes at the producer.
+        TCPServer::invalidateInterface(IPAddress(invalidSTA));
+    }
+#endif
+
+    kickStalledUsbSerialTx();
     while (Serial.available()) {
         uint8_t b = (uint8_t)Serial.read();
         frameparser_feed(serialParser, b, TransportSource::USB,
@@ -2025,12 +2277,6 @@ void loop() {
         }
     }
 
-    // Consume Wi-Fi event invalidation before servicing stale TCP bytes.
-    if (BOARD.has_wifi) WifiManager::loop();
-#ifdef ARDUINO_ARCH_ESP32
-    const uint32_t invalidSTA = WifiManager::consumeSTAInvalidation();
-    if (invalidSTA) TCPServer::invalidateInterface(IPAddress(invalidSTA));
-#endif
     if (tcpStarted) TCPServer::loop();
 #if defined(OPENHOP_ETHERNET_W5100S)
     W5100sHttpServer::loop();
@@ -2041,6 +2287,7 @@ void loop() {
     GPSManager::loop();
 #endif
 
+    processRfRequests();
     sampleNoiseFloor();
     maybeResetAgc();
     EthernetManager::loop();

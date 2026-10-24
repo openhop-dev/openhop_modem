@@ -476,6 +476,7 @@ namespace TCPServer {
     static bool authenticated = false;
     static FrameParser parser;
     static uint32_t acceptedCount = 0;
+    static uint32_t clientGeneration = 0;
     static uint32_t frameCount = 0;
     static bool lastIpUsable = false;
     static uint16_t listenerPort = 0;
@@ -752,6 +753,7 @@ namespace TCPServer {
                     return;
                 }
                 client = incoming;
+                if (++clientGeneration == 0) ++clientGeneration;
                 socketReader.reset(client.getSocketNumber());
                 parser.reset();
                 resetTx();
@@ -789,6 +791,18 @@ namespace TCPServer {
         if (!EthernetManager::hasIP()) return false;
         if (!client || !socketReader.connected()) return false;
         return !requiresAuth() || authenticated;
+    }
+
+    uint32_t connectionGeneration() {
+        return isClientReady() ? clientGeneration : 0;
+    }
+
+    bool isConnectionCurrent(uint32_t generation) {
+        return generation != 0 && generation == clientGeneration && isClientReady();
+    }
+
+    bool canQueueResponse() {
+        return isClientReady() && !txBusy();
     }
 
     String getClientIP() {

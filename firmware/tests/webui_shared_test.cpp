@@ -245,6 +245,21 @@ void testOptionalBoardTemperatureRendering() {
     assertNotContains(renderStatsPage(model), "Cooling fan</span>");
 }
 
+void testStationG3RfFrontEndPanel() {
+    Model model = makeEspModel();
+    model.capabilities.stationG3RfControls = true;
+    model.config.stationG3PaHighPowerEnabled = true;
+    model.config.stationG3LnaEnabled = false;
+    const std::string html = renderRootPage(model);
+    assertContains(html, "<summary>Station G3 RF Front-End</summary>");
+    assertContains(html, "action='/rf-pa'");
+    assertContains(html, "id='g3_pa_high' name='g3_pa_high' value='1' checked");
+    assertContains(html, "id='g3_lna_on' name='g3_lna_on' value='1'><label");
+
+    model.capabilities.stationG3RfControls = false;
+    assertNotContains(renderRootPage(model), "Station G3 RF Front-End");
+}
+
 }  // namespace
 
 int main() {
@@ -256,6 +271,7 @@ int main() {
     testCapabilitiesControlOptionalSectionsAndFields();
     testStatsRenderIntegralValuesWithoutFormatFragments();
     testOptionalBoardTemperatureRendering();
+    testStationG3RfFrontEndPanel();
     std::cout << "webui shared renderer tests passed\n";
     return 0;
 }

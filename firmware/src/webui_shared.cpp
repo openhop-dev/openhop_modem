@@ -191,6 +191,7 @@ std::string renderRootPage(const Model& m) {
         appendKv(body, "Gateway", display(m.network.gateway));
         appendKv(body, "DNS 1", display(m.network.dns1, "none"));
         appendKv(body, "DNS 2", display(m.network.dns2, "none"));
+        for (const auto& route : m.network.dhcpRoutes) appendKv(body, "DHCP route", route);
         body += "</div></div></details>";
     }
     if (m.capabilities.writableManagement) {
@@ -218,6 +219,24 @@ std::string renderRootPage(const Model& m) {
         body += "'></label><button type='submit'>Save AGC interval</button>"
                 "</form><p class='m'>Applies immediately and persists across reboots. "
                 "Resets are deferred during active reception and for 10 seconds after TX.</p>"
+                "</div></details>";
+    }
+    if (m.capabilities.stationG3RfControls && m.capabilities.writableManagement) {
+        body += "<details open><summary>Station G3 RF Front-End</summary><div class='inside'>"
+                "<p>Configure the Station G3 PA level on GPIO9 and receive-only external LNA on GPIO10.</p>"
+                "<form method='POST' action='/rf-pa'>"
+                "<div class='checkline'><input type='checkbox' id='g3_pa_high' name='g3_pa_high' value='1'";
+        if (m.config.stationG3PaHighPowerEnabled) body += " checked";
+        body += "><label for='g3_pa_high'>Enable higher PA mode</label></div>"
+                "<div class='checkline'><input type='checkbox' id='g3_lna_on' name='g3_lna_on' value='1'";
+        if (m.config.stationG3LnaEnabled) body += " checked";
+        body += "><label for='g3_lna_on'>Enable Station G3 external RX LNA</label></div>"
+                "<button type='submit'>Save RF front-end settings</button>"
+                "</form><p class='m'>The external LNA is receive-only and is always bypassed before transmit. "
+                "Disable it when local RF noise reduces SNR.</p>"
+                "<p class='m'><strong>RF safety:</strong> remove the PA PL1 and LNA P jumpers for GPIO control. "
+                "PA PL2 remains a physical jumper. Higher PA mode can produce substantially more antenna power; "
+                "use a suitable antenna/load and comply with regional limits. The lower PA mode is the default.</p>"
                 "</div></details>";
     }
     if (m.capabilities.heltecV43Controls) {
@@ -299,6 +318,7 @@ std::string renderStatsPage(const Model& m) {
     if (m.capabilities.wifiAntennaSelection) appendKv(body, "Wi-Fi antenna", m.config.wifiExternalAntenna ? "External" : "Internal");
     if (m.capabilities.heltecV43Controls) appendKv(body, "Heltec V4.3 external LNA", m.config.heltecV43ExternalLnaEnabled ? "Enabled" : "Bypassed");
     appendKv(body, "Gateway", display(m.network.gateway, "none")); appendKv(body, "Subnet", display(m.network.subnet, "none")); appendKv(body, "DNS 1", display(m.network.dns1, "none")); appendKv(body, "DNS 2", display(m.network.dns2, "none"));
+    for (const auto& route : m.network.dhcpRoutes) appendKv(body, "DHCP route", route);
     body += "</div></body></html>";
     return body;
 }
@@ -328,7 +348,12 @@ std::string renderNetworkJson(const Model& m) {
     std::string out = "{\"mode\":" + quote(m.config.useStaticIp ? "static" : "dhcp") + ",\"use_static_ip\":" + boolean(m.config.useStaticIp) + ",\"interface\":" + quote(m.network.interfaceName) + ",\"live\":" + boolean(m.network.live) + ",\"current_ip\":" + quote(m.network.currentIp) + ",\"subnet\":" + nullableString(m.network.subnet) + ",\"gateway\":" + nullableString(m.network.gateway) + ",\"dns1\":" + nullableString(m.network.dns1) + ",\"dns2\":" + nullableString(m.network.dns2);
     if (m.network.hasWifiRssi) out += ",\"wifi_rssi_dbm\":" + number(m.network.wifiRssiDbm);
     if (m.capabilities.ethernet) out += ",\"link\":" + nullableString(m.network.linkState) + ",\"mac\":" + nullableString(m.network.mac) + ",\"tcp_status\":" + nullableString(m.network.tcpStatus);
-    out += ",\"tcp_port\":" + number(m.config.tcpPort) + ",\"pymc_token_set\":" + boolean(m.config.tcpTokenSet) + ",\"saved\":{\"static_ip\":" + nullableString(m.config.staticIp) + ",\"subnet\":" + nullableString(m.config.subnet) + ",\"gateway\":" + nullableString(m.config.gateway) + ",\"dns1\":" + nullableString(m.config.dns1) + ",\"dns2\":" + nullableString(m.config.dns2) + "}}";
+    out += ",\"tcp_port\":" + number(m.config.tcpPort) + ",\"pymc_token_set\":" + boolean(m.config.tcpTokenSet) + ",\"dhcp_routes\":[";
+    for (size_t i = 0; i < m.network.dhcpRoutes.size(); i++) {
+        if (i) out += ",";
+        out += quote(m.network.dhcpRoutes[i]);
+    }
+    out += "],\"saved\":{\"static_ip\":" + nullableString(m.config.staticIp) + ",\"subnet\":" + nullableString(m.config.subnet) + ",\"gateway\":" + nullableString(m.config.gateway) + ",\"dns1\":" + nullableString(m.config.dns1) + ",\"dns2\":" + nullableString(m.config.dns2) + "}}";
     return out;
 }
 

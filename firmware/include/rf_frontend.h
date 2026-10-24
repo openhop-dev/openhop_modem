@@ -2,7 +2,11 @@
 
 #include <Arduino.h>
 
+#include "rf_fem_state.h"
+
 namespace RFFrontEnd {
+
+constexpr uint16_t MAX_AGC_RESET_INTERVAL_SEC = 3600;
 
 void begin();
 bool hasPaModeControl();
@@ -17,6 +21,8 @@ bool isFemLnaBypassed();
 bool isExternalLnaEnabled();
 bool setFemLnaBypassed(bool bypass, bool persist);
 bool hasAgcResetIntervalControl();
+FemState getFemState();
+bool setFemState(uint8_t apply, uint8_t value, bool persist, FemState& out);
 void prepareTransmit();
 void prepareReceive();
 void prepareStandby();

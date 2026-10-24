@@ -6,6 +6,8 @@ over USB-CDC, Wi-Fi/TCP, or (on boards with native Ethernet) wired LAN.
 The transport is host-platform agnostic; platform support depends on the
 openHop application and its access to USB or the modem's network.
 
+See [CHANGELOG.md](CHANGELOG.md) for development and release changes.
+
 **Supported boards** (one source tree, picked at compile time via
 `-DBOARD_<name>` in `platformio.ini`):
 
@@ -243,6 +245,51 @@ remote access run a VPN whose tunnel address (WireGuard / Tailscale
 in 100.64/10 → Tailscale subnet route, or any `10/8` overlay) is
 inside the LAN range from the modem's point of view.
 
+### DHCP classless static routes (option 121)
+
+The ESP32/ESP-IDF lwIP client does not request or parse DHCP option 121
+(RFC 3442). On routed LANs where a VPN or overlay prefix is reachable
+through a different next hop than the default router, replies from the
+modem leave through the default gateway and router connection tracking
+drops them (asymmetric routing). `firmware/include/dhcp_routes.h` adds
+option 121 to the Parameter Request List and stages option 121 (or the
+Microsoft 249 alias when 121 is absent) while the SDK parses a DHCP reply.
+Routes are published only when the original DHCP client binds an accepted
+lease, including unchanged renewals and delayed address-conflict checking.
+OFFERs and rejected messages never change the active table. A newly accepted
+ACK without classless routes removes the previous lease's table. Malformed
+or oversized route options install no classless table for that new lease;
+they never preserve another lease's routes.
+
+Tables belong to their actual Wi-Fi/Ethernet interface. Link/admin down,
+address loss and interface removal retire that interface's active and pending
+state without erasing another interface's lease. Up to four interface owners
+are tracked, each retaining eight nondefault routes and a separate classless
+default route. Repeated
+121/249 options are concatenated (up to 512 bytes per option code); 121 takes
+precedence. Prefixes are normalized and unsupported zero-router/on-link entries
+are ignored. When 121 is authoritative, option 3 is ignored even if no `/0`
+route was provided. Learned entries are listed on `/stats` and `/api/network`
+(`base_gateway`, `dhcp_routes_active`, `dhcp_routes`). The LAN-only source
+filter above is unchanged and still applies.
+
+The existing per-packet lwIP gateway technique remains: the selected next hop
+is retained until another routed send or lease transition. ICMP echo replies
+are covered explicitly; other explicit-netif output paths can still use the
+last selected gateway. This change does not claim a general-purpose routing
+stack or physical routed-LAN validation.
+
+Host regressions (g++ with AddressSanitizer/UndefinedBehaviorSanitizer):
+
+```bash
+python3 firmware/tools/test_dhcp_routes.py
+python3 firmware/tools/test_wifi_recovery.py
+```
+
+These execute production routing/lifecycle, Wi-Fi/TCP and main-loop consumer
+code at recording SDK boundaries. SDK packet acceptance and network callbacks
+are fixtures, not a running full network stack or a physical DHCP/VPN test.
+
 T114 has no IP stack at all — the only paths in are USB-CDC and the
 secondary UART, and updates are either Adafruit DFU over USB or the
 in-app `OTA_*` commands carried over the same transport.
@@ -339,11 +386,29 @@ RAK JSON responses expose `tcp_token_set`, never the token.
 Pre-v0.8 firmware used `heltec:<tcp_token>` on `/update` only — that
 scheme is gone, the same credential pair now covers every HTTP path.
 
-## Wire protocol v0.7
+## Wire protocol v0.8
 
 *(Full command list in `firmware/include/protocol.h`; the section below is
-summarised. Reported firmware version is `v0.8.0-<BoardConfig.fw_suffix>`,
-e.g. `v0.8.0-heltec_t114`.)*
+summarised. Reported firmware version is `<FW_VERSION_BASE>-<BoardConfig.fw_suffix>`,
+e.g. `v1.3.1-heltec-v43`. Hosts should probe `GET_RF_CAPS` for the v0.8 RF
+controls rather than compare versions.)*
+
+### Deferred RF controls
+
+FEM and RX-boost GET/SET requests share a four-entry queue. Setters wait for
+reception to finish; queued replies and validation errors retain arrival order.
+The existing full-queue exception remains: `ERR_RADIO_BUSY` is returned
+immediately when all four slots are occupied.
+Queued TCP requests belong to the connection that submitted them. Disconnect,
+interface invalidation, or server restart cancels pending work from that
+connection without applying it or forwarding its reply to a replacement client.
+Canceled entries are reclaimed even while another request is waiting for RX.
+USB/UART requests are unaffected. Reconnecting hosts must submit their desired
+runtime settings again; no wire-format or NVS behavior changes.
+
+On W5100S, deferred requests also wait until the previous TCP response has
+finished sending before applying the next request. This preserves response
+order without overflowing the transport's single asynchronous frame buffer.
 
 ### Frame format
 
@@ -362,6 +427,13 @@ CRC-16/CCITT (poly 0x1021, init 0xFFFF) over CMD+LEN+PAYLOAD.
 | 0x01 | TX_REQUEST        | Raw LoRa data (1–255 B)               |
 | 0x10 | SET_CONFIG        | `RadioConfig` (14 B)                  |
 | 0x11 | GET_CONFIG        | —                                     |
+| 0x14 | GET_RF_CAPS       | — (v0.8)                              |
+| 0x16 | SET_AGC_INTERVAL  | uint16 LE seconds, 0 disables (v0.8)  |
+| 0x17 | GET_AGC_INTERVAL  | — (v0.8)                              |
+| 0x19 | SET_FEM_STATE     | apply mask + value mask (v0.8)        |
+| 0x1A | GET_FEM_STATE     | — (v0.8)                              |
+| 0x1C | SET_RX_BOOST      | 1 B: 0 = power-saving, 1 = boosted    |
+| 0x1D | GET_RX_BOOST      | — (v0.8)                              |
 | 0x20 | STATUS_REQ        | —                                     |
 | 0x22 | NOISE_REQ         | —                                     |
 | 0x30 | CAD_REQUEST       | — (Listen Before Talk)                |
@@ -385,6 +457,8 @@ CRC-16/CCITT (poly 0x1021, init 0xFFFF) over CMD+LEN+PAYLOAD.
 | 0x98 | OTA_ABORT         | — (v0.7)                              |
 | 0xFF | PING              | —                                     |
 
+v0.8 frame commands probe and set the AGC reset interval on every radio board, the FEM RX LNA on Heltec V4.3 and Station G3, the FEM TX PA on Station G3, and SX1262 boosted RX gain on every radio board; other boards report those bits clear, reject the matching set with `ERR_UNSUPPORTED` (`0x0F`), and these frame writes are not stored in NVS.
+
 The RAK4631 staged writer is not connected to `CMD_OTA_*` or HTTP `/update`.
 Those update commands and routes are disabled and unsupported on that target;
 supporting safe staged activation and recovery would require a custom openHop
@@ -399,6 +473,10 @@ Modem bootloader, which is not currently planned. Use the generated
 | 0x03 | TX_FAIL           | —                                     |
 | 0x04 | RX_PACKET         | RSSI(2) + SNR(2) + sigRSSI(2) + data  |
 | 0x12 | CONFIG_RESP       | `RadioConfig` (14 B)                  |
+| 0x15 | RF_CAPS_RESP      | uint32 LE capability bits (v0.8)      |
+| 0x18 | AGC_INTERVAL_RESP | uint16 LE effective seconds (v0.8)    |
+| 0x1B | FEM_STATE_RESP    | capability mask + value mask (v0.8)   |
+| 0x1E | RX_BOOST_RESP     | 1 B: 0 = power-saving, 1 = boosted    |
 | 0x21 | STATUS_RESP       | `StatusResp` (24 B)                   |
 | 0x23 | NOISE_RESP        | int16 LE (dBm × 10)                   |
 | 0x32 | CAD_RESP          | 1 B (0=clear, 1=busy)                 |
@@ -417,7 +495,7 @@ Modem bootloader, which is not currently planned. Use the generated
 | 0x93 | OTA_CHUNK_RESP    | — (v0.7)                              |
 | 0x95 | OTA_VERIFY_RESP   | — (v0.7)                              |
 | 0x97 | OTA_APPLY_RESP    | — (v0.7)                              |
-| 0xFE | ERROR             | error code (1 B; `0x0B` = `ERR_NO_RADIO` for boards without LoRa hardware) |
+| 0xFE | ERROR             | error code (1 B; `0x0B` = `ERR_NO_RADIO`, `0x0F` = `ERR_UNSUPPORTED`, `0x10` = `ERR_RADIO_FAULT`) |
 | 0xFF | PONG              | —                                     |
 
 ## Default radio parameters
