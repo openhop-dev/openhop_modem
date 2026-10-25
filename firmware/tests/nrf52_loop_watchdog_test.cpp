@@ -22,6 +22,14 @@ void testReloadValueCountsLfclkTicks() {
     static_assert(reloadValue(30) == 983039u, "30 s is 983040 ticks");
 }
 
+void testObservedReloadConvertsToMillisecondsWithoutOverflow() {
+    static_assert(timeoutMilliseconds(32767u) == 1000u, "one second");
+    static_assert(timeoutMilliseconds(327679u) == 10000u, "inherited ten seconds");
+    static_assert(timeoutMilliseconds(983039u) == 30000u, "default thirty seconds");
+    static_assert(timeoutMilliseconds(0u) == 0u, "sub-millisecond count is rounded down");
+    static_assert(timeoutMilliseconds(UINT32_MAX) == 131072000u, "maximum CRV must not wrap");
+}
+
 void testStartConfiguresAndStarts() {
     FakeWdt wdt;
     start(wdt, 30);
@@ -58,6 +66,7 @@ void testFeedWritesOnlyEnabledRegisters() {
 
 int main() {
     testReloadValueCountsLfclkTicks();
+    testObservedReloadConvertsToMillisecondsWithoutOverflow();
     testStartConfiguresAndStarts();
     testStartLeavesRunningWdtSettings();
     testFeedWritesOnlyEnabledRegisters();

@@ -22,6 +22,12 @@ constexpr uint32_t reloadValue(uint32_t timeoutS) {
     return timeoutS * LFCLK_HZ - 1u;
 }
 
+// Decode an observed CRV, including one inherited from an earlier image.
+// CRV=UINT32_MAX is valid; widen before adding one or multiplying.
+constexpr uint32_t timeoutMilliseconds(uint32_t reload) {
+    return static_cast<uint32_t>((static_cast<uint64_t>(reload) + 1u) * 1000u / LFCLK_HZ);
+}
+
 // Every enabled reload register must be written before the timeout. A WDT
 // left running by the previous image may have more than RR[0] enabled.
 template <typename Wdt>

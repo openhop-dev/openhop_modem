@@ -1865,13 +1865,19 @@ void setup() {
 
     fwVersion = String(FW_VERSION_BASE) + "-" + BOARD.fw_suffix;
 
-    // Print the reason this boot started so we can tell brownouts,
-    // panics, watchdog timeouts and clean reboots apart even on boards
-    // without UART0 (Ikoka — native USB-CDC only, ROM banner doesn't
-    // reach the host). compatResetReason() values:
-    //   1 POWERON, 2 EXT, 3 SW, 4 PANIC, 5 INT_WDT, 6 TASK_WDT,
-    //   7 WDT, 8 DEEPSLEEP, 9 BROWNOUT, 10 SDIO, 11 USB.
+    // Print the reason this boot started. Nordic RESETREAS is a bitmask
+    // saved by the core before setup(); ESP32 reports an enum instead.
+    // Keep all Nordic bits visible, including combined/unknown reasons.
     {
+#if defined(NRF52_SERIES) || defined(ARDUINO_ARCH_NRF52) || defined(ARDUINO_NRF52_ADAFRUIT)
+        const uint32_t rr = compatResetReason();
+        Serial.printf("[BOOT] reset_reason=0x%08lX (nRF52: pin=%u watchdog=%u software=%u lockup=%u)\n",
+                      (unsigned long)rr,
+                      (unsigned)((rr & POWER_RESETREAS_RESETPIN_Msk) != 0),
+                      (unsigned)((rr & POWER_RESETREAS_DOG_Msk) != 0),
+                      (unsigned)((rr & POWER_RESETREAS_SREQ_Msk) != 0),
+                      (unsigned)((rr & POWER_RESETREAS_LOCKUP_Msk) != 0));
+#else
         const char* labels[] = {
             "?", "POWERON", "EXT", "SW", "PANIC",
             "INT_WDT", "TASK_WDT", "WDT", "DEEPSLEEP",
@@ -1881,6 +1887,7 @@ void setup() {
         const char* lbl = (rr >= 0 && (size_t)rr < sizeof(labels)/sizeof(labels[0]))
                               ? labels[rr] : "OTHER";
         Serial.printf("[BOOT] reset_reason=%d (%s)\n", rr, lbl);
+#endif
     }
 
     // On boards with a PMU (LilyGO T-Beam-S3 Supreme), the OLED/LoRa/GNSS
@@ -2125,8 +2132,24 @@ void setup() {
     compatWdtStart(LOOP_WDT_TIMEOUT_S);
 #endif
 
+#if defined(NRF52_SERIES) || defined(ARDUINO_ARCH_NRF52) || defined(ARDUINO_NRF52_ADAFRUIT)
+    // A soft reset may inherit a different, locked timeout/configuration.
+    // Report observed registers rather than claiming the requested defaults.
+    const uint32_t wdtRunning = NRF_WDT->RUNSTATUS;
+    const uint32_t wdtReload = NRF_WDT->CRV;
+    const uint32_t wdtChannels = NRF_WDT->RREN;
+    const uint32_t wdtConfig = NRF_WDT->CONFIG;
+    Serial.printf("[BOOT] firmware %s on %s ready (loop WDT %s, timeout=%lums, RR=0x%02lX, sleep=%s, debug=%s)\n",
+                  fwVersion.c_str(), BOARD.name,
+                  (wdtRunning & Nrf52LoopWatchdog::RUNSTATUS_RUNNING) ? "running" : "inactive",
+                  (unsigned long)Nrf52LoopWatchdog::timeoutMilliseconds(wdtReload),
+                  (unsigned long)wdtChannels,
+                  (wdtConfig & WDT_CONFIG_SLEEP_Msk) ? "run" : "pause",
+                  (wdtConfig & WDT_CONFIG_HALT_Msk) ? "run" : "pause");
+#else
     Serial.printf("[BOOT] firmware %s on %s ready (loop WDT %us)\n",
                   fwVersion.c_str(), BOARD.name, (unsigned)LOOP_WDT_TIMEOUT_S);
+#endif
 }
 
 // ─── Noise floor sampling ────────────────────────────────────

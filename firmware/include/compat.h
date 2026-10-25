@@ -31,11 +31,14 @@ inline float    compatReadCpuTemperature() { return temperatureRead(); }
 #  include "nrf52_loop_watchdog.h"
 inline void     compatWdtStart(uint32_t timeoutS) { Nrf52LoopWatchdog::start(*NRF_WDT, timeoutS); }
 inline void     compatWdtReset()     { Nrf52LoopWatchdog::feed(*NRF_WDT); }
+// The Adafruit core captures RESETREAS before clearing it during init().
+// This is a Nordic bitmask, not the ESP32 reset-reason enum.
+inline uint32_t compatResetReason()  { return readResetReason(); }
 #else
 inline void     compatWdtStart(uint32_t) {}
 inline void     compatWdtReset()     {}
-#endif
 inline int      compatResetReason()  { return 0; }
+#endif
 inline void     compatGetMac(uint8_t mac[6]) {
 #if defined(NRF52_SERIES) || defined(ARDUINO_ARCH_NRF52) || defined(ARDUINO_NRF52_ADAFRUIT)
     // FICR DEVICEID is a 64-bit chip-unique value. Mash it into a
