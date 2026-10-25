@@ -2109,9 +2109,8 @@ void setup() {
     // would take over; on stock Arduino bootloader, the same image reboots.
     // ESP-IDF 5.x autostarts the task WDT on the IDLE tasks; we just
     // adjust the timeout + enable panic so a stuck loop() reboots.
-    // nRF52 build — task WDT not armed in iter 1 (compatWdtReset()
-    // is a no-op). The nRF52 watchdog peripheral can be added later
-    // via NRF_WDT_NS direct register writes.
+    // nRF52 starts the WDT peripheral with the same timeout; it resets the
+    // chip directly, and compatWdtReset() feeds it.
 #ifdef ARDUINO_ARCH_ESP32
     {
         esp_task_wdt_config_t wdt_cfg = {
@@ -2122,6 +2121,8 @@ void setup() {
         esp_task_wdt_reconfigure(&wdt_cfg);
     }
     esp_task_wdt_add(NULL);
+#else
+    compatWdtStart(LOOP_WDT_TIMEOUT_S);
 #endif
 
     Serial.printf("[BOOT] firmware %s on %s ready (loop WDT %us)\n",

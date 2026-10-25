@@ -25,6 +25,10 @@ This changelog starts with development toward v1.4.1. For earlier releases, see
 
 ### Fixed
 
+- nRF52 modems staying unresponsive after the main loop stalls. The nRF52 WDT
+  now resets the board when `loop()` does not complete within 30 seconds, the
+  same timeout ESP32 builds use, so battery-backed boards can recover without a
+  manual reset. (#90)
 - USB replies left waiting in the ESP32 HWCDC transmit buffer until another
   request arrives. A bounded stalled-output watchdog kicks the FIFO on supported
   USB Serial/JTAG configurations without changing TinyUSB targets. (#82)

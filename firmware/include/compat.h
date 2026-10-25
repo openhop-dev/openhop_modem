@@ -28,9 +28,13 @@ inline float    compatReadCpuTemperature() { return temperatureRead(); }
 
 #if defined(NRF52_SERIES) || defined(ARDUINO_ARCH_NRF52) || defined(ARDUINO_NRF52_ADAFRUIT)
 #  include <nrf.h>
+#  include "nrf52_loop_watchdog.h"
+inline void     compatWdtStart(uint32_t timeoutS) { Nrf52LoopWatchdog::start(*NRF_WDT, timeoutS); }
+inline void     compatWdtReset()     { Nrf52LoopWatchdog::feed(*NRF_WDT); }
+#else
+inline void     compatWdtStart(uint32_t) {}
+inline void     compatWdtReset()     {}
 #endif
-
-inline void     compatWdtReset()     { /* nRF52 WDT not armed by this firmware (yet) */ }
 inline int      compatResetReason()  { return 0; }
 inline void     compatGetMac(uint8_t mac[6]) {
 #if defined(NRF52_SERIES) || defined(ARDUINO_ARCH_NRF52) || defined(ARDUINO_NRF52_ADAFRUIT)
