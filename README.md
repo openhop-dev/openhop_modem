@@ -111,6 +111,38 @@ without uploading Actions artifacts.  Manual dispatch can build `auto`, `all`,
 or specific envs from any branch; manual runs upload Actions artifacts for
 review and only commit generated files when `commit_artifacts=true`.
 
+### Asset-update PR authentication
+
+Before merging firmware changes from `dev` into `main`, configure the repository
+Actions secret `FIRMWARE_PR_TOKEN`. Use a fine-grained personal access token owned
+by the account that should open the PR, restricted to this repository with
+**Contents: read/write** and **Pull requests: read/write** permissions. Complete
+any organization-required token approval before relying on the workflow. Add the
+value through GitHub's repository **Settings → Secrets and variables → Actions**;
+never put the token in source, logs, or issue/PR text. Repository write access is
+sufficient to manage repository secrets; enabling Actions policy or auto-merge is
+not required for this token-based path. Organization PAT restrictions still apply.
+
+Both main-push and manual-on-main asset updates use that token to open or update
+`automation/update-firmware-assets` against `main`. The PR appears under the token
+owner's account; the workflow does **not** approve, merge, or publish a release.
+The existing generated-commit attribution is unchanged. The credential is supplied
+only to its presence check and the PR action, not to firmware compilation steps.
+
+When assets are selected for a main PR update, a missing secret fails in the
+selection job before expensive builds start. This check only verifies presence,
+not token validity or permissions; PR authentication/API failures also fail the
+workflow rather than being hidden behind a successful run. Artifact-only manual
+runs and non-main branch commits do not require this secret. If the token expires,
+replace the repository secret and rerun the failed workflow; do not weaken branch
+protection or push generated files directly to main.
+
+Run the offline workflow regression checks with:
+
+```bash
+python3 firmware/tools/test_firmware_asset_workflow.py -v
+```
+
 ## Per-board pin map
 
 All board-specific GPIOs and policies live in
