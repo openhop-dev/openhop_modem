@@ -4,10 +4,10 @@ Notable user-facing changes to openHop Modem are recorded here. Development
 entries describe source changes; a version is not a published release until its
 GitHub release and matching firmware assets are available.
 
-This changelog starts with development toward v1.4.1. For earlier releases, see
+This changelog starts with development toward v1.4.2. For earlier releases, see
 [GitHub Releases](https://github.com/openhop-dev/openhop_modem/releases).
 
-## v1.4.1 — Unreleased
+## v1.4.2 — Unreleased
 
 ### Added
 
@@ -25,6 +25,12 @@ This changelog starts with development toward v1.4.1. For earlier releases, see
 
 ### Fixed
 
+- nRF52 main-loop watchdog recovery so a stalled battery-backed modem can reset
+  instead of remaining unresponsive until a manual reset. The default timeout
+  is 30 seconds, matching ESP32 builds. (#90, #91)
+- nRF52 boot diagnostics now report captured reset flags and the observed
+  watchdog timeout, reload channels and sleep/debug behavior, including settings
+  inherited across a software reset. (#91)
 - USB replies left waiting in the ESP32 HWCDC transmit buffer until another
   request arrives. A bounded stalled-output watchdog kicks the FIFO on supported
   USB Serial/JTAG configurations without changing TinyUSB targets. (#82)
