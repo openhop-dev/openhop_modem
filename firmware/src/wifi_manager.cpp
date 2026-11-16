@@ -35,6 +35,9 @@ static bool eventDown = false;
 static constexpr uint32_t EVENT_REASON = 4;
 static uint32_t invalidatedIP = 0;
 static uint32_t lastSTAIP = 0;
+// Event-task view of the last usable local address. SDK ip_changed includes
+// gateway/netmask changes, so it cannot alone distinguish a broken TCP session.
+static std::atomic<uint32_t> observedSTAIP{0};
 static bool apActive = false;
 static bool everConnected = false;
 static bool fallbackWanted = false;
@@ -62,7 +65,8 @@ static void onWiFiEvent(arduino_event_id_t event, arduino_event_info_t info) {
             break;
         case ARDUINO_EVENT_WIFI_STA_GOT_IP:
             bits = EVENT_STATE;
-            if (info.got_ip.ip_changed) bits |= EVENT_INVALID;
+            if (info.got_ip.ip_changed && info.got_ip.ip_info.ip.addr !=
+                observedSTAIP.load(std::memory_order_relaxed)) bits |= EVENT_INVALID;
             break;
         default: return;
     }
@@ -330,6 +334,7 @@ void loop() {
         invalidatedIP = lastSTAIP;
         lastSTAIP = 0;
     }
+    observedSTAIP.store(usable && cfg.ssid.length() ? ip : 0, std::memory_order_relaxed);
     if (usable && cfg.ssid.length()) {
         lastSTAIP = ip;
         if (apActive) {

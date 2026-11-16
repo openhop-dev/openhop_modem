@@ -97,6 +97,21 @@ jobs:
           echo "envs_json=$envs_json" >> "$GITHUB_OUTPUT"
           echo "Selected envs: $envs_json"
 
+      - name: Check firmware PR token
+        if: github.ref_name == 'main' && (github.event_name == 'push' || inputs.commit_artifacts == true) && steps.plan.outputs.has_envs == 'true'
+        shell: bash
+        env:
+          # Keep the credential out of interpolated shell source and build steps.
+          FIRMWARE_PR_TOKEN: ${{ secrets.FIRMWARE_PR_TOKEN }}
+        run: |
+          set -euo pipefail
+          if [ -z "${FIRMWARE_PR_TOKEN:-}" ]; then
+            message='Configure repository Actions secret FIRMWARE_PR_TOKEN before building main asset updates. Use a repository-scoped token with Contents and Pull requests read/write access; obtain organization approval if required.'
+            printf '::error::%s\n' "$message"
+            printf '## Firmware PR setup required\n\n%s\n' "$message" >> "$GITHUB_STEP_SUMMARY"
+            exit 1
+          fi
+
   build-manual-artifacts:
     name: Build ${{ matrix.env }}
     needs: select
@@ -236,8 +251,9 @@ jobs:
       - name: Create firmware asset update PR for protected main
         if: github.ref_name == 'main'
         uses: peter-evans/create-pull-request@v7
-        continue-on-error: true
         with:
+          token: ${{ secrets.FIRMWARE_PR_TOKEN }}
+          base: main
           commit-message: 'firmware: update generated firmware assets [skip ci]'
           branch: automation/update-firmware-assets
           delete-branch: true
@@ -313,8 +329,9 @@ jobs:
 
       - name: Create firmware asset update PR
         uses: peter-evans/create-pull-request@v7
-        continue-on-error: true
         with:
+          token: ${{ secrets.FIRMWARE_PR_TOKEN }}
+          base: main
           commit-message: 'firmware: update generated firmware assets [skip ci]'
           branch: automation/update-firmware-assets
           delete-branch: true

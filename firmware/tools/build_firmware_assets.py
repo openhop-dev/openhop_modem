@@ -30,6 +30,7 @@ from pathlib import Path
 
 from nrf52_flash_layout import validate_rak4631_board, validate_rak4631_size
 from nrf52_uf2 import uf2_conversion_command
+from p4_firmware import P4_PROFILES, write_p4_metadata
 from package_nrf52_ota import (
     create_package_bytes,
     firmware_version_from_source,
@@ -112,6 +113,16 @@ ENV_METADATA: dict[str, dict[str, str | bool]] = {
         "chip_family": "ESP32-P4",
         "web_manifest": False,
     },
+    "esp32_p4_nano_v3": {
+        "name": "WaveShare ESP32-P4-Nano v3.x openHop Modem",
+        "chip_family": "ESP32-P4",
+        "web_manifest": False,
+    },
+    "ethermesh_1w_v3": {
+        "name": "MeshSmith EtherMesh-1W v3.x openHop Modem",
+        "chip_family": "ESP32-P4",
+        "web_manifest": False,
+    },
     "lilygo_t3s3": {
         "name": "LilyGO T-LoRa T3-S3 openHop Modem",
         "chip_family": "ESP32-S3",
@@ -154,7 +165,7 @@ ENV_METADATA: dict[str, dict[str, str | bool]] = {
     },
 }
 
-# Board headers generally map 1:1 to env names in this repo.
+# P4 board headers are shared by the legacy and production-silicon builds.
 BOARD_HEADER_TO_ENV = {
     "firmware/include/boards/heltec_v3.h": "heltec_v3",
     "firmware/include/boards/heltec_v4.h": "heltec_v4",
@@ -167,8 +178,8 @@ BOARD_HEADER_TO_ENV = {
     "firmware/include/boards/rak3112_wismesh.h": "rak3112_wismesh",
     "firmware/include/boards/station_g2.h": "station_g2",
     "firmware/include/boards/station_g3.h": "station_g3",
-    "firmware/include/boards/esp32_p4_nano.h": "esp32_p4_nano",
-    "firmware/include/boards/ethermesh_1w.h": "ethermesh_1w",
+    "firmware/include/boards/esp32_p4_nano.h": ("esp32_p4_nano", "esp32_p4_nano_v3"),
+    "firmware/include/boards/ethermesh_1w.h": ("ethermesh_1w", "ethermesh_1w_v3"),
     "firmware/include/boards/lilygo_t3s3.h": "lilygo_t3s3",
     "firmware/include/boards/lilygo_tbeam_s3_supreme.h": "lilygo_tbeam_s3_supreme",
     "firmware/include/boards/lilygo_tbeam_1w.h": "lilygo_tbeam_1w",
@@ -256,8 +267,12 @@ def select_envs(requested: str, all_envs: list[str], base: str | None, head: str
         if path in SHARED_FILES:
             print(f"Shared file changed ({path}); building all envs.")
             return all_envs
+        if path in ("firmware/tools/p4_firmware.py", "firmware/tools/platformio_p4_metadata.py"):
+            selected.update(P4_PROFILES)
+            continue
         if path in BOARD_HEADER_TO_ENV:
-            selected.add(BOARD_HEADER_TO_ENV[path])
+            envs = BOARD_HEADER_TO_ENV[path]
+            selected.update((envs,) if isinstance(envs, str) else envs)
             continue
         if path.startswith("firmware/include/boards/"):
             # Unknown board header: safest option is all envs.
@@ -413,9 +428,9 @@ def ensure_esp_factory(env: str, out_dir: Path) -> Path:
     return factory
 
 
-def collect_env(env: str) -> None:
+def collect_env(env: str, output_dir: Path | None = None) -> None:
     out_dir = FIRMWARE / ".pio/build" / env
-    dest = FIRMWARE / env
+    dest = (output_dir if output_dir is not None else FIRMWARE) / env
     clean_dest(dest)
 
     # nRF52 Adafruit builds produce firmware.hex + firmware.zip.
@@ -446,7 +461,7 @@ def collect_env(env: str) -> None:
             shutil.copy2(ota_file, ota_target)
             copied.append(ota_target)
         write_sha256s(dest, copied)
-        print(f"Staged nRF52 artifacts in {dest.relative_to(ROOT)}")
+        print(f"Staged nRF52 artifacts in {dest}")
         return
 
     ensure_esp_factory(env, out_dir)
@@ -467,8 +482,13 @@ def collect_env(env: str) -> None:
     manifest = write_esp_manifest(env, dest)
     if manifest:
         copied.append(manifest)
+    if env in P4_PROFILES:
+        boot_app0 = dest / "boot_app0.bin"
+        shutil.copy2(out_dir / "boot_app0.bin", boot_app0)
+        copied.append(boot_app0)
+        copied.append(write_p4_metadata(env, out_dir, dest))
     write_sha256s(dest, copied)
-    print(f"Staged ESP artifacts in {dest.relative_to(ROOT)}")
+    print(f"Staged ESP artifacts in {dest}")
 
 
 def main() -> int:
@@ -478,6 +498,8 @@ def main() -> int:
     parser.add_argument("--changed-from", default=os.environ.get("GITHUB_EVENT_BEFORE"))
     parser.add_argument("--changed-to", default=os.environ.get("GITHUB_SHA"))
     parser.add_argument("--pio", default=None, help="Path to PlatformIO executable")
+    parser.add_argument("--output-dir", type=Path, default=None,
+                        help="Stage <env>/ assets here instead of replacing firmware/<env>/")
     parser.add_argument("--clean", action="store_true", help="Run pio clean before building")
     parser.add_argument("--plan", action="store_true", help="Only print selected envs; do not build")
     args = parser.parse_args()
@@ -503,7 +525,7 @@ def main() -> int:
             missing_ok=True
         )
         run([pio, "run", "-e", env], FIRMWARE)
-        collect_env(env)
+        collect_env(env, output_dir=args.output_dir)
     return 0
 
 

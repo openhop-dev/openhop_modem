@@ -29,6 +29,15 @@ void loop();
 // True when a client is connected AND (authenticated OR no token required).
 bool isClientReady();
 
+// Nonzero identity of the current ready connection; zero if disconnected or
+// unauthenticated. Deferred work must retain this identity, not just TCP.
+uint32_t connectionGeneration();
+bool isConnectionCurrent(uint32_t generation);
+
+// Whether one complete response can be queued without overflowing transport
+// storage. W5100S has one asynchronous frame slot; ESP32 writes directly.
+bool canQueueResponse();
+
 // Dotted quad of the connected client, or empty string when no client.
 String getClientIP();
 

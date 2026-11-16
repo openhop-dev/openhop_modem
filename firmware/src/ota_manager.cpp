@@ -6,6 +6,7 @@
 #include "agc_maintenance.h"
 #include <cmath>
 #include "board_config.h"
+#include "dhcp_routes.h"
 #include "ethernet_manager.h"
 #include "gps_manager.h"
 #include "net_filter.h"
@@ -131,6 +132,15 @@ struct NetworkSnapshot {
     IPAddress dns2;
 };
 
+// Per-packet gateway changes are not the effective default route. Option121
+// supersedes option3, including an authoritative absence of a default route.
+static IPAddress displayGateway(const IPAddress& live) {
+    if (DhcpRoutes::active()) {
+        return DhcpRoutes::hasDefaultRoute() ? DhcpRoutes::defaultGateway() : IPAddress(uint32_t(0));
+    }
+    return DhcpRoutes::baseGatewayValid() ? DhcpRoutes::baseGateway() : live;
+}
+
 static NetworkSnapshot getNetworkSnapshot() {
     NetworkSnapshot snap;
     if (EthernetManager::hasIP()) {
@@ -138,7 +148,7 @@ static NetworkSnapshot getNetworkSnapshot() {
         snap.live = true;
         snap.ip = ETH.localIP();
         snap.subnet = ETH.subnetMask();
-        snap.gateway = ETH.gatewayIP();
+        snap.gateway = displayGateway(ETH.gatewayIP());
         snap.dns1 = ETH.dnsIP(0);
         snap.dns2 = ETH.dnsIP(1);
         return snap;
@@ -148,7 +158,7 @@ static NetworkSnapshot getNetworkSnapshot() {
         snap.live = true;
         snap.ip = WiFi.localIP();
         snap.subnet = WiFi.subnetMask();
-        snap.gateway = WiFi.gatewayIP();
+        snap.gateway = displayGateway(WiFi.gatewayIP());
         snap.dns1 = WiFi.dnsIP(0);
         snap.dns2 = WiFi.dnsIP(1);
         snap.has_wifi_rssi = true;
@@ -225,6 +235,8 @@ static WebUiShared::Model buildWebUiModel() {
 #if defined(BOARD_STATION_G2) || defined(BOARD_STATION_G3)
     model.capabilities.stationAgcControls = RFFrontEnd::hasAgcResetIntervalControl();
 #endif
+    model.capabilities.stationG3RfControls =
+        RFFrontEnd::hasPaModeControl() && RFFrontEnd::hasStationG3LnaControl();
     model.capabilities.gps = GPSManager::hasGpsPins();
     model.capabilities.battery = BOARD.battery.pin >= 0 || BOARD.battery.fuel_gauge_i2c_addr != 0;
     model.capabilities.radio = true;
@@ -242,6 +254,24 @@ static WebUiShared::Model buildWebUiModel() {
     model.network.dns2 = (uint32_t)net.dns2 ? net.dns2.toString().c_str() : "";
     model.network.hasWifiRssi = net.has_wifi_rssi;
     model.network.wifiRssiDbm = net.wifi_rssi_dbm;
+
+    model.network.dhcpRoutes.clear();
+    const size_t routeCount = DhcpRoutes::count();
+    for (size_t i = 0; i < routeCount; i++) {
+        DhcpRoutes::Route route;
+        if (!DhcpRoutes::get(i, route)) continue;
+        std::string line = route.destination.toString().c_str();
+        line += "/";
+        line += std::to_string((unsigned)route.prefix);
+        line += " via ";
+        line += route.gateway.toString().c_str();
+        model.network.dhcpRoutes.push_back(line);
+    }
+    if (DhcpRoutes::hasDefaultRoute()) {
+        std::string line = "0.0.0.0/0 via ";
+        line += DhcpRoutes::defaultGateway().toString().c_str();
+        model.network.dhcpRoutes.push_back(line);
+    }
     if (model.capabilities.ethernet) {
         model.network.linkState = EthernetManager::isLinkUp() ? "up" : "down";
         model.network.mac = EthernetManager::getMACString();
@@ -263,6 +293,8 @@ static WebUiShared::Model buildWebUiModel() {
     model.config.gpsEnabled = cfg.gpsEnabled;
     model.config.heltecV43ExternalLnaEnabled = RFFrontEnd::isExternalLnaEnabled();
     model.config.heltecV43FemLnaBypassed = RFFrontEnd::isFemLnaBypassed();
+    model.config.stationG3PaHighPowerEnabled = RFFrontEnd::isPaHighPowerEnabled();
+    model.config.stationG3LnaEnabled = RFFrontEnd::isStationG3LnaEnabled();
     model.config.agcResetIntervalSec = RFFrontEnd::getAgcResetIntervalSec();
 
     model.battery.available = model.capabilities.battery;
@@ -542,7 +574,7 @@ static String buildCountersJson(const RuntimeStats::Snapshot& snap) {
 static String buildNetworkJson(const WifiManager::Config& cfg,
                                const NetworkSnapshot& net) {
     String body;
-    body.reserve(768);
+    body.reserve(1536);
     body += F("{\"mode\":");
     body += jsonQuote(cfg.useStaticIP ? "static" : "dhcp");
     body += F(",\"use_static_ip\":");
@@ -561,6 +593,36 @@ static String buildNetworkJson(const WifiManager::Config& cfg,
     body += ipJson(net.dns1);
     body += F(",\"dns2\":");
     body += ipJson(net.dns2);
+    // base_gateway is the DHCP option-3 fallback; dhcp_routes are the
+    // RFC 3442 per-prefix next hops. A default route is emitted as 0.0.0.0/0.
+    body += F(",\"base_gateway\":");
+    body += DhcpRoutes::baseGatewayValid() ? ipJson(DhcpRoutes::baseGateway()) : String("null");
+    body += F(",\"dhcp_routes_active\":");
+    body += boolJson(DhcpRoutes::active());
+    body += F(",\"dhcp_routes\":[");
+
+    bool firstRoute = true;
+    const size_t routeCount = DhcpRoutes::count();
+    for (size_t i = 0; i < routeCount; i++) {
+        DhcpRoutes::Route route;
+        if (!DhcpRoutes::get(i, route)) continue;
+        if (!firstRoute) body += ',';
+        firstRoute = false;
+        body += F("{\"destination\":");
+        body += jsonQuote(route.destination.toString());
+        body += F(",\"prefix\":");
+        body += String((unsigned)route.prefix);
+        body += F(",\"gateway\":");
+        body += jsonQuote(route.gateway.toString());
+        body += '}';
+    }
+    if (DhcpRoutes::hasDefaultRoute()) {
+        if (!firstRoute) body += ',';
+        body += F("{\"destination\":\"0.0.0.0\",\"prefix\":0,\"gateway\":");
+        body += jsonQuote(DhcpRoutes::defaultGateway().toString());
+        body += '}';
+    }
+    body += ']';
     if (net.has_wifi_rssi) {
         body += F(",\"wifi_rssi_dbm\":");
         body += String(net.wifi_rssi_dbm);
