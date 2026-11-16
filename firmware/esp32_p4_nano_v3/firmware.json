@@ -1,0 +1,99 @@
+{
+  "board_id": "esp32_p4_nano",
+  "chip_family": "ESP32-P4",
+  "environment": "esp32_p4_nano_v3",
+  "factory": {
+    "offset": 0,
+    "path": "firmware.factory.bin",
+    "sha256": "bca2453feb15a04fd000f8239c467774c2d20a3c42786c87b3e1978839528ad6",
+    "size": 1328112
+  },
+  "framework": {
+    "arduino": "3.3.11",
+    "esp_idf": "v5.5.5",
+    "idf_package": "5.5.5+sha.b774170ff46",
+    "platform": "https://github.com/pioarduino/platform-espressif32/releases/download/55.03.311/platform-espressif32.zip",
+    "sdkconfig": {
+      "CONFIG_BOOTLOADER_WDT_ENABLE": "y",
+      "CONFIG_BOOTLOADER_WDT_TIME_MS": "9000",
+      "CONFIG_ESP32P4_REV_MAX_FULL": "399",
+      "CONFIG_ESP32P4_REV_MIN_301": "y",
+      "CONFIG_ESP32P4_REV_MIN_FULL": "301",
+      "CONFIG_ESP_REV_MAX_FULL": "399",
+      "CONFIG_ESP_REV_MIN_FULL": "301",
+      "CONFIG_HAL_WDT_USE_ROM_IMPL": "y",
+      "CONFIG_RTC_CLK_SRC_INT_RC": "y",
+      "CONFIG_SPIRAM": "y",
+      "CONFIG_SPIRAM_ALLOW_STACK_EXTERNAL_MEMORY": "y",
+      "CONFIG_SPIRAM_MALLOC_ALWAYSINTERNAL": "4096",
+      "CONFIG_SPIRAM_MALLOC_RESERVE_INTERNAL": "0",
+      "CONFIG_SPIRAM_MODE_HEX": "y",
+      "CONFIG_SPIRAM_SPEED": "200",
+      "CONFIG_SPIRAM_SPEED_200M": "y",
+      "CONFIG_SPIRAM_USE_MALLOC": "y"
+    },
+    "sdkconfig_sha256": "2264b90619fa068fdb35a7ee80af80bf17663f31a7d36edd6c2f71d8f73ce2dd"
+  },
+  "parts": {
+    "boot_app0.bin": {
+      "offset": 57344,
+      "sha256": "f94c5d786a7a8fab06ac5d10e33bf37711a6697636dc037559ea19cc410a17f0",
+      "size": 8192
+    },
+    "bootloader.bin": {
+      "image_header": {
+        "chip_id": 18,
+        "flash_frequency_mhz": 80,
+        "flash_mode": "dio",
+        "flash_size_bytes": 16777216,
+        "max_revision": 65535,
+        "min_revision": 0
+      },
+      "offset": 8192,
+      "sha256": "21e9497d3e2ebb47362a9f89b24548b1f5769dc1bcc8c7b52908e81f862da411",
+      "size": 22224
+    },
+    "firmware.bin": {
+      "image_header": {
+        "chip_id": 18,
+        "flash_frequency_mhz": 80,
+        "flash_mode": "dio",
+        "flash_size_bytes": 16777216,
+        "max_revision": 65535,
+        "min_revision": 0
+      },
+      "offset": 65536,
+      "sha256": "0d307016283c2fc7ad2e386e6fff04947fbc088449af45b7494d85390bc00594",
+      "size": 1262576
+    },
+    "partitions.bin": {
+      "offset": 32768,
+      "sha256": "bd0f7954aca2ef7d925ee21aaa1f3dc8822d1d6ce5cbbd26a135e5886bfff6ce",
+      "size": 3072
+    }
+  },
+  "schema_version": 1,
+  "settings": {
+    "board": "esp32-p4-evboard",
+    "cpu_hz": 400000000,
+    "flash_hz": 80000000,
+    "flash_mode": "qio",
+    "flash_size_bytes": 16777216,
+    "psram_enabled": true,
+    "psram_hz": 200000000
+  },
+  "silicon": {
+    "board_id": "esp32_p4_nano",
+    "chip_variant": "esp32p4",
+    "max_revision": 399,
+    "min_revision": 301,
+    "profile": "v3"
+  },
+  "update_contract": {
+    "board_id": "esp32_p4_nano",
+    "bootloader_sha256": "21e9497d3e2ebb47362a9f89b24548b1f5769dc1bcc8c7b52908e81f862da411",
+    "flash_size_bytes": 16777216,
+    "partitions_sha256": "bd0f7954aca2ef7d925ee21aaa1f3dc8822d1d6ce5cbbd26a135e5886bfff6ce",
+    "silicon_profile": "v3"
+  }
+}
