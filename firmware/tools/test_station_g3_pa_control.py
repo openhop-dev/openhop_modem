@@ -28,15 +28,15 @@ for declaration in (
     assert declaration in rf_header
 
 assert 'STATION_G3_RF_CONFIG_KEY = "g3_rf_cfg"' in rf_source
-assert "BOARD.rf_frontend.pa_user_selectable" in rf_source
-assert "writeConfiguredLevel(BOARD.rf_frontend.pa_mode_pin" in rf_source
+assert "hardware_.rf_frontend.pa_user_selectable" in rf_source
+assert "writeConfiguredLevel(hardware_.rf_frontend.pa_mode_pin" in rf_source
 assert "p.getUChar(STATION_G3_RF_CONFIG_KEY" in rf_source
 assert "p.putUChar(STATION_G3_RF_CONFIG_KEY, packed)" in rf_source
 
-begin_body = rf_source.split("void begin() {", 1)[1].split("bool hasPaModeControl()", 1)[0]
-assert begin_body.index("writeConfiguredLevel(BOARD.rf_frontend.pa_mode_pin") < begin_body.index("p.getUChar(STATION_G3_RF_CONFIG_KEY")
+begin_body = rf_source.split("void Controller::begin() {", 1)[1].split("bool Controller::hasPaModeControl()", 1)[0]
+assert begin_body.index("writeConfiguredLevel(hardware_.rf_frontend.pa_mode_pin") < begin_body.index("p.getUChar(STATION_G3_RF_CONFIG_KEY")
 
-set_rf_body = rf_source.split("bool setStationG3RfConfig", 1)[1].split("bool hasHeltecV43LnaControl", 1)[0]
+set_rf_body = rf_source.split("bool Controller::setStationG3RfConfig", 1)[1].split("bool Controller::hasHeltecV43LnaControl", 1)[0]
 assert set_rf_body.index("p.putUChar(STATION_G3_RF_CONFIG_KEY, packed)") < set_rf_body.index("paHighPowerEnabled = paHighPower")
 
 assert 'if (RFFrontEnd::hasPaModeControl()) {' in ota

@@ -4,7 +4,7 @@
 #include "frame_parser.h"
 
 void frameparser_feed(FrameParser& p, uint8_t b, TransportSource src,
-                      FrameOkCb on_ok, FrameErrCb on_err) {
+                      FrameOkContextCb on_ok, FrameErrContextCb on_err, void* context) {
     switch (p.state) {
     case FrameParser::WAIT_SYNC:
         if (b == PROTO_SYNC) p.state = FrameParser::READ_CMD;
@@ -24,7 +24,7 @@ void frameparser_feed(FrameParser& p, uint8_t b, TransportSource src,
         p.len  |= (uint16_t)b << 8;
         p.idx   = 0;
         if (p.len > sizeof(p.payload)) {
-            if (on_err) on_err(ERR_PAYLOAD_TOO_BIG, src);
+            if (on_err) on_err(ERR_PAYLOAD_TOO_BIG, src, context);
             p.state = FrameParser::WAIT_SYNC;
         } else if (p.len == 0) {
             p.state = FrameParser::READ_CRC0;
@@ -62,11 +62,25 @@ void frameparser_feed(FrameParser& p, uint8_t b, TransportSource src,
         }
 
         if (computed == p.crc) {
-            if (on_ok) on_ok(p.cmd, p.payload, p.len, src);
+            if (on_ok) on_ok(p.cmd, p.payload, p.len, src, context);
         } else {
-            if (on_err) on_err(ERR_CRC_MISMATCH, src);
+            if (on_err) on_err(ERR_CRC_MISMATCH, src, context);
         }
         break;
     }
     }
+}
+
+void frameparser_feed(FrameParser& p, uint8_t b, TransportSource src,
+                      FrameOkCb on_ok, FrameErrCb on_err) {
+    struct Callbacks { FrameOkCb ok; FrameErrCb err; } callbacks{on_ok, on_err};
+    frameparser_feed(p, b, src,
+        [](uint8_t cmd, const uint8_t* payload, uint16_t len, TransportSource source, void* context) {
+            const auto& cb = *static_cast<Callbacks*>(context);
+            if (cb.ok) cb.ok(cmd, payload, len, source);
+        },
+        [](uint8_t err, TransportSource source, void* context) {
+            const auto& cb = *static_cast<Callbacks*>(context);
+            if (cb.err) cb.err(err, source);
+        }, &callbacks);
 }

@@ -9,6 +9,7 @@ from pathlib import Path
 import subprocess
 import tempfile
 import unittest
+from tcp_radio_stubs.adapt_wifi_port import stage_socket_port
 
 FIRMWARE = Path(__file__).resolve().parents[1]
 SCENARIOS = (
@@ -25,6 +26,8 @@ SCENARIOS = (
 
 def compile_routes(directory, source=None, fixture=None):
     directory = Path(directory)
+    if fixture:
+        stage_socket_port(directory, copy_wifi_stubs=False)
     binary = directory / "routes"
     ota = (FIRMWARE / "src/ota_manager.cpp").read_text()
     display = ("static IPAddress displayGateway(" +
@@ -35,6 +38,12 @@ def compile_routes(directory, source=None, fixture=None):
     consumer = main[start:main.index("\n#endif", start)]
     preamble = (FIRMWARE / "tools/wifi_recovery_stubs/recovery.cpp").read_text().split("int main(", 1)[0]
     (directory / "network_wifi.h").write_text(preamble + "\nvoid consumeFromMain(){\n" + consumer + "\n}\n")
+    selected_fixture = fixture or FIRMWARE / "tests/dhcp_routes_test.cpp"
+    if fixture:
+        text = fixture.read_text().replace('TCPServer::authenticated', 'TCPServer::sessions[0].authenticated').replace(
+            'TCPServer::parser', 'TCPServer::sessions[0].parser')
+        selected_fixture = directory / "session_fixture.cpp"
+        selected_fixture.write_text(text)
     subprocess.run([
         "g++", "-std=c++17", "-Wall", "-Wextra", "-Werror",
         "-fsanitize=address,undefined", "-fno-omit-frame-pointer",
@@ -43,7 +52,7 @@ def compile_routes(directory, source=None, fixture=None):
         "-I" + str(FIRMWARE / "tools/wifi_recovery_stubs"),
         "-I" + str(FIRMWARE / "include"),
         str(source or FIRMWARE / "src/dhcp_routes.cpp"),
-        str(fixture or FIRMWARE / "tests/dhcp_routes_test.cpp"), "-o", str(binary),
+        str(selected_fixture), "-o", str(binary),
     ], check=True)
     return binary
 

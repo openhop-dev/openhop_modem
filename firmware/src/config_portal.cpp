@@ -2,6 +2,7 @@
 // config_portal.cpp — HTML setup form served in AP mode
 // =============================================================
 #include "config_portal.h"
+#include "radio_layout.h"
 #include "rf_frontend.h"
 #include "wifi_manager.h"
 #include "webui_shared.h"
@@ -85,7 +86,8 @@ static void handleRoot() {
     model.dns1 = cfg.dns1.toString().c_str();
     model.dns2 = cfg.dns2.toString().c_str();
     model.hostname = cfg.hostname.c_str();
-    model.tcpPort = cfg.tcpPort;
+    model.tcpPort = RadioLayout::port(0, cfg.tcpPort);
+    model.tcpPortReadOnly = RadioLayout::fixedPorts();
     model.tcpToken = cfg.tcpToken.c_str();
 
     const std::string html = WebUiShared::renderSetupPage(model);
@@ -101,6 +103,14 @@ static IPAddress parseIP(const String& s) {
 
 static void handleSave() {
     if (!admitRequest()) return;
+    if (RadioLayout::fixedPorts()) {
+        const long requestedPort = server->arg("port").toInt();
+        if (requestedPort < 1 || requestedPort > 65535 ||
+            !RadioLayout::acceptsPrimaryPort(static_cast<uint16_t>(requestedPort))) {
+            server->send(400, "text/plain", "TCP ports are assigned by this board's radio descriptors.\n");
+            return;
+        }
+    }
     WifiManager::Config newCfg = WifiManager::getConfig();
 
     String ssidSel = server->arg("ssid");

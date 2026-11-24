@@ -5,9 +5,9 @@ import sys
 
 Import("env")  # noqa: F821 - PlatformIO/SCons
 sys.path.insert(0, str(Path(env.subst("$PROJECT_DIR")) / "tools"))
-from p4_firmware import P4_PROFILES, capture_build_info  # noqa: E402
+from p4_firmware import p4_profile, capture_build_info  # noqa: E402
 
-profile = P4_PROFILES[env["PIOENV"]]
+profile = p4_profile(env["PIOENV"])
 board = env.BoardConfig()
 if board.get("build.chip_variant") != profile["chip_variant"]:
     raise ValueError("P4 profile selected the wrong precompiled chip variant")

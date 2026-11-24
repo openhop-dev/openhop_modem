@@ -2,8 +2,9 @@
 
 This is the modem-side build/artifact contract for [issue #87](https://github.com/openhop-dev/openhop_modem/issues/87).
 Adding source support to `main` does not publish a new release. Browser-flasher
-revision detection/selection is separate work in `openHop-Modem-Flasher`, and
-physical acceptance is still required before calling these targets operational.
+revision detection/selection is separate work in `openHop-Modem-Flasher`.
+Compiled revision ranges are not physical acceptance of every board or revision;
+the scoped development qualification is recorded below.
 
 ## Supported build matrix
 
@@ -18,12 +19,21 @@ v3.2. ECO/ROM banner names are not a substitute for reading the chip revision.
 | Waveshare ESP32-P4-Nano | `esp32_p4_nano_v3` | `esp32p4` | 301–399 (v3.1–v3.99) | 400 MHz | 55.03.311 / 3.3.11 / 5.5.5 |
 | MeshSmith EtherMesh-1W | `ethermesh_1w` | `esp32p4_es` | 1–199 (v0.1–v1.99) | 360 MHz | 55.03.38-1 / 3.3.8 / 5.5.4 |
 | MeshSmith EtherMesh-1W | `ethermesh_1w_v3` | `esp32p4` | 301–399 (v3.1–v3.99) | 400 MHz | 55.03.311 / 3.3.11 / 5.5.5 |
+| MeshSmith EtherMesh-Duo | `ethermesh_duo` | `esp32p4_es` | 1–199 (v0.1–v1.99) | 360 MHz | 55.03.38-1 / 3.3.8 / 5.5.4 |
+| MeshSmith EtherMesh-Duo | `ethermesh_duo_v3` | `esp32p4` | 301–399 (v3.1–v3.99) | 400 MHz | 55.03.311 / 3.3.11 / 5.5.5 |
 
 The stock Arduino SDKs do **not** include literal v3.0 in their production
 profile. Do not round `301` down to `300`, accept v2.x as "pre-v3", widen
 metadata, or reuse an engineering-sample binary on production silicon. A v3.0
 profile would need a separately built SDK and bootloader with `REV_MIN_300`,
 followed by its own verification.
+
+Bounded shared-runtime qualification passed on a legacy EtherMesh-1W using
+`ethermesh_1w` and a production-family EtherMesh-Duo using `ethermesh_duo_v3`.
+Both passed app-only update/reboot, authenticated TCP and packet-level RX/TX
+checks. This does not qualify P4-Nano, every revision in the SDK ranges, full
+factory recovery or the other board/profile combinations. See the
+[multi-radio validation scope](multi-radio.md#validation-boundaries).
 
 The `_v3` environments inherit their physical board's application macro, GPIO,
 Ethernet, radio/RF-front-end, serial, display and partition policies. Only the
@@ -77,10 +87,12 @@ pio run -d firmware -e esp32_p4_nano
 pio run -d firmware -e esp32_p4_nano_v3
 pio run -d firmware -e ethermesh_1w
 pio run -d firmware -e ethermesh_1w_v3
+pio run -d firmware -e ethermesh_duo
+pio run -d firmware -e ethermesh_duo_v3
 
 # Generate complete candidates outside tracked firmware directories.
 python3 firmware/tools/build_firmware_assets.py \
-  --variant esp32_p4_nano,esp32_p4_nano_v3,ethermesh_1w,ethermesh_1w_v3 \
+  --variant esp32_p4_nano,esp32_p4_nano_v3,ethermesh_1w,ethermesh_1w_v3,ethermesh_duo,ethermesh_duo_v3 \
   --output-dir "$HOME/firmware-candidates/p4"
 ```
 
@@ -94,7 +106,7 @@ packages underneath another build. Each environment retains separate outputs,
 but they still share that project-wide cleanup boundary.
 
 A P4 board-header change selects both silicon profiles. Changes to the P4
-metadata helper/hook select all four P4 environments. Existing explicit legacy
+metadata helper/hook select all P4 environments in the matrix. Existing explicit legacy
 environment names still select only that environment; `all` includes the new
 production environments. No feature-branch push build or release trigger is
 introduced by this work.
@@ -146,8 +158,10 @@ per-environment ZIP naming remains `openhop-modem-{environment}-{tag}.zip`.
 The main-branch asset workflow can generate these directories after the source
 merge; publishing a release remains a separate explicit step.
 
-Until a versioned release is requested, `FW_VERSION_BASE` stays unchanged.
-Legacy and production builds of one physical board intentionally retain the
+`FW_VERSION_BASE` is the canonical source version and changes only when a new
+version is requested. A source-version bump does not regenerate prebuilt images
+or authorize relabeling their existing manifests/checksums. Legacy and production
+builds of one physical board intentionally retain the
 same runtime board/version suffix. Use the selected environment, metadata and
 exact artifact checksum to identify a candidate, not the version text alone.
 
@@ -180,7 +194,9 @@ selection; preserve configuration separately. App-only USB/OTA updates do not
 replace a bootloader or partition table and are appropriate only with a proven
 matching update contract. Never bypass a revision rejection by forcing a write.
 
-Hardware acceptance remains separate from compilation and successful transfer:
+Hardware acceptance remains separate from compilation and successful transfer.
+For another board/profile or changed artifacts, verify the applicable cases
+rather than treating the existing scoped qualification as a blanket pass:
 
 - test at least one legacy board and one production board, including the
   reported ECO7/v3.2 unit;

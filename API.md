@@ -92,6 +92,57 @@ Station G3 example:
 `pa_high_power_enabled` and `station_g3_external_lna_enabled` are Station G3-only.
 The LNA setting controls receive mode; firmware always bypasses the LNA before TX.
 
+### `GET /api/radios`
+
+On ESP32 network builds, returns one entry per declared radio slot, including
+disabled or failed owners.
+Each entry has `id`, `label`, `tcp_port`, `present`, `enabled`, `ready`,
+`tx_ready`, `connected_client_ip`, `radio` and `counters`. `present` describes
+board capability, not physical module detection. IDs and ports never compact
+when a slot is disabled. A single-radio board returns one entry.
+
+`connected_client_ip` belongs to that endpoint's current TCP client, not a
+device-wide last-client value. Different hosts can own different radio ports;
+each endpoint authenticates independently. For example, the client-identity
+fields of a two-radio response can be:
+
+```json
+[
+  {"id": 0, "label": "RF1", "tcp_port": 5055, "connected_client_ip": "192.0.2.10"},
+  {"id": 1, "label": "RF2", "tcp_port": 5056, "connected_client_ip": "192.0.2.20"}
+]
+```
+
+This excerpt omits the readiness, radio and counter fields. A disconnected
+endpoint reports `null`; disconnecting it does not transfer its requests,
+replies or identity to the other radio or a replacement client.
+
+Multi-radio `/api/stats` also adds `radios`. Existing scalar `radio`, `counters`
+and connection projections remain primary-radio views, not aggregates. Fixed
+board-declared ports cannot be changed by saving a conflicting scalar port.
+
+### `POST /api/radios`
+
+On a supported, explicitly opted-in ESP32 multi-radio board, saves the next
+boot's enabled selection. The object must contain only `enabled`, with exactly
+one Boolean per declared slot. A four-slot example is:
+
+```json
+{"enabled":[true,false,true,true]}
+```
+
+An all-false selection is valid. A successful checked save returns a saved/
+rebooting JSON acknowledgment and schedules reboot; it does not mutate live
+owners before reboot. Invalid schemas, unsupported boards and failed storage
+operations do not change the active selection or reboot. Use this endpoint,
+not ignored fields on `/api/config`, for radio selection.
+
+The native Settings form posts to `/radios`. Its client makes one save, then
+bounded authenticated readiness reads; it never automatically repeats a save.
+Software disable skips radio work but does not remove electrical power.
+
+See [multi-radio behavior and platform limits](docs/multi-radio.md).
+
 ### `GET /api/network`
 
 Returns live network status plus the saved network configuration.

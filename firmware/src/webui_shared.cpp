@@ -57,7 +57,7 @@ std::string uptime(uint32_t seconds) {
     return buffer;
 }
 
-std::string hexByte(uint8_t value) {
+std::string hexSyncword(uint16_t value) {
     char buffer[8];
     std::snprintf(buffer, sizeof(buffer), "0x%x", static_cast<unsigned>(value));
     return buffer;
@@ -79,6 +79,54 @@ void appendKv(std::string& body, const char* key, const std::string& value) {
     body += "</span><span class='v'>";
     body += value;
     body += "</span></div>";
+}
+
+
+// Shared by management and stats so endpoint markup has the same layout on both.
+const char* managementLayoutCss() {
+    return ".grid{grid-template-columns:repeat(auto-fit,minmax(min(100%,220px),1fr))}"
+           ".grid>*{min-width:0}"
+           ".kv{border:1px solid #ddd;border-radius:8px;background:#fff;padding:.7em .8em}"
+           ".k{display:block;color:#666;font-size:.9em;margin-bottom:.2em}"
+           ".v{display:block;font-weight:600;overflow-wrap:anywhere}"
+           ".radio-endpoint{border:1px solid #ddd;border-radius:8px;padding:.8em;margin:0 0 1em;background:#fff}"
+           ".radio-endpoint>summary{cursor:pointer;font-weight:700}"
+           ".radio-endpoint .inside{margin-top:.75em}"
+           ".summary p{display:grid;grid-template-columns:11.5em minmax(0,1fr);gap:.15em .6em;overflow-wrap:anywhere}"
+           ".summary strong{min-width:0;white-space:nowrap}.summary p.m{display:block}"
+           ".cli-alternative{margin-top:1.25em}"
+           ".cli-example{display:block;max-width:100%;margin-top:.45em;padding:.7em .8em;white-space:pre;overflow-x:auto}"
+           "@media(max-width:480px){.summary p{grid-template-columns:minmax(0,1fr)}}";
+}
+
+std::string radioEndpointsHtml(const Model& m, bool detailed = false) {
+    if (m.radios.size() < 2) return "";
+    std::string out = detailed ? "<h3>Radio endpoints</h3>" : "<h3>Radio status</h3><div class='grid'>";
+    for (const auto& endpoint : m.radios) {
+        if (!detailed) {
+            out += "<div class='kv radio-status'><span class='k'>" + htmlEscape(endpoint.label) +
+                   " &mdash; TCP " + number(endpoint.tcpPort) + "</span><span class='v'>" +
+                   (!endpoint.enabled ? "Disabled" : endpoint.ready ? htmlEscape(endpoint.radio.state) : "Initialization failed (Not ready)") +
+                   "</span><div class='m'>Client: " +
+                   (endpoint.connectedClientIp.empty() ? "none" : htmlEscape(endpoint.connectedClientIp)) +
+                   "</div><div class='m'>TX configuration: " +
+                   (endpoint.txReady ? "Valid" : "Not ready") + "</div></div>";
+            continue;
+        }
+        out += "<details class='radio-endpoint' open><summary>" + htmlEscape(endpoint.label) + " &mdash; TCP " + number(endpoint.tcpPort) + "</summary><div class='inside grid'>";
+        appendKv(out, "State", !endpoint.enabled ? "Disabled" : endpoint.ready ? htmlEscape(endpoint.radio.state) : "Initialization failed (Not ready)");
+        appendKv(out, "Client", endpoint.connectedClientIp.empty() ? "none" : htmlEscape(endpoint.connectedClientIp));
+        appendKv(out, "Frequency", fixed(endpoint.radio.frequencyHz / 1000000.0, 3) + " MHz");
+        appendKv(out, "Bandwidth", fixed(endpoint.radio.bandwidthHz / 1000.0, 1) + " kHz");
+        appendKv(out, "Spreading factor", "SF" + number(endpoint.radio.spreadingFactor));
+        appendKv(out, "TX configuration", endpoint.txReady ? "Valid" : "Not ready");
+        appendKv(out, "RX packets", number(endpoint.counters.rxPackets));
+        appendKv(out, "TX packets", number(endpoint.counters.txPackets));
+        appendKv(out, "CRC errors", number(endpoint.counters.crcErrors));
+        out += "</div></details>";
+    }
+    if (!detailed) out += "</div>";
+    return out;
 }
 
 }  // namespace
@@ -148,7 +196,7 @@ std::string renderSetupPage(const SetupModel& m) {
     }
     body += "<label><input type='checkbox' name='static' value='1'";
     if (m.useStaticIp) body += " checked";
-    body += "> Use static IP (otherwise DHCP)</label><label>Static IP</label><input type='text' name='ip' value='" + htmlEscape(m.staticIp) + "' placeholder='192.168.1.42'><label>Gateway</label><input type='text' name='gw' value='" + htmlEscape(m.gateway) + "' placeholder='192.168.1.1'><label>Subnet mask</label><input type='text' name='sn' value='" + htmlEscape(m.subnet) + "' placeholder='255.255.255.0'><label>DNS 1</label><input type='text' name='dns1' value='" + htmlEscape(m.dns1) + "' placeholder='1.1.1.1'><label>DNS 2</label><input type='text' name='dns2' value='" + htmlEscape(m.dns2) + "' placeholder='8.8.8.8'><hr><label>Hostname <span class='hint'>(optional; blank = default mDNS name)</span></label><input type='text' name='hostname' autocomplete='off' maxlength='32' value='" + htmlEscape(m.hostname) + "' placeholder='ethermesh-1w'><label>TCP port</label><input type='number' name='port' min='1' max='65535' value='" + number(m.tcpPort) + "'><label>TCP auth token <span class='hint'>(optional; empty = no auth)</span></label><input type='text' name='token' autocomplete='off' value='" + htmlEscape(m.tcpToken) + "'><button type='submit'>Save &amp; Restart</button></form></body></html>";
+    body += "> Use static IP (otherwise DHCP)</label><label>Static IP</label><input type='text' name='ip' value='" + htmlEscape(m.staticIp) + "' placeholder='192.168.1.42'><label>Gateway</label><input type='text' name='gw' value='" + htmlEscape(m.gateway) + "' placeholder='192.168.1.1'><label>Subnet mask</label><input type='text' name='sn' value='" + htmlEscape(m.subnet) + "' placeholder='255.255.255.0'><label>DNS 1</label><input type='text' name='dns1' value='" + htmlEscape(m.dns1) + "' placeholder='1.1.1.1'><label>DNS 2</label><input type='text' name='dns2' value='" + htmlEscape(m.dns2) + "' placeholder='8.8.8.8'><hr><label>Hostname <span class='hint'>(optional; blank = default mDNS name)</span></label><input type='text' name='hostname' autocomplete='off' maxlength='32' value='" + htmlEscape(m.hostname) + "' placeholder='ethermesh-1w'><label>TCP port</label><input type='number' name='port' min='1' max='65535' value='" + number(m.tcpPort) + "'" + std::string(m.tcpPortReadOnly ? " readonly" : "") + "><label>TCP auth token <span class='hint'>(optional; empty = no auth)</span></label><input type='text' name='token' autocomplete='off' value='" + htmlEscape(m.tcpToken) + "'><button type='submit'>Save &amp; Restart</button></form></body></html>";
     return body;
 }
 
@@ -168,17 +216,24 @@ std::string renderRootPage(const Model& m) {
 
     std::string body;
     body.reserve(9000);
-    body += "<!DOCTYPE html><html><head><meta charset='utf-8'><meta name='viewport' content='width=device-width,initial-scale=1'><title>" + title + "</title><style>body{font-family:system-ui,sans-serif;max-width:760px;margin:1.25em auto;padding:0 1em;color:#222;line-height:1.45}h2{margin:.2em 0 .35em}p{margin:.45em 0}.m{color:#666;font-size:.92em}.summary{background:#f7f7f7;border:1px solid #ddd;border-radius:8px;padding:.8em 1em;margin:1em 0 1.2em}.summary strong{display:inline-block;min-width:4.5em}.chips{margin-top:.55em}.chip{display:inline-block;background:#efefef;border:1px solid #ddd;border-radius:999px;padding:.2em .6em;margin:0 .35em .35em 0;font-size:.9em}details{border:1px solid #ddd;border-radius:8px;padding:.65em .8em;margin:0 0 .9em;background:#fff}summary{cursor:pointer;font-weight:700;list-style:none}summary::-webkit-details-marker{display:none}.inside{margin-top:.8em}.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:.75em 1em}label{display:block;margin-top:.8em;font-weight:600}input{width:100%;padding:.55em;box-sizing:border-box;font-size:1em;border:1px solid #ccc;border-radius:6px}input[type=file]{padding:.3em 0;border:0}input[type=checkbox]{width:auto;margin-right:.45em}.checkline{display:flex;align-items:center;gap:.35em;margin-top:.8em}button{margin-top:.9em;padding:.6em 1em;background:#2f6f5e;color:#fff;border:0;border-radius:6px;cursor:pointer}button.danger{background:#b3261e}button:disabled{background:#999;cursor:not-allowed}code{font-family:ui-monospace,SFMono-Regular,monospace;background:#f3f3f3;padding:.1em .35em;border-radius:4px}@media (max-width:640px){body{padding:0 .75em}}</style></head><body><h2>" + title + "</h2><div class='summary'>";
+    body += "<!DOCTYPE html><html><head><meta charset='utf-8'><meta name='viewport' content='width=device-width,initial-scale=1'><title>" + title + "</title><style>body{font-family:system-ui,sans-serif;max-width:760px;margin:1.25em auto;padding:0 1em;color:#222;line-height:1.45}h2{margin:.2em 0 .35em}p{margin:.45em 0}.m{color:#666;font-size:.92em}.summary{background:#f7f7f7;border:1px solid #ddd;border-radius:8px;padding:.8em 1em;margin:1em 0 1.2em}.summary strong{display:inline-block;min-width:4.5em}.chips{margin-top:.55em}.chip{display:inline-block;background:#efefef;border:1px solid #ddd;border-radius:999px;padding:.2em .6em;margin:0 .35em .35em 0;font-size:.9em}details{border:1px solid #ddd;border-radius:8px;padding:.65em .8em;margin:0 0 .9em;background:#fff}summary{cursor:pointer;font-weight:700;list-style:none}summary::-webkit-details-marker{display:none}.inside{margin-top:.8em}.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:.75em 1em}label{display:block;margin-top:.8em;font-weight:600}input{width:100%;padding:.55em;box-sizing:border-box;font-size:1em;border:1px solid #ccc;border-radius:6px}input[type=file]{padding:.3em 0;border:0}input[type=checkbox]{width:auto;margin-right:.45em}.checkline{display:flex;align-items:center;gap:.35em;margin-top:.8em}button{margin-top:.9em;padding:.6em 1em;background:#2f6f5e;color:#fff;border:0;border-radius:6px;cursor:pointer}button.danger{background:#b3261e}button:disabled{background:#999;cursor:not-allowed}code{font-family:ui-monospace,SFMono-Regular,monospace;background:#f3f3f3;padding:.1em .35em;border-radius:4px}@media (max-width:640px){body{padding:0 .75em}}";
+    body += managementLayoutCss();
+    body += "</style></head><body><h2>" + title + "</h2><div class='summary'>";
     if (m.capabilities.mdns) body += "<p><strong>mDNS</strong> " + host + ".local</p>";
     else body += "<p><strong>Hostname</strong> " + host + "</p>";
-    body += "<p><strong>IP</strong> " + ip + "</p><p><strong>Interface</strong> " + htmlEscape(m.network.interfaceName) + "</p><p><strong>Current connection</strong> " + (m.connectedClientIp.empty() ? "none" : htmlEscape(m.connectedClientIp)) + "</p>";
+    body += "<p><strong>IP</strong> " + ip + "</p><p><strong>Interface</strong> " + htmlEscape(m.network.interfaceName) + "</p>";
+    if (m.radios.size() < 2) {
+        body += "<p><strong>Current connection</strong> " + (m.connectedClientIp.empty() ? "none" : htmlEscape(m.connectedClientIp)) + "</p>";
+    }
     if (m.capabilities.ethernet) {
         body += "<p><strong>Link</strong> " + display(m.network.linkState) + "</p><p><strong>MAC</strong> " + display(m.network.mac) + "</p><p><strong>TCP status</strong> " + display(m.network.tcpStatus) + "</p>";
     }
     body += "<div class='chips'><span class='chip'>" + std::string(m.config.tcpTokenSet ? "openHop protected" : "openHop open") + "</span><span class='chip'>" + std::string(m.config.useStaticIp ? "Static network saved" : "DHCP mode") + "</span></div><p class='m'><a href='/stats'>View stats page</a></p></div>";
 
+    body += radioEndpointsHtml(m);
+
     if (m.capabilities.httpFirmwareUpload && m.capabilities.updateAvailable) {
-        body += "<details open><summary>OTA Update</summary><div class='inside'><p>Upload an app-only <code>firmware.bin</code> over the LAN.</p><form method='POST' action='/update' enctype='multipart/form-data'><input type='file' name='firmware' accept='.bin' required><br><button type='submit'>Upload firmware.bin</button></form><p class='m'>CLI alternative: <code>curl -u admin:&lt;password&gt; -F firmware=@firmware.bin http://" + host + (m.capabilities.mdns ? ".local" : "") + "/update</code></p></div></details>";
+        body += "<details open><summary>OTA Update</summary><div class='inside'><p>Upload an app-only <code>firmware.bin</code> over the LAN.</p><form method='POST' action='/update' enctype='multipart/form-data'><input type='file' name='firmware' accept='.bin' required><br><button type='submit'>Upload firmware.bin</button></form><p class='m cli-alternative'>CLI alternative: <code class='cli-example'>curl -u admin:&lt;password&gt; &#92;&#10;  -F firmware=@firmware.bin &#92;&#10;  http://" + host + (m.capabilities.mdns ? ".local" : "") + "/update</code></p></div></details>";
     } else {
         body += "<details open><summary>Ethernet OTA unavailable</summary><div class='inside'><p>" + htmlEscape(m.updateUnavailableReason.empty() ? "Firmware update is unavailable on this platform." : m.updateUnavailableReason) + "</p><button type='button' disabled>Firmware update unavailable</button></div></details>";
     }
@@ -195,6 +250,14 @@ std::string renderRootPage(const Model& m) {
         body += "</div></div></details>";
     }
     if (m.capabilities.writableManagement) {
+    if (m.capabilities.radioSelection && !m.radios.empty()) {
+        body += "<details><summary>Radios</summary><div class='inside'><form method='POST' action='/radios' data-reboot-save='radios'><input type='hidden' name='radio_form' value='1'>";
+        for (const auto& endpoint : m.radios) {
+            const std::string field = "rf" + number(endpoint.id);
+            body += "<div class='checkline'><input type='checkbox' id='" + field + "' name='" + field + "' value='1'" + (endpoint.enabled ? " checked" : "") + "><label for='" + field + "'>Enable " + htmlEscape(endpoint.label) + "</label></div>";
+        }
+        body += "<button type='submit'>Save &amp; Reboot</button></form><p class='m'>Software disabling skips the radio driver but does not cut electrical power. All declared radios may be disabled; management remains available. Changes apply after reboot.</p></div></details>";
+    }
     body += "<details><summary>Hostname</summary><div class='inside'><p>Controls the " + std::string(m.capabilities.mdns ? "mDNS / OTA hostname the modem advertises on the network." : "hostname shown by the modem on the network.") + "</p><form method='POST' action='/hostname' data-reboot-save='hostname'><label>" + std::string(m.capabilities.mdns ? "mDNS / OTA hostname" : "Hostname") + "</label><input type='text' name='hostname' autocomplete='off' maxlength='64' value='" + htmlEscape(m.config.hostname) + "' placeholder='leave blank for default'><button type='submit'>Save hostname</button></form><p class='m'>Blank resets to the board default. Reboot required.</p></div></details>";
     body += "<details><summary>Network</summary><div class='inside'><p>" + leaseHint + "</p><form method='POST' action='/network' data-reboot-save='network'><div class='checkline'><input type='checkbox' id='static' name='static' value='1'" + std::string(m.config.useStaticIp ? " checked" : "") + "><label for='static'>Use static IP instead of DHCP</label></div><div class='grid'><div><label>Static IP</label><input type='text' name='ip' value='" + ipValue + "' placeholder='192.168.1.42'></div><div><label>Subnet mask</label><input type='text' name='sn' value='" + subnetValue + "' placeholder='255.255.255.0'></div><div><label>Gateway</label><input type='text' name='gw' value='" + gatewayValue + "' placeholder='192.168.1.1'></div><div><label>DNS 1</label><input type='text' name='dns1' value='" + dns1Value + "' placeholder='1.1.1.1'></div><div><label>DNS 2</label><input type='text' name='dns2' value='" + dns2Value + "' placeholder='8.8.8.8'></div><div><label>Current source</label><div class='chip'>" + htmlEscape(m.network.interfaceName) + "</div></div></div>";
     if (m.capabilities.ethernet) {
@@ -206,7 +269,9 @@ std::string renderRootPage(const Model& m) {
     if (m.capabilities.wifi) {
         body += "<div class='checkline'><input type='checkbox' id='wifi_ps' name='wifi_ps' value='1'" + std::string(m.config.wifiPowerSave ? " checked" : "") + "><label for='wifi_ps' title='Disable for lower latency, higher power draw'>Wi-Fi power save</label></div>";
     }
-    body += "<label>openHop TCP port</label><input type='number' name='port' min='1' max='65535' value='" + number(m.config.tcpPort) + "'><p class='m'>Port 80 is reserved for this management server.</p><button type='submit'>Save network settings</button></form></div></details>";
+    body += "<label>openHop TCP port</label><input type='number' name='port' min='1' max='65535' value='" + number(m.config.tcpPort) + "'";
+    if (m.config.tcpPortReadOnly) body += " readonly";
+    body += "><p class='m'>" + std::string(m.config.tcpPortReadOnly ? "Ports are assigned by the board; see Radio endpoints." : "Port 80 is reserved for this management server.") + "</p><button type='submit'>Save network settings</button></form></div></details>";
     }
     if (m.capabilities.stationAgcControls && m.capabilities.writableManagement) {
         body += "<details open><summary>Station AGC Recovery</summary><div class='inside'>"
@@ -269,7 +334,7 @@ std::string renderRootPage(const Model& m) {
         body += "<form method='POST' action='/dfu/ble' onsubmit=\"return confirm('Enter Bluetooth DFU? Ethernet and port 5055 will disconnect until DFU completes or the device resets.');\"><button class='danger' type='submit'>Enter Bluetooth DFU</button></form><p class='m'>This action only enters DFU mode; it does not upload firmware over Ethernet.</p></div></details>";
     }
     if (m.capabilities.writableManagement) {
-        body += "<div id='save-status' class='summary' hidden></div><script>(()=>{for(const form of document.querySelectorAll('form[data-reboot-save]')){form.addEventListener('submit',async event=>{event.preventDefault();const fields=new FormData(form);let target=location.origin+'/';if(form.dataset.rebootSave==='network'&&fields.has('static')){const ip=String(fields.get('ip')||'').trim();if(ip)target=location.protocol+'//'+ip+'/';}const status=document.getElementById('save-status');status.hidden=false;status.textContent='Saving settings...';for(const button of form.querySelectorAll('button'))button.disabled=true;try{const response=await fetch(form.action,{method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},body:new URLSearchParams(new FormData(form)),credentials:'same-origin'});const message=await response.text();if(!response.ok)throw new Error(message||('HTTP '+response.status));status.textContent='Settings saved. Modem is rebooting. Returning to the main page...';setTimeout(()=>location.replace(target),7000);}catch(error){status.textContent='Save failed: '+error.message;for(const button of form.querySelectorAll('button'))button.disabled=false;}});}})();</script>";
+        body += "<div id='save-status' class='summary' hidden></div><script>(()=>{for(const form of document.querySelectorAll('form[data-reboot-save]')){form.addEventListener('submit',async event=>{event.preventDefault();const fields=new FormData(form);let target=location.origin+'/';if(form.dataset.rebootSave==='network'&&fields.has('static')){const ip=String(fields.get('ip')||'').trim();if(ip)target=location.protocol+'//'+ip+'/';}const status=document.getElementById('save-status');status.hidden=false;status.textContent='Saving settings...';for(const button of form.querySelectorAll('button'))button.disabled=true;try{const response=await fetch(form.action,{method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},body:new URLSearchParams(new FormData(form)),credentials:'same-origin'});const message=await response.text();if(!response.ok)throw new Error(message||('HTTP '+response.status));status.textContent='Settings saved. Modem is rebooting. Returning to the main page...';if(form.dataset.rebootSave==='radios'){const wanted=Array.from(form.querySelectorAll('input[type=checkbox]'),input=>({id:Number(input.name.slice(2)),enabled:fields.has(input.name)}));const deadline=Date.now()+90000;status.textContent='Settings saved. Waiting for the modem to restart...';await new Promise(resolve=>setTimeout(resolve,1500));while(Date.now()<deadline){const controller=new AbortController();const timer=setTimeout(()=>controller.abort(),2500);try{const check=await fetch('/api/radios',{credentials:'same-origin',cache:'no-store',signal:controller.signal});if(check.ok){const radios=await check.json();if(Array.isArray(radios)&&radios.length===wanted.length&&wanted.every(w=>radios.some(r=>r.id===w.id&&r.enabled===w.enabled))){location.replace(target);return;}}}catch(error){}finally{clearTimeout(timer);}await new Promise(resolve=>setTimeout(resolve,1500));}status.textContent='Settings were saved, but automatic reconnection timed out. ';const link=document.createElement('a');link.href=target;link.textContent='Open modem page';status.appendChild(link);for(const button of form.querySelectorAll('button'))button.disabled=false;}else{setTimeout(()=>location.replace(target),7000);}}catch(error){status.textContent='Save failed: '+error.message;for(const button of form.querySelectorAll('button'))button.disabled=false;}});}})();</script>";
     }
     body += "</body></html>";
     return body;
@@ -278,11 +343,13 @@ std::string renderRootPage(const Model& m) {
 std::string renderStatsPage(const Model& m) {
     std::string body;
     body.reserve(7000);
-    body += "<!DOCTYPE html><html><head><meta charset='utf-8'><meta name='viewport' content='width=device-width,initial-scale=1'><meta http-equiv='refresh' content='5'><title>Modem Stats</title><style>body{font-family:system-ui,sans-serif;max-width:760px;margin:1.25em auto;padding:0 1em;color:#222;line-height:1.45}h2{margin:.2em 0 .35em}h3{margin:1.2em 0 .45em}.m{color:#666;font-size:.92em}.card{background:#f7f7f7;border:1px solid #ddd;border-radius:8px;padding:.8em 1em;margin:1em 0}.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:.75em 1em}.kv{border:1px solid #ddd;border-radius:8px;background:#fff;padding:.7em .8em}.k{display:block;color:#666;font-size:.9em;margin-bottom:.2em}.v{font-weight:600}.actions{margin:1em 0}.actions a{margin-right:1em}code{font-family:ui-monospace,SFMono-Regular,monospace;background:#f3f3f3;padding:.1em .35em;border-radius:4px}@media (max-width:640px){body{padding:0 .75em}}</style></head><body><h2>" + htmlEscape(m.board + " openHop Modem") + " Stats</h2><div class='actions'><a href='/'>Back to main page</a></div><p class='m'>Auto-refreshes every 5 seconds.</p><div class='card'><div class='grid'>";
+    body += "<!DOCTYPE html><html><head><meta charset='utf-8'><meta name='viewport' content='width=device-width,initial-scale=1'><meta http-equiv='refresh' content='5'><title>Modem Stats</title><style>body{font-family:system-ui,sans-serif;max-width:760px;margin:1.25em auto;padding:0 1em;color:#222;line-height:1.45}h2{margin:.2em 0 .35em}h3{margin:1.2em 0 .45em}.m{color:#666;font-size:.92em}.card{background:#f7f7f7;border:1px solid #ddd;border-radius:8px;padding:.8em 1em;margin:1em 0}.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:.75em 1em}.kv{border:1px solid #ddd;border-radius:8px;background:#fff;padding:.7em .8em}.k{display:block;color:#666;font-size:.9em;margin-bottom:.2em}.v{font-weight:600}.actions{margin:1em 0}.actions a{margin-right:1em}code{font-family:ui-monospace,SFMono-Regular,monospace;background:#f3f3f3;padding:.1em .35em;border-radius:4px}@media (max-width:640px){body{padding:0 .75em}}";
+    body += managementLayoutCss();
+    body += "</style></head><body><h2>" + htmlEscape(m.board + " openHop Modem") + " Stats</h2><div class='actions'><a href='/'>Back to main page</a></div><p class='m'>Auto-refreshes every 5 seconds.</p><div class='card'><div class='grid'>";
     appendKv(body, "Firmware", htmlEscape(m.firmware));
     appendKv(body, "Hostname", htmlEscape(m.hostname) + (m.capabilities.mdns ? ".local" : ""));
     appendKv(body, "Current IP", display(m.network.currentIp));
-    appendKv(body, "Connected client", m.connectedClientIp.empty() ? "none" : htmlEscape(m.connectedClientIp));
+    if (m.radios.size() < 2) appendKv(body, "Connected client", m.connectedClientIp.empty() ? "none" : htmlEscape(m.connectedClientIp));
     appendKv(body, "Interface", htmlEscape(m.network.interfaceName));
     if (m.network.hasWifiRssi) appendKv(body, "Wi-Fi signal", number(m.network.wifiRssiDbm) + " dBm");
     if (m.capabilities.ethernet) {
@@ -298,7 +365,10 @@ std::string renderStatsPage(const Model& m) {
         if (m.gps.fixValid) appendKv(body, "GPS location", fixed(m.gps.latitude, 6) + ", " + fixed(m.gps.longitude, 6));
     }
     body += "</div></div>";
-    if (m.capabilities.radio && m.radio.available) {
+    body += radioEndpointsHtml(m, true);
+    // Multi-radio pages already expose each owner's state and parameters.
+    // The legacy primary projection can be Error when RF1 is disabled normally.
+    if (m.radios.size() < 2 && m.capabilities.radio && m.radio.available) {
         body += "<h3>Radio</h3><div class='grid'>";
         appendKv(body, "State", htmlEscape(m.radio.state));
         appendKv(body, "Frequency", fixed(m.radio.frequencyHz / 1000000.0, 3) + " MHz");
@@ -306,7 +376,7 @@ std::string renderStatsPage(const Model& m) {
         appendKv(body, "Spreading factor", "SF" + number(m.radio.spreadingFactor));
         appendKv(body, "Coding rate", "4/" + number(m.radio.codingRate));
         appendKv(body, "TX power", number(m.radio.txPowerDbm) + " dBm");
-        appendKv(body, "Syncword", hexByte(m.radio.syncword));
+        appendKv(body, "Syncword", hexSyncword(m.radio.syncword));
         appendKv(body, "Preamble", number(m.radio.preambleLength));
         body += "</div>";
     }
@@ -335,9 +405,31 @@ std::string renderSystemJson(const Model& m) {
 }
 
 std::string renderRadioJson(const Model& m) {
-    std::string out = "{\"state\":" + quote(m.radio.state) + ",\"standby\":" + boolean(m.radio.standby) + ",\"auto_cad_enabled\":" + boolean(m.radio.autoCadEnabled) + ",\"frequency_hz\":" + number(m.radio.frequencyHz) + ",\"frequency_mhz\":" + fixed(m.radio.frequencyHz / 1000000.0, 3) + ",\"bandwidth_hz\":" + number(m.radio.bandwidthHz) + ",\"bandwidth_khz\":" + fixed(m.radio.bandwidthHz / 1000.0, 1) + ",\"spreading_factor\":" + number(m.radio.spreadingFactor) + ",\"coding_rate\":" + number(m.radio.codingRate) + ",\"tx_power_dbm\":" + number(m.radio.txPowerDbm) + ",\"syncword\":" + quote(hexByte(m.radio.syncword)) + ",\"syncword_value\":" + number(m.radio.syncword) + ",\"preamble_len\":" + number(m.radio.preambleLength);
+    std::string out = "{\"state\":" + quote(m.radio.state) + ",\"standby\":" + boolean(m.radio.standby) + ",\"auto_cad_enabled\":" + boolean(m.radio.autoCadEnabled) + ",\"frequency_hz\":" + number(m.radio.frequencyHz) + ",\"frequency_mhz\":" + fixed(m.radio.frequencyHz / 1000000.0, 3) + ",\"bandwidth_hz\":" + number(m.radio.bandwidthHz) + ",\"bandwidth_khz\":" + fixed(m.radio.bandwidthHz / 1000.0, 1) + ",\"spreading_factor\":" + number(m.radio.spreadingFactor) + ",\"coding_rate\":" + number(m.radio.codingRate) + ",\"tx_power_dbm\":" + number(m.radio.txPowerDbm) + ",\"syncword\":" + quote(hexSyncword(m.radio.syncword)) + ",\"syncword_value\":" + number(m.radio.syncword) + ",\"preamble_len\":" + number(m.radio.preambleLength);
     if (m.capabilities.heltecV43Controls) out += ",\"heltec_v43_external_lna_enabled\":" + boolean(m.config.heltecV43ExternalLnaEnabled) + ",\"heltec_v43_fem_lna_bypassed\":" + boolean(m.config.heltecV43FemLnaBypassed) + ",\"agc_reset_interval_sec\":" + number(m.config.agcResetIntervalSec);
     return out + "}";
+}
+
+std::string renderRadiosJson(const Model& m) {
+    std::string out = "[";
+    for (size_t i = 0; i < m.radios.size(); ++i) {
+        if (i) out += ",";
+        const auto& endpoint = m.radios[i];
+        Model view;
+        view.radio = endpoint.radio;
+        view.counters = endpoint.counters;
+        out += "{\"id\":" + number(endpoint.id) + ",\"label\":" + quote(endpoint.label);
+        out += ",\"tcp_port\":" + number(endpoint.tcpPort);
+        out += ",\"present\":" + boolean(endpoint.radio.available);
+        out += ",\"enabled\":" + boolean(endpoint.enabled);
+        out += ",\"ready\":" + boolean(endpoint.ready);
+        out += ",\"tx_ready\":" + boolean(endpoint.txReady);
+        out += ",\"busy\":" + boolean(endpoint.busy);
+        out += ",\"connected_client_ip\":" + nullableString(endpoint.connectedClientIp);
+        out += ",\"radio\":" + renderRadioJson(view);
+        out += ",\"counters\":" + renderCountersJson(view) + "}";
+    }
+    return out + "]";
 }
 
 std::string renderCountersJson(const Model& m) {
@@ -383,7 +475,9 @@ std::string renderGpsJson(const Model& m) {
 std::string renderStatsJson(const Model& m) {
     std::string out = "{\"battery_voltage_mv\":" + (m.battery.voltageValid ? number(m.battery.voltageMv) : "null") + ",\"battery_voltage_v\":" + (m.battery.voltageValid ? fixed(m.battery.voltageMv / 1000.0, 3) : "null");
     if (m.battery.chargeRateAvailable) out += ",\"solar_charge_rate_percent_per_hour\":" + (m.battery.chargeRateValid ? fixed(m.battery.chargeRatePctPerHour, 3) : "null");
-    out += ",\"system\":" + renderSystemJson(m) + ",\"radio\":" + renderRadioJson(m) + ",\"counters\":" + renderCountersJson(m) + ",\"network\":" + renderNetworkJson(m) + ",\"gps\":" + renderGpsJson(m) + "}";
+    out += ",\"system\":" + renderSystemJson(m) + ",\"radio\":" + renderRadioJson(m) + ",\"counters\":" + renderCountersJson(m) + ",\"network\":" + renderNetworkJson(m) + ",\"gps\":" + renderGpsJson(m);
+    if (m.radios.size() > 1) out += ",\"radios\":" + renderRadiosJson(m);
+    out += "}";
     return out;
 }
 

@@ -25,13 +25,15 @@ your board:
 | BQ Voyage Station G3 | `station_g3` | `station-g3-<mac3>.local` | Wi-Fi |
 | WaveShare ESP32-P4-Nano (+ off-board E22) | `esp32_p4_nano` (legacy), `esp32_p4_nano_v3` (v3.1/v3.2) | `p4nano-<mac3>.local` | **Ethernet or Wi-Fi** (runtime auto-select; cable plugged → ETH, no link → WiFi fallback. Both at once is unstable with radio active — see README "Porting to another ESP32-P4 board") |
 | MeshSmith EtherMesh-1W | `ethermesh_1w` (legacy), `ethermesh_1w_v3` (v3.1/v3.2) | `ethermesh-1w-<mac3>.local` | **Ethernet** |
+| MeshSmith EtherMesh-Duo | `ethermesh_duo` (legacy), `ethermesh_duo_v3` (production silicon) | `ethermesh-duo-<mac3>.local` | **Ethernet**, RF1 TCP5055 / RF2 TCP5056 |
 | Heltec T114 | `heltec_t114` | n/a | none — USB-CDC + UART only |
 | RAK4631 USB | `rak4631_usb` | n/a | none — USB-CDC only |
 | RAK4631 WisMesh Ethernet Gateway | `rak4631_wismesh_eth` | n/a (use DHCP lease/IP) | **Ethernet** (W5100S, TCP 5055 + WebUI/API 80) — no mDNS; WebUI OTA disabled; Bluetooth DFU OTA supported |
 | Seeed XIAO nRF52840 + Wio-SX1262 | `xiao_nrf52_wio` | n/a | none — USB-CDC only |
 | RAKwireless RAK3401 (RAK13302 1 W front end) | `rak3401` | n/a | none — USB-CDC only |
 
-The `esp32_p4_nano`, `ethermesh_1w`, `station_g2`, `station_g3`, and `photon_1w_xiao_esp32c6` envs use the
+The P4 board environments and the `station_g2`, `station_g3`, and
+`photon_1w_xiao_esp32c6` environments use the
 [pioarduino fork](https://github.com/pioarduino/platform-espressif32)
 (pinned in `platformio.ini`) for the Arduino-ESP32 3.x / ESP-IDF 5.x
 toolchain; first build will fetch the platform package once.
@@ -42,8 +44,26 @@ siblings use Arduino 3.3.11 / IDF 5.5.5 and matching production bootloaders
 (compiled range 301–399); literal v3.0 is not supported by these stock SDKs.
 Do not reuse a legacy bundle or app-only update across silicon families. See
 [P4 silicon profiles](docs/p4-silicon.md) for exact settings, metadata, manual
-recovery and the still-pending flasher/hardware acceptance. Adding these source
+recovery, scoped hardware acceptance and the separate flasher handoff. Adding these source
 environments does not make them available in an existing published release.
+
+### Multi-radio carriers
+
+The same runtime serves existing single-radio boards and declared multi-radio
+carriers. Single-radio builds instantiate one owner; radio count does not select
+the MCU, board pins, RF frontend or P4 silicon family. EtherMesh-1W still needs
+its P4 image and Heltec V4.2 its own ESP32-S3 image.
+
+Duo starts with only RF1 enabled; an RF1-only assembly is normal.
+Enable a fitted optional RF2 through Settings → Radios → Save & Reboot. This
+does not cut module power. Configure separate host modem entries using the same
+IP and each slot's TCP port; USB/UART remains primary-radio-only. Other ESP32
+carriers can declare three or four radios without duplicating command handlers,
+but require their own verified wiring, power and RF-isolation policy.
+
+New source profiles do not imply published binaries or browser-flasher support.
+Match exact board and P4 silicon before installation. See
+[multi-radio architecture and qualification boundaries](docs/multi-radio.md).
 
 ### 1a. Browser flasher (recommended)
 

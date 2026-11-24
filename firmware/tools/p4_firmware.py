@@ -20,12 +20,16 @@ P4_PROFILES = {
         "min_revision": minimum,
         "max_revision": maximum,
     }
-    for board in ("esp32_p4_nano", "ethermesh_1w")
+    for board in ("esp32_p4_nano", "ethermesh_1w", "ethermesh_duo")
     for environment, profile, variant, minimum, maximum in (
         (board, "pre_v3", "esp32p4_es", 1, 199),
         (board + "_v3", "v3", "esp32p4", 301, 399),
     )
 }
+def p4_profile(environment: str) -> dict:
+    """Return the metadata policy for a declared P4 build environment."""
+    return dict(P4_PROFILES[environment])
+
 PART_OFFSETS = {
     "bootloader.bin": 0x2000,
     "partitions.bin": 0x8000,
@@ -37,7 +41,7 @@ PART_OFFSETS = {
 def capture_build_info(environment: str, platform: str, settings: dict,
                        framework: Path, libraries: Path, build_dir: Path) -> dict:
     """Record the resolved precompiled SDK while PlatformIO owns its packages."""
-    profile = P4_PROFILES[environment]
+    profile = p4_profile(environment)
     sdkconfig = libraries / profile["chip_variant"] / "sdkconfig"
     text = sdkconfig.read_text(encoding="utf-8")
     selected_config = dict(re.findall(
@@ -101,7 +105,7 @@ def part_metadata(path: Path, offset: int) -> dict:
 
 def write_p4_metadata(environment: str, build_dir: Path, dest: Path) -> Path:
     info = json.loads((build_dir / "p4-build.json").read_text(encoding="utf-8"))
-    profile = P4_PROFILES[environment]
+    profile = p4_profile(environment)
     if any(info[key] != expected for key, expected in (
         ("environment", environment), ("board_id", profile["board_id"]),
         ("chip_variant", profile["chip_variant"]),
@@ -175,7 +179,7 @@ def validate_p4_bundle(environment: str, directory: Path, metadata: dict | None 
         metadata = json.loads((directory / "firmware.json").read_text(encoding="utf-8"))
     if not isinstance(metadata, dict):
         raise ValueError("P4 metadata must be a JSON object")
-    profile = P4_PROFILES[environment]
+    profile = p4_profile(environment)
     if (metadata["schema_version"] != 1 or metadata["environment"] != environment
             or metadata["board_id"] != profile["board_id"]
             or metadata["chip_family"] != "ESP32-P4" or metadata["silicon"] != profile):

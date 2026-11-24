@@ -103,8 +103,12 @@ class BootDiagnosticsTests(unittest.TestCase):
         start = main.index("    // Print the reason this boot started")
         end = main.index("    // On boards with a PMU", start)
         reset = main[start:end]
-        start = main.index("    // Arm the task watchdog LAST")
-        end = main.index("\n}\n\n// ─── Noise floor sampling", start)
+        watchdog_anchor = "    // Arm the task watchdog LAST"
+        assert main.count(watchdog_anchor) == 1, "watchdog setup anchor is not unique"
+        start = main.index(watchdog_anchor)
+        # Stop at setup()'s top-level closing brace, not an unrelated helper
+        # comment that can disappear when radio sampling moves into its owner.
+        end = main.index("\n}\n", start)
         watchdog = main[start:end]
         (work / "Arduino.h").write_text(ARDUINO)
         (work / "nrf.h").write_text(NRF)

@@ -6,12 +6,14 @@
 #include "agc_maintenance.h"
 #include <cmath>
 #include "board_config.h"
+#include "radio_layout.h"
 #include "dhcp_routes.h"
 #include "ethernet_manager.h"
 #include "gps_manager.h"
 #include "net_filter.h"
 #include "rf_frontend.h"
 #include "runtime_stats.h"
+#include "radio_settings.h"
 #include "tcp_server.h"
 #include "wifi_manager.h"
 #include "webui_shared.h"
@@ -207,6 +209,43 @@ static const char* radioStateLabel(const RuntimeStats::Snapshot& snap) {
     }
 }
 
+static void populateRadioModels(WebUiShared::Model& model) {
+    model.radios.clear();
+    const size_t count = RuntimeStats::radioCount();
+    for (size_t i = 0; i < count; ++i) {
+        RuntimeStats::RadioSnapshot snap{};
+        if (!RuntimeStats::captureRadio(i, snap)) continue;
+        WebUiShared::RadioEndpointModel endpoint;
+        endpoint.id = snap.id;
+        endpoint.label = snap.label ? snap.label : "";
+        endpoint.tcpPort = snap.tcpPort;
+        endpoint.ready = snap.ready;
+        endpoint.enabled = snap.enabled;
+        endpoint.txReady = snap.txReady;
+        endpoint.busy = snap.busy;
+        endpoint.connectedClientIp = TCPServer::getClientIP(snap.id).c_str();
+        endpoint.radio.available = snap.present;
+        endpoint.radio.state = !snap.enabled ? "Disabled" : !snap.present ? "Unavailable" : !snap.ready ? "Error" :
+            snap.standby ? "Standby" : snap.busy ? "Busy" : "RX/Idle";
+        endpoint.radio.standby = snap.standby;
+        endpoint.radio.autoCadEnabled = snap.autoCadEnabled;
+        endpoint.radio.frequencyHz = snap.radio.freq_hz;
+        endpoint.radio.bandwidthHz = snap.radio.bandwidth_hz;
+        endpoint.radio.spreadingFactor = snap.radio.sf;
+        endpoint.radio.codingRate = snap.radio.cr;
+        endpoint.radio.txPowerDbm = snap.radio.power_dbm;
+        endpoint.radio.syncword = snap.radio.syncword;
+        endpoint.radio.preambleLength = snap.radio.preamble_len;
+        endpoint.counters.rxPackets = snap.status.rx_count;
+        endpoint.counters.txPackets = snap.status.tx_count;
+        endpoint.counters.crcErrors = snap.status.crc_errors;
+        endpoint.counters.lastRssiDbm = snap.status.last_rssi;
+        endpoint.counters.lastSnrDb = snap.status.last_snr / 10.0f;
+        endpoint.counters.noiseFloorDbm = snap.status.noise_floor_x10 / 10.0f;
+        model.radios.push_back(endpoint);
+    }
+}
+
 static WebUiShared::Model buildWebUiModel() {
     const auto& cfg = WifiManager::getConfig();
     const RuntimeStats::Snapshot snap = RuntimeStats::capture();
@@ -243,6 +282,7 @@ static WebUiShared::Model buildWebUiModel() {
     model.capabilities.updateAvailable = true;
     model.capabilities.httpFirmwareUpload = true;
     model.capabilities.writableManagement = true;
+    model.capabilities.radioSelection = RadioSettings::supported();
     model.capabilities.exposeTcpToken = true;
 
     model.network.interfaceName = net.iface;
@@ -285,7 +325,8 @@ static WebUiShared::Model buildWebUiModel() {
     model.config.gateway = (uint32_t)cfg.gateway ? cfg.gateway.toString().c_str() : "";
     model.config.dns1 = (uint32_t)cfg.dns1 ? cfg.dns1.toString().c_str() : "";
     model.config.dns2 = (uint32_t)cfg.dns2 ? cfg.dns2.toString().c_str() : "";
-    model.config.tcpPort = cfg.tcpPort;
+    model.config.tcpPort = RadioLayout::port(0, cfg.tcpPort);
+    model.config.tcpPortReadOnly = RadioLayout::fixedPorts();
     model.config.tcpTokenSet = cfg.tcpToken.length() > 0;
     model.config.tcpToken = cfg.tcpToken.c_str();
     model.config.wifiExternalAntenna = cfg.wifiExternalAntenna;
@@ -363,6 +404,7 @@ static WebUiShared::Model buildWebUiModel() {
     model.counters.lastRssiDbm = snap.status.last_rssi;
     model.counters.lastSnrDb = snap.status.last_snr / 10.0f;
     model.counters.noiseFloorDbm = snap.status.noise_floor_x10 / 10.0f;
+    populateRadioModels(model);
     return model;
 }
 
@@ -628,7 +670,7 @@ static String buildNetworkJson(const WifiManager::Config& cfg,
         body += String(net.wifi_rssi_dbm);
     }
     body += F(",\"tcp_port\":");
-    body += String(cfg.tcpPort);
+    body += String(RadioLayout::port(0, cfg.tcpPort));
     body += F(",\"token_set\":");
     body += boolJson(cfg.tcpToken.length() > 0);
     body += F(",\"saved\":{");
@@ -656,7 +698,7 @@ static String buildConfigJson(const WifiManager::Config& cfg) {
     body += F(",\"tcp_token\":");
     body += jsonQuote(cfg.tcpToken);
     body += F(",\"tcp_port\":");
-    body += String(cfg.tcpPort);
+    body += String(RadioLayout::port(0, cfg.tcpPort));
     body += F(",\"use_static_ip\":");
     body += boolJson(cfg.useStaticIP);
     body += F(",\"static_ip\":");
@@ -732,6 +774,12 @@ static String buildStatsJson(const RuntimeStats::Snapshot& snap,
     body += buildNetworkJson(cfg, net);
     body += F(",\"gps\":");
     body += GPSManager::buildJson();
+    if (RadioLayout::count() > 1) {
+        WebUiShared::Model model;
+        populateRadioModels(model);
+        body += F(",\"radios\":");
+        body += WebUiShared::renderRadiosJson(model).c_str();
+    }
 #if defined(BOARD_STATION_G2) || defined(BOARD_STATION_G3)
     const auto& environment = snap.environment;
     body += F(",\"environment\":{\"sensor\":");
@@ -783,6 +831,19 @@ struct RfConfigPatch {
     uint16_t agcResetIntervalSec = 0;
 };
 
+static bool knownConfigFields(JsonObjectConst obj) {
+    for (JsonPairConst field : obj) {
+        const char* key = field.key().c_str();
+        if (strcmp(key, "hostname") && strcmp(key, "tcp_token") && strcmp(key, "tcp_port") &&
+            strcmp(key, "use_static_ip") && strcmp(key, "wifi_external_antenna") &&
+            strcmp(key, "wifi_power_save") && strcmp(key, "gps_enabled") &&
+            strcmp(key, "pa_high_power_enabled") && strcmp(key, "station_g3_external_lna_enabled") &&
+            strcmp(key, "heltec_v43_external_lna_enabled") && strcmp(key, "agc_reset_interval_sec") &&
+            strcmp(key, "network")) return false;
+    }
+    return true;
+}
+
 static bool applyConfigPatch(JsonVariantConst root,
                              WifiManager::Config& cfg,
                              RfConfigPatch& rfPatch,
@@ -794,7 +855,10 @@ static bool applyConfigPatch(JsonVariantConst root,
     }
 
     JsonObjectConst obj = root.as<JsonObjectConst>();
-
+    if (!knownConfigFields(obj)) {
+        error = "Unknown configuration field. Use /api/radios for radio selection.";
+        return false;
+    }
     JsonVariantConst hostVal = obj["hostname"];
     if (!hostVal.isNull()) {
         rebootRequired = true;
@@ -828,8 +892,10 @@ static bool applyConfigPatch(JsonVariantConst root,
             return false;
         }
         cfg.tcpPort = portVal.as<uint16_t>();
-        if (cfg.tcpPort == 0) {
-            error = "tcp_port must be between 1 and 65535.";
+        if (!RadioLayout::acceptsPrimaryPort(cfg.tcpPort)) {
+            error = RadioLayout::fixedPorts()
+                ? "TCP ports are assigned by this board's radio descriptors."
+                : "tcp_port must be between 1 and 65535; port 80 is reserved.";
             return false;
         }
     }
@@ -1043,12 +1109,14 @@ static bool applyConfigPatch(JsonVariantConst root,
 // "PENDING_VERIFY". On the NEXT reboot the bootloader auto-reverts to
 // the previous slot unless we call esp_ota_mark_app_valid_cancel_rollback()
 // first. We only call it once we've proven:
-//   1. the radio came up (checked in main.cpp before OTAManager::begin)
-//   2. a valid host frame was parsed — proves USB-CDC + frame parser work
+//   1. main reached management startup (radio failures/disabled slots are local)
+//   2. a valid host frame was parsed, or Duo is intentionally management-only
+//      with every radio disabled (no binary modem client is then required)
 //   3. we've been running for SANITY_TIMEOUT_MS without crashing
 static void attemptMarkValid() {
     if (markedValid) return;
-    if (!sawValidFrame) return;
+    const bool managementOnly = RadioSettings::supported() && RadioSettings::activeMask() == 0;
+    if (!sawValidFrame && !managementOnly) return;
     if ((int32_t)(millis() - sanityDeadline) < 0) return;
 
     const esp_partition_t* running = esp_ota_get_running_partition();
@@ -1445,6 +1513,81 @@ static void handleApiRadio() {
     sendJson(200, buildRadioJson(RuntimeStats::capture()));
 }
 
+static void handleApiRadios() {
+    if (!checkAuth()) return;
+    WebUiShared::Model model;
+    populateRadioModels(model);
+    sendJson(200, String(WebUiShared::renderRadiosJson(model).c_str()));
+}
+
+static void saveRadioSelection(uint8_t mask) {
+    if (!RadioSettings::save(mask)) {
+        sendJsonError(500, "Failed to save radio selection.");
+        return;
+    }
+    String body = "{\"status\":\"saved\",\"rebooting\":true,\"enabled\":[";
+    for (size_t i = 0; i < RadioLayout::count(); ++i) {
+        if (i) body += ",";
+        body += (mask & (1U << i)) ? "true" : "false";
+    }
+    body += "]}";
+    sendJson(200, body);
+    delay(500);
+    ESP.restart();
+}
+
+static void handleRadioSave() {
+    if (!checkAuth()) return;
+    if (!RadioSettings::supported()) { sendJsonError(400, "Radio selection unsupported."); return; }
+    uint8_t mask = 0, seen = 0;
+    bool marker = false;
+    for (int n = 0; n < httpServer->args(); ++n) {
+        const String name = httpServer->argName(n);
+        const String value = httpServer->arg(n);
+        if (name == "radio_form" && value == "1" && !marker) { marker = true; continue; }
+        bool known = false;
+        for (size_t i = 0; i < RadioLayout::count(); ++i) {
+            if (name != String("rf") + String((unsigned)i)) continue;
+            const uint8_t bit = uint8_t(1U << i);
+            if (value == "1" && !(seen & bit) && (RadioSettings::declaredMask() & bit)) {
+                mask |= bit; seen |= bit; known = true;
+            }
+            break;
+        }
+        if (!known) { sendJsonError(400, "Invalid radio form field."); return; }
+    }
+    if (!marker) { sendJsonError(400, "Missing radio form marker."); return; }
+    saveRadioSelection(mask);
+}
+
+static void handleApiRadiosPost() {
+    if (!checkAuth()) return;
+    if (!RadioSettings::supported()) { sendJsonError(400, "Radio selection unsupported."); return; }
+    const String raw = httpServer->arg("plain");
+    JsonDocument doc;
+    if (deserializeJson(doc, raw.c_str()) || !doc.is<JsonObject>()) {
+        sendJsonError(400, "Expected JSON object with enabled Boolean array."); return;
+    }
+    const JsonObjectConst obj = doc.as<JsonObjectConst>();
+    if (obj.size() != 1 || !obj["enabled"].is<JsonArrayConst>()) {
+        sendJsonError(400, "Only enabled Boolean array is accepted."); return;
+    }
+    const JsonArrayConst values = obj["enabled"].as<JsonArrayConst>();
+    if (values.size() != RadioLayout::count()) {
+        sendJsonError(400, "enabled length must match declared radio count."); return;
+    }
+    uint8_t mask = 0;
+    for (size_t i = 0; i < values.size(); ++i) {
+        if (!values[i].is<bool>()) { sendJsonError(400, "enabled entries must be Boolean."); return; }
+        if (values[i].as<bool>()) mask |= uint8_t(1U << i);
+    }
+    if (mask & uint8_t(~RadioSettings::declaredMask())) {
+        sendJsonError(400, "Undeclared radio selection."); return;
+    }
+    saveRadioSelection(mask);
+}
+
+
 static void handleApiNetwork() {
     if (!checkAuth()) return;
 
@@ -1585,6 +1728,14 @@ static void handleHostnameSave() {
 
 static void handleNetworkSave() {
     if (!checkAuth()) return;
+    if (RadioLayout::fixedPorts() && httpServer->hasArg("port")) {
+        const long requestedPort = httpServer->arg("port").toInt();
+        if (requestedPort < 1 || requestedPort > 65535 ||
+            !RadioLayout::acceptsPrimaryPort(static_cast<uint16_t>(requestedPort))) {
+            httpServer->send(400, "text/plain", "TCP ports are assigned by this board's radio descriptors.\n");
+            return;
+        }
+    }
 
     WifiManager::Config cfg = WifiManager::getConfig();
     cfg.useStaticIP = httpServer->hasArg("static");
@@ -1899,6 +2050,9 @@ void begin(const String& hn, const String& tk) {
     httpServer->on("/api/temp", HTTP_GET, handleApiTemp);
     httpServer->on("/api/system", HTTP_GET, handleApiSystem);
     httpServer->on("/api/radio", HTTP_GET, handleApiRadio);
+    httpServer->on("/api/radios", HTTP_GET, handleApiRadios);
+    httpServer->on("/api/radios", HTTP_POST, handleApiRadiosPost);
+    httpServer->on("/radios", HTTP_POST, handleRadioSave);
     httpServer->on("/api/network", HTTP_GET, handleApiNetwork);
     httpServer->on("/api/gps", HTTP_GET, handleApiGps);
     httpServer->on("/api/stats", HTTP_GET, handleApiStats);

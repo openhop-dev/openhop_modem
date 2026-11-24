@@ -1,42 +1,57 @@
 // =============================================================
-// tcp_server.cpp — single-client TCP protocol server with optional
-// shared-token authentication.
+// tcp_server.cpp — bounded, independent per-radio TCP sessions.
 // =============================================================
 #include "tcp_server.h"
+#if defined(ARDUINO_ARCH_ESP32)
 #include "protocol.h"
-#include "frame_parser.h"
 #include "net_filter.h"
 #include "bounded_protocol_service.h"
-
 #include <WiFi.h>
+#include <new>
+#include <lwip/sockets.h>
+#include <errno.h>
 
-// Forward decl — implemented in main.cpp; invoked for authorized frames.
+// Legacy primary-radio adapter until main installs a routed handler.
 extern void processHostCommand(uint8_t cmd, const uint8_t* payload,
                                uint16_t len, TransportSource src);
 extern void noteTransportFrameError(uint8_t err_code);
 
 namespace TCPServer {
 
-static WiFiServer* server         = nullptr;
-static WiFiClient  client;
-static uint32_t    clientLocalIP = 0; // capture before an outage invalidates getsockname
-static String      requiredToken  = "";
-static bool        authenticated  = false;
-static FrameParser parser;
-static uint32_t    acceptedCount  = 0;
-static uint32_t    clientGeneration = 0;
-static uint32_t    frameCount     = 0;
-static uint32_t    parsedFrameCount = 0;
-
-// Keep the single cooperative firmware loop fair. A command callback may do
-// synchronous radio work, so draining a busy TCP socket without a budget can
-// indefinitely postpone HTTP/OTA servicing later in loop().
+struct OutputFrame {
+    uint8_t data[MAX_FRAME_SIZE];
+    uint16_t length = 0;
+    uint16_t offset = 0;
+    uint32_t queuedAt = 0;
+};
+struct Session {
+    WiFiServer* server = nullptr;
+    WiFiClient client;
+    uint32_t clientLocalIP = 0; // capture before getsockname loses an old address
+    bool authenticated = false;
+    FrameParser parser;
+    // Never reset the generation in end()/beginRadios(): deferred work may
+    // outlive either a disconnected socket or a restarted listener bank.
+    uint32_t generation = 0;
+    uint32_t frameCount = 0;
+    uint32_t parsedFrameCount = 0;
+    uint8_t radio = 0;
+    OutputFrame output[OUTPUT_QUEUE_FRAMES];
+    size_t outputHead = 0, outputCount = 0;
+    bool closing = false;
+    bool servicing = false, outputAttempted = false;
+};
+static Session sessions[MAX_RADIOS];
+static size_t listenerCount = 0;
+static size_t nextStart = 0;
+static String requiredToken;
+static RadioCommandHandler commandHandler = nullptr;
+static RadioFrameErrorHandler frameErrorHandler = nullptr;
+void setRadioFrameErrorHandler(RadioFrameErrorHandler handler) { frameErrorHandler = handler; }
 static constexpr size_t MAX_BYTES_PER_LOOP = 256;
 static constexpr uint8_t MAX_FRAMES_PER_LOOP = 1;
 
 static bool requiresAuth() { return requiredToken.length() > 0; }
-
-// isLanAddress() lives in net_filter.h — shared with the OTA server.
 
 static void buildFrame(uint8_t* buf, uint16_t& outLen,
                        uint8_t cmd, const uint8_t* payload, uint16_t len) {
@@ -49,183 +64,258 @@ static void buildFrame(uint8_t* buf, uint16_t& outLen,
         memcpy(buf + i, payload, len);
         i += len;
     }
-    uint16_t crc = crc16_ccitt(buf + 1, 3 + len);  // over CMD + LEN + PAYLOAD
+    const uint16_t crc = crc16_ccitt(buf + 1, 3 + len);
     buf[i++] = crc & 0xFF;
     buf[i++] = (crc >> 8) & 0xFF;
     outLen = i;
 }
 
-static void sendToClient(uint8_t cmd, const uint8_t* payload, uint16_t len) {
-    if (!client || !client.connected()) return;
-    uint8_t buf[MAX_FRAME_SIZE];
-    uint16_t flen = 0;
-    buildFrame(buf, flen, cmd, payload, len);
-    client.write(buf, flen);
+static void disconnectClient(Session& session);
+static bool outputExpired(const Session& session) {
+    // Absolute age, not an inactivity timeout: trickling partial writes cannot
+    // keep a session congested forever. Each tail retains its own enqueue time.
+    return session.outputCount &&
+        static_cast<uint32_t>(millis() - session.output[session.outputHead].queuedAt) >=
+            OUTPUT_CONGESTION_TIMEOUT_MS;
 }
 
-static void sendErrorToClient(uint8_t err) {
-    sendToClient(CMD_ERROR, &err, 1);
-}
-
-static void disconnectClient() {
-    if (client) {
-        Serial.printf("[TCP] disconnect client %s auth=%u frames=%lu\n",
-                      client.remoteIP().toString().c_str(),
-                      authenticated ? 1U : 0U,
-                      (unsigned long)frameCount);
-        client.stop();
+// One syscall, never NetworkClient::write(): the latter retries one-second
+// select() waits (and restarts its retry count on partial progress). Retain a
+// frame's unsent suffix; a later frame must never overtake it.
+static void serviceOutput(Session& session) {
+    if (outputExpired(session)) { disconnectClient(session); return; }
+    if (!session.outputCount || (session.servicing && session.outputAttempted)) return;
+    const int descriptor = session.client.fd();
+    if (descriptor < 0) { disconnectClient(session); return; }
+    auto& frame = session.output[session.outputHead];
+    session.outputAttempted = true;
+    const int sent = ::send(descriptor, frame.data + frame.offset,
+                            frame.length - frame.offset, MSG_DONTWAIT);
+    if (sent > 0) {
+        frame.offset += static_cast<uint16_t>(sent);
+        if (frame.offset == frame.length) {
+            session.outputHead = (session.outputHead + 1) % OUTPUT_QUEUE_FRAMES;
+            --session.outputCount;
+            if (!session.outputCount && session.closing) disconnectClient(session);
+        }
+    } else if (sent < 0 && errno != EAGAIN && errno != EWOULDBLOCK &&
+               errno != EINTR && errno != ENOBUFS && errno != ENOMEM) {
+        disconnectClient(session);
     }
-    authenticated = false;
-    frameCount = 0;
-    clientLocalIP = 0;
-    parser.reset();
+}
+static bool outputHasRoom(const Session& session) {
+    return !session.closing && !outputExpired(session) && session.outputCount < OUTPUT_QUEUE_FRAMES;
+}
+static void queueOutput(Session& session, const uint8_t* data, size_t len) {
+    if (!session.client || !session.client.connected() || !len) return;
+    // The void writers cannot report an overflow to a caller. Close explicitly,
+    // rather than silently lose a command completion or continue a torn frame.
+    if (!data || len > MAX_FRAME_SIZE || outputExpired(session) ||
+        session.outputCount == OUTPUT_QUEUE_FRAMES) {
+        disconnectClient(session); return;
+    }
+    auto& frame = session.output[(session.outputHead + session.outputCount) % OUTPUT_QUEUE_FRAMES];
+    memcpy(frame.data, data, len);
+    frame.length = static_cast<uint16_t>(len); frame.offset = 0; frame.queuedAt = millis();
+    ++session.outputCount;
+    if (session.outputCount == 1) serviceOutput(session);
 }
 
-static void onFrameOk(uint8_t cmd, const uint8_t* payload, uint16_t len, TransportSource src) {
-    (void)src;  // always TCP here
-    parsedFrameCount++;
-    frameCount++;
-    Serial.printf("[TCP] frame cmd=0x%02X len=%u auth=%u\n",
-                  cmd, (unsigned)len, authenticated ? 1U : 0U);
-
-    if (requiresAuth() && !authenticated) {
-        if (cmd == CMD_AUTH) {
-            if (len == requiredToken.length() &&
-                memcmp(payload, requiredToken.c_str(), len) == 0) {
-                authenticated = true;
-                Serial.println("[TCP] auth OK");
-                sendToClient(CMD_AUTH_OK, nullptr, 0);
-            } else {
-                Serial.println("[TCP] auth rejected");
-                sendErrorToClient(ERR_UNAUTHORIZED);
-                delay(5);
-                disconnectClient();
-            }
+// Protocol/auth errors must reach the requesting socket even before auth.
+// Application replies and events use the separately gated public writers.
+static void sendToClient(Session& session, uint8_t cmd, const uint8_t* payload, uint16_t len) {
+    if (!session.client || !session.client.connected()) return;
+    uint8_t buf[MAX_FRAME_SIZE]; uint16_t size = 0;
+    buildFrame(buf, size, cmd, payload, len);
+    queueOutput(session, buf, size);
+}
+static void sendErrorToClient(Session& session, uint8_t error) {
+    sendToClient(session, CMD_ERROR, &error, 1);
+}
+static void disconnectClient(Session& session) {
+    if (session.client) session.client.stop();
+    session.client = WiFiClient();
+    session.authenticated = false;
+    session.closing = false;
+    session.frameCount = 0;
+    session.clientLocalIP = 0;
+    session.parser.reset();
+    session.outputHead = session.outputCount = 0;
+}
+static void onFrameOk(uint8_t cmd, const uint8_t* payload, uint16_t len,
+                      TransportSource, void* context) {
+    auto& session = *static_cast<Session*>(context);
+    ++session.parsedFrameCount;
+    ++session.frameCount;
+    if (requiresAuth() && !session.authenticated) {
+        if (cmd == CMD_AUTH && len == requiredToken.length() &&
+            memcmp(payload, requiredToken.c_str(), len) == 0) {
+            session.authenticated = true;
+            sendToClient(session, CMD_AUTH_OK, nullptr, 0);
         } else {
-            sendErrorToClient(ERR_UNAUTHORIZED);
-            delay(5);
-            disconnectClient();
+            // Never dispatch more input after failure, even while the error's
+            // suffix waits for the socket. Close on drain or the same deadline.
+            session.authenticated = false;
+            session.closing = true;
+            sendErrorToClient(session, ERR_UNAUTHORIZED);
         }
         return;
     }
-
-    // Authenticated (or no auth required)
     if (cmd == CMD_AUTH) {
-        // Idempotent ack — client may always send AUTH.
-        sendToClient(CMD_AUTH_OK, nullptr, 0);
+        sendToClient(session, CMD_AUTH_OK, nullptr, 0);
         return;
     }
-
-    processHostCommand(cmd, payload, len, TransportSource::TCP);
+    const ResponseRoute route{TransportSource::TCP, session.radio, session.generation};
+    if (commandHandler && isRouteCurrent(route)) commandHandler(cmd, payload, len, route);
+}
+static void onFrameErr(uint8_t error, TransportSource, void* context) {
+    auto& session = *static_cast<Session*>(context);
+    ++session.parsedFrameCount; // malformed input also consumes the frame quota
+    if (frameErrorHandler) frameErrorHandler(session.radio, error);
+    else noteTransportFrameError(error);
+    sendErrorToClient(session, error);
 }
 
-static void onFrameErr(uint8_t err_code, TransportSource src) {
-    (void)src;
-    Serial.printf("[TCP] frame parse error 0x%02X\n", err_code);
-    noteTransportFrameError(err_code);
-    sendErrorToClient(err_code);
-}
-
-void begin(uint16_t port, const String& token) {
+bool beginRadios(const uint16_t* ports, size_t count, const String& token,
+                 RadioCommandHandler handler) {
+    if (!ports || count == 0 || count > MAX_RADIOS || !handler) return false;
+    // Validate the whole bank before allocating or disturbing live sessions.
+    for (size_t i = 0; i < count; ++i) {
+        if (ports[i] == 0 || ports[i] == 80) return false;
+        for (size_t j = 0; j < i; ++j) if (ports[i] == ports[j]) return false;
+    }
+    WiFiServer* pending[MAX_RADIOS] = {};
+    for (size_t i = 0; i < count; ++i) {
+        pending[i] = new (std::nothrow) WiFiServer(ports[i]);
+        if (!pending[i]) {
+            for (size_t j = 0; j < i; ++j) delete pending[j];
+            return false;
+        }
+    }
     end();
     requiredToken = token;
-    authenticated = false;
-    parser.reset();
-    server = new WiFiServer(port);
-    server->begin();
-    server->setNoDelay(true);
+    commandHandler = handler;
+    listenerCount = count;
+    for (size_t i = 0; i < count; ++i) {
+        auto& session = sessions[i];
+        session.radio = static_cast<uint8_t>(i);
+        session.server = pending[i];
+        session.server->begin();
+        session.server->setNoDelay(true);
+    }
+    return true;
 }
-
+static void legacyCommand(uint8_t cmd, const uint8_t* payload, uint16_t len,
+                          const ResponseRoute&) {
+    processHostCommand(cmd, payload, len, TransportSource::TCP);
+}
+void begin(uint16_t port, const String& token) {
+    (void)beginRadios(&port, 1, token, legacyCommand);
+}
 void end() {
-    disconnectClient();
-    if (server) {
-        server->end();
-        delete server;
-        server = nullptr;
+    for (auto& session : sessions) {
+        disconnectClient(session);
+        if (session.server) {
+            session.server->end();
+            delete session.server;
+            session.server = nullptr;
+        }
     }
+    listenerCount = 0;
+    nextStart = 0;
+    commandHandler = nullptr;
 }
-
 void invalidateInterface(const IPAddress& address) {
-    if (client && clientLocalIP == static_cast<uint32_t>(address)) {
-        disconnectClient();
+    for (size_t i = 0; i < listenerCount; ++i) {
+        auto& session = sessions[i];
+        if (session.client && session.clientLocalIP == static_cast<uint32_t>(address))
+            disconnectClient(session);
     }
 }
-
-void loop() {
-    if (!server) return;
-
-    // Accept incoming connection if no current client
-    if (!client || !client.connected()) {
-        if (client) disconnectClient();
-        WiFiClient incoming = server->available();
+static void serviceSession(Session& session) {
+    if (!session.server) return;
+    if (!session.client || !session.client.connected()) {
+        disconnectClient(session);
+        WiFiClient incoming = session.server->available();
         if (incoming) {
-            // Hard LAN-only policy: drop public-IP clients before
-            // touching the parser. No log spam beyond the rejection
-            // notice; this is a normal firewall behaviour.
-            IPAddress addr = incoming.remoteIP();
-            if (!isLanAddress(addr)) {
-                Serial.printf(
-                    "[TCP] rejecting non-LAN client %u.%u.%u.%u "
-                    "(firmware accepts only RFC1918 / link-local / loopback)\n",
-                    addr[0], addr[1], addr[2], addr[3]);
+            if (!isLanAddress(incoming.remoteIP())) {
                 incoming.stop();
                 return;
             }
-            client = incoming;
-            if (++clientGeneration == 0) ++clientGeneration;
-            clientLocalIP = static_cast<uint32_t>(client.localIP());
-            client.setNoDelay(true);
-            parser.reset();
-            authenticated = false;
-            frameCount = 0;
-            acceptedCount++;
-            Serial.printf("[TCP] accepted client %s (#%lu, auth=%s)\n",
-                          client.remoteIP().toString().c_str(),
-                          (unsigned long)acceptedCount,
-                          requiresAuth() ? "required" : "open");
+            // Fail closed rather than recycle a stale deferred-work identity.
+            if (session.generation == UINT32_MAX) {
+                incoming.stop();
+                return;
+            }
+            session.client = incoming;
+            ++session.generation;
+            session.clientLocalIP = static_cast<uint32_t>(session.client.localIP());
+            session.client.setNoDelay(true);
         }
     }
-
-    // Read available bytes through the parser, but always yield back to the
-    // main loop after a bounded amount of work. FrameParser keeps partial
-    // state, so frames larger than the byte budget continue on the next pass.
-    if (client && client.connected()) {
-        serviceBoundedProtocolInput(
-            client, MAX_BYTES_PER_LOOP, MAX_FRAMES_PER_LOOP,
-            [](uint8_t b) {
-                const uint32_t previousFrameCount = parsedFrameCount;
-                frameparser_feed(parser, b, TransportSource::TCP,
-                                 onFrameOk, onFrameErr);
-                return parsedFrameCount != previousFrameCount;
-            });
+    if (session.client && session.client.connected()) {
+        // Snapshot admission before draining: an owner's deferred completion
+        // must get the newly freed slot before another request is dispatched.
+        const bool acceptInput = outputHasRoom(session);
+        session.servicing = true; session.outputAttempted = false;
+        serviceOutput(session);
+        if (acceptInput && session.client && session.client.connected()) {
+            serviceBoundedProtocolInput(session.client, MAX_BYTES_PER_LOOP, MAX_FRAMES_PER_LOOP,
+                [&session](uint8_t byte) {
+                    const uint32_t previous = session.parsedFrameCount;
+                    frameparser_feed(session.parser, byte, TransportSource::TCP,
+                                     onFrameOk, onFrameErr, &session);
+                    return session.parsedFrameCount != previous;
+                });
+        }
+        session.servicing = false;
     }
 }
-
-bool isClientReady() {
-    if (!client || !client.connected()) return false;
-    return !requiresAuth() || authenticated;
+void loop() {
+    if (!listenerCount) return;
+    const size_t count = listenerCount;
+    const size_t start = nextStart;
+    nextStart = (nextStart + 1) % count;
+    for (size_t i = 0; i < count; ++i) serviceSession(sessions[(start + i) % count]);
 }
-
-uint32_t connectionGeneration() {
-    return isClientReady() ? clientGeneration : 0;
+bool isClientReady(uint8_t radio) {
+    if (radio >= listenerCount) return false;
+    auto& session = sessions[radio];
+    return session.client && session.client.connected() && !session.closing &&
+           (!requiresAuth() || session.authenticated);
 }
-
+bool isClientReady() { return isClientReady(0); }
+uint32_t connectionGeneration() { return isClientReady() ? sessions[0].generation : 0; }
 bool isConnectionCurrent(uint32_t generation) {
-    return generation != 0 && generation == clientGeneration && isClientReady();
+    return isRouteCurrent({TransportSource::TCP, 0, generation});
 }
-
+bool isRouteCurrent(const ResponseRoute& route) {
+    return route.transport == TransportSource::TCP && route.generation != 0 &&
+           isClientReady(route.radio) && sessions[route.radio].generation == route.generation;
+}
 bool canQueueResponse() {
-    return isClientReady();
+    return isClientReady() && outputHasRoom(sessions[0]);
 }
-
-String getClientIP() {
-    if (!client || !client.connected()) return String();
-    return client.remoteIP().toString();
+bool canQueueResponse(const ResponseRoute& route) {
+    return isRouteCurrent(route) && outputHasRoom(sessions[route.radio]);
 }
-
+String getClientIP(uint8_t radio) {
+    if (radio >= listenerCount) return String();
+    auto& session = sessions[radio];
+    if (!session.client || !session.client.connected()) return String();
+    return session.client.remoteIP().toString();
+}
+String getClientIP() { return getClientIP(0); }
 void write(const uint8_t* data, size_t len) {
-    if (!client || !client.connected()) return;
-    client.write(data, len);
+    // Preserve the primary-only legacy raw writer; callers gate async writes.
+    if (listenerCount && !sessions[0].closing) queueOutput(sessions[0], data, len);
+}
+void writeRadioEvent(uint8_t radio, const uint8_t* data, size_t len) {
+    if (isClientReady(radio)) queueOutput(sessions[radio], data, len);
+}
+void writeTo(const ResponseRoute& route, const uint8_t* data, size_t len) {
+    if (isRouteCurrent(route)) queueOutput(sessions[route.radio], data, len);
 }
 
 } // namespace TCPServer
+#endif // ARDUINO_ARCH_ESP32

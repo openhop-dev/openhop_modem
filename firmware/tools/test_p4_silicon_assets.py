@@ -21,6 +21,7 @@ FIRMWARE = Path(__file__).resolve().parents[1]
 P4_PAIRS = (
     ("esp32_p4_nano", "esp32_p4_nano_v3"),
     ("ethermesh_1w", "ethermesh_1w_v3"),
+    ("ethermesh_duo", "ethermesh_duo_v3"),
 )
 
 
@@ -309,7 +310,7 @@ class BuildInfoTests(unittest.TestCase):
 
 
 class ProfileTests(unittest.TestCase):
-    def test_p4_asset_contract_changes_select_only_the_four_p4_builds(self):
+    def test_p4_asset_contract_changes_select_all_p4_builds(self):
         environments = builder.discover_envs()
         expected = [name for name in environments if name in p4_firmware.P4_PROFILES]
         for path in ("firmware/tools/p4_firmware.py", "firmware/tools/platformio_p4_metadata.py"):
@@ -335,16 +336,22 @@ class ProfileTests(unittest.TestCase):
         config = configparser.ConfigParser(interpolation=None)
         config.read(FIRMWARE / "platformio.ini")
         environments = builder.discover_envs()
+        def inherited(section, key):
+            current = config[section]
+            if key in current:
+                return current[key]
+            return inherited(current["extends"], key)
+
         for legacy, production in P4_PAIRS:
             with self.subTest(board=legacy):
                 self.assertIn(production, environments)
                 old = config[f"env:{legacy}"]
                 new = config[f"env:{production}"]
-                self.assertEqual(old["board"], "esp32-p4-evboard")
+                self.assertEqual(inherited(f"env:{legacy}", "board"), "esp32-p4-evboard")
                 self.assertEqual(new["extends"], f"env:{legacy}")
                 self.assertEqual(new["board_build.chip_variant"], "esp32p4")
                 self.assertEqual(new["board_build.f_cpu"], "400000000L")
-                self.assertEqual(old["platform"], "https://github.com/pioarduino/platform-espressif32/releases/download/55.03.38-1/platform-espressif32.zip")
+                self.assertEqual(inherited(f"env:{legacy}", "platform"), "https://github.com/pioarduino/platform-espressif32/releases/download/55.03.38-1/platform-espressif32.zip")
                 self.assertEqual(new.get("platform"), "https://github.com/pioarduino/platform-espressif32/releases/download/55.03.311/platform-espressif32.zip")
                 # Inherit the exact GPIO/RF macro, USB policy and flash layout.
                 # Only production targets get the v3.2-compatible SDK/uploader.

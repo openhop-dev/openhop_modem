@@ -6,18 +6,30 @@ from pathlib import Path
 import subprocess
 import tempfile
 import unittest
+from tcp_radio_stubs.adapt_wifi_port import stage_socket_port
 
 ROOT = Path(__file__).resolve().parents[1]
 STUBS = ROOT / 'tools' / 'wifi_recovery_stubs'
+
+def primary_session_harness(source):
+    # The legacy API still owns radio zero. Preserve every original lifecycle
+    # assertion while adapting the fixture's private singleton field accesses.
+    return (source.replace('"../../src/', '"' + str(ROOT / 'src') + '/')
+            .replace('TCPServer::authenticated', 'TCPServer::sessions[0].authenticated')
+            .replace('TCPServer::parser', 'TCPServer::sessions[0].parser'))
 
 class RecoveryTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         cls.tmp = tempfile.TemporaryDirectory(prefix='openhop-74-tests-')
+        cls.network_stubs = Path(cls.tmp.name) / 'network_stubs'
+        stage_socket_port(cls.network_stubs)
         cls.binary = Path(cls.tmp.name) / 'recovery'
-        subprocess.run(['g++', '-std=c++17', '-DRECOVERY_IMPLEMENTED', '-Wall', '-Wextra', '-Werror',
-                        '-I' + str(STUBS), '-I' + str(ROOT / 'include'),
-                        str(STUBS / 'recovery.cpp'), '-o', str(cls.binary)], check=True)
+        source = Path(cls.tmp.name) / 'recovery.cpp'
+        source.write_text(primary_session_harness((STUBS / 'recovery.cpp').read_text()))
+        subprocess.run(['g++', '-std=c++17', '-DARDUINO_ARCH_ESP32=1', '-DRECOVERY_IMPLEMENTED', '-Wall', '-Wextra', '-Werror',
+                        '-I' + str(cls.network_stubs), '-I' + str(STUBS), '-I' + str(ROOT / 'include'),
+                        str(source), '-o', str(cls.binary)], check=True)
 
     @classmethod
     def tearDownClass(cls):
@@ -67,9 +79,26 @@ int main(){
 
     def test_portal_request_admission(self):
         binary = Path(self.tmp.name) / 'portal_admission'
+        # The portal uses the recording RF functions below, not a hardware
+        # Controller. Keep its production declarations, but forward-declare the
+        # opaque constructor type instead of selecting real board GPIO policy.
+        rf_api = Path(self.tmp.name) / 'portal_rf_api.h'
+        rf_api.write_text((ROOT / 'include/rf_frontend.h').read_text().replace(
+            '#include "board_config.h"', 'struct BoardConfig;'))
+        portal = Path(self.tmp.name) / 'portal_source.cpp'
+        # The portal's network-admission fixture has a small BoardStub, while
+        # test_radio_layout.py separately compiles the actual board/layout policy.
+        layout_api = Path(self.tmp.name) / 'portal_layout_api.h'
+        layout_api.write_text('#pragma once\n#include <cstdint>\n#include <stddef.h>\nnamespace RadioLayout {\ninline bool fixedPorts(){return false;}\ninline uint16_t port(size_t,uint16_t configured=5055){return configured?configured:5055;}\ninline bool acceptsPrimaryPort(uint16_t value){return value!=0 && value!=80;}\n}\n')
+        portal.write_text((ROOT / 'src/config_portal.cpp').read_text().replace(
+            '#include "rf_frontend.h"', '#include "' + str(rf_api) + '"').replace(
+            '#include "radio_layout.h"', '#include "' + str(layout_api) + '"'))
+        fixture = Path(self.tmp.name) / 'portal_admission.cpp'
+        fixture.write_text((STUBS / 'portal.cpp').read_text().replace(
+            '"../../src/config_portal.cpp"', '"' + str(portal) + '"'))
         subprocess.run(['g++', '-std=c++17', '-Wall', '-Wextra', '-Werror',
                         '-I' + str(STUBS), '-I' + str(ROOT / 'include'),
-                        str(STUBS / 'portal.cpp'), '-o', str(binary)], check=True)
+                        str(fixture), '-o', str(binary)], check=True)
         for case in ['station', 'ipv6', 'missing', 'zero', 'ap_off', 'stale_ap', 'ap']:
             with self.subTest(case=case):
                 result = subprocess.run([str(binary), case], text=True, capture_output=True)
@@ -116,10 +145,10 @@ int main(int argc,char** argv){
 }
 '''
         path = Path(self.tmp.name) / 'main_invalidation.cpp'
-        path.write_text(harness)
+        path.write_text(primary_session_harness(harness))
         binary = path.with_suffix('')
-        subprocess.run(['g++', '-std=c++17', '-Wall', '-Wextra', '-Werror',
-                        '-I' + str(STUBS), '-I' + str(ROOT / 'include'),
+        subprocess.run(['g++', '-std=c++17', '-DARDUINO_ARCH_ESP32=1', '-Wall', '-Wextra', '-Werror',
+                        '-I' + str(self.network_stubs), '-I' + str(STUBS), '-I' + str(ROOT / 'include'),
                         str(path), '-o', str(binary)], check=True)
         for case in ['same_ip_after_loss', 'gateway_only_renewal', 'transient_address_change']:
             with self.subTest(case=case):

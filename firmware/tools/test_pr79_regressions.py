@@ -37,32 +37,9 @@ assert(b.minimum_plausible_mv==2500 && b.maximum_plausible_mv==4500);
 assert(b.minimum_valid_samples==4 && b.adc_attenuation_db==-1);}
 ''', ['-DBOARD_' + board])
 
-    apply = function((FW / 'src/main.cpp').read_text(), 'bool applyConfig(const RadioConfig& cfg)')
-    run('apply_config_every_failure', '''#include "board_config.h"
-#include "pa_ramp.h"
-#include <cassert>
-#include <string>
-#define RADIOLIB_ERR_NONE 0
-#define RADIOLIB_SX126X_PA_RAMP_1700U 6
-#define LOG_R_INFO(...) ((void)0)
-bool radioTxReady=true;
-struct RadioConfig {uint32_t freq_hz=868000000,bandwidth_hz=125000; int sf=7,cr=5,power_dbm=22,syncword=18,preamble_len=8;};
-struct FakeRadio {int calls=0,fail=0; int step(){assert(!radioTxReady); return ++calls==fail?-1:0;}
-int standby(){return step();} int setFrequency(float){return step();}
-int setBandwidth(float){return step();} int setSpreadingFactor(int){return step();}
-int setCodingRate(int){return step();} int setOutputPower(int){return step();}
-int setPaRampTime(int){return step();} int getCurrentLimit(){return 140;}
-int setSyncWord(int){return step();} int setPreambleLength(int){return step();}
-int explicitHeader(){return step();} int setCRC(int){return step();}
-int invertIQ(bool){return step();} int autoLDRO(){return step();}} radio;
-struct Display {int calls=0; template<class... T> void setRadioInfo(T...){assert(radioTxReady);++calls;}} oled;
-struct {int last_rssi=0,last_snr=0;} status;
-std::string fwVersion;
-''' + apply + '''
-int main(){RadioConfig cfg; for(int fail=1;fail<=13;++fail){radio={0,fail}; radioTxReady=true; oled.calls=0;
-assert(!applyConfig(cfg)); assert(!radioTxReady); assert(radio.calls==fail); assert(oled.calls==0);}
-radio={};assert(applyConfig(cfg));assert(radio.calls==13 && radioTxReady && oled.calls==1);}
-''', ['-DBOARD_LILYGO_TBEAM_1W'])
+    # Every setter failure after prior successful configuration is exercised
+    # through the complete production RadioRuntime, not a copied singleton body.
+    subprocess.run(['python3', str(FW / 'tools/test_radio_runtime.py')], check=True)
 
     run('non_target_fan_no_esp_adc_dependency', '''#include "''' + str(FW / 'src/tbeam_1w_fan.cpp') + '''"
 #include <cassert>

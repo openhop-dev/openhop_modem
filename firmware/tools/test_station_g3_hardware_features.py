@@ -48,10 +48,11 @@ assert '#include "station_g3_power.h"' in main
 assert "StationG3Power::begin();" in main
 assert "StationG3Power::loop();" in main
 assert "StationG3Power::snapshot()" in main
-assert "RFFrontEnd::prepareStandby();" in main
+runtime_source = (FIRMWARE / "src/radio_runtime.cpp").read_text()
+assert "frontEnd_->prepareStandby();" in runtime_source
 loop_body = main.split("void loop() {", 1)[1]
-assert loop_body.index("if (dio1Flag && !isTxActive)") < loop_body.index("StationG3Power::loop();")
-assert loop_body.index("while (Serial.available())") < loop_body.index("StationG3Power::loop();")
+assert loop_body.index("serviceRadioIrqs();") < loop_body.index("StationG3Power::loop();")
+assert loop_body.index("serviceProtocolInput(Serial,") < loop_body.index("StationG3Power::loop();")
 assert loop_body.index("TCPServer::loop()") < loop_body.index("StationG3Power::loop();")
 
 runtime = (FIRMWARE / "include/runtime_stats.h").read_text()

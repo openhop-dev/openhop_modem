@@ -123,6 +123,16 @@ ENV_METADATA: dict[str, dict[str, str | bool]] = {
         "chip_family": "ESP32-P4",
         "web_manifest": False,
     },
+    "ethermesh_duo": {
+        "name": "MeshSmith EtherMesh-Duo openHop Modem",
+        "chip_family": "ESP32-P4",
+        "web_manifest": False,
+    },
+    "ethermesh_duo_v3": {
+        "name": "MeshSmith EtherMesh-Duo v3.x openHop Modem",
+        "chip_family": "ESP32-P4",
+        "web_manifest": False,
+    },
     "lilygo_t3s3": {
         "name": "LilyGO T-LoRa T3-S3 openHop Modem",
         "chip_family": "ESP32-S3",
@@ -180,6 +190,7 @@ BOARD_HEADER_TO_ENV = {
     "firmware/include/boards/station_g3.h": "station_g3",
     "firmware/include/boards/esp32_p4_nano.h": ("esp32_p4_nano", "esp32_p4_nano_v3"),
     "firmware/include/boards/ethermesh_1w.h": ("ethermesh_1w", "ethermesh_1w_v3"),
+    "firmware/include/boards/ethermesh_duo.h": ("ethermesh_duo", "ethermesh_duo_v3"),
     "firmware/include/boards/lilygo_t3s3.h": "lilygo_t3s3",
     "firmware/include/boards/lilygo_tbeam_s3_supreme.h": "lilygo_tbeam_s3_supreme",
     "firmware/include/boards/lilygo_tbeam_1w.h": "lilygo_tbeam_1w",

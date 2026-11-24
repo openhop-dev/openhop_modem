@@ -7,6 +7,49 @@ GitHub release and matching firmware assets are available.
 This changelog starts with development toward v1.4.1. For earlier releases, see
 [GitHub Releases](https://github.com/openhop-dev/openhop_modem/releases).
 
+## v1.4.5 — Unreleased
+
+### Added
+
+- One shared, count-driven radio runtime for existing single-radio boards and
+  explicitly declared ESP32 carriers with up to four SX1262 owners. Configuration,
+  readiness, IRQs, counters, RX recovery and cooperative TX/CAD/backoff service
+  are independent per owner, keeping controls and peer radios responsive while
+  a transmission is pending.
+- EtherMesh-Duo profiles for legacy and production ESP32-P4 silicon, with RF1 on
+  TCP 5055 and optional RF2 on TCP 5056. RF1-only is the normal first-use
+  population; enabling RF2 does not renumber endpoints.
+- Board-opted-in persistent radio selection through Settings → Save & Reboot,
+  including an explicit all-disabled management configuration. Disabled slots
+  retain their IDs/ports and skip radio initialization/service; software disable
+  does not cut module power.
+- Authenticated per-radio status and selection APIs, including enabled, ready
+  and TX-ready state, live settings, counters and each endpoint's controlling
+  client IP. Different hosts can own different radio ports independently.
+
+### Changed
+
+- TCP parsing, authentication, deferred requests and output routing are scoped
+  to the owning radio and connection generation. Disconnecting or replacing one
+  client cannot move its pending work or replies to another radio/session.
+- The multi-radio Home page shows compact status, Stats contains per-radio RF
+  parameters/counters, and Settings exposes enable controls and fixed board
+  ports. Legacy API fields remain primary-radio views rather than aggregates.
+- Existing single-radio ESP32 and nRF52 targets use the same backend with one
+  owner while preserving their board-specific hardware and transport policies.
+  USB/UART stays primary-radio-only; the wire protocol is unchanged and host
+  forwarding/encryption/routing remains in openHop.
+- Architecture, API, installation and P4 profile documentation now distinguishes
+  the shared backend from board-specific binaries, records the bounded physical
+  qualification and separates compile coverage from unqualified hardware/RF
+  stress cases.
+
+### Fixed
+
+- Premature TX/CAD completion from invalid IRQ data. Completion now requires
+  checked original transactions, valid status/LoRa IRQ data and the owning DIO,
+  with bounded deadlines/recovery while preserving valid RX status.
+
 ## v1.4.2 — Unreleased
 
 ### Fixed

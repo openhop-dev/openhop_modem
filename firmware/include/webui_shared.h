@@ -21,6 +21,7 @@ struct Capabilities {
     bool updateAvailable = false;
     bool httpFirmwareUpload = false;
     bool writableManagement = false;
+    bool radioSelection = false;
     bool exposeTcpToken = false;
     bool bleDfu = false;
     bool boardTemperature = false;
@@ -53,6 +54,7 @@ struct ConfigModel {
     std::string dns1;
     std::string dns2;
     uint16_t tcpPort = 5055;
+    bool tcpPortReadOnly = false;
     bool tcpTokenSet = false;
     std::string tcpToken;
     bool wifiExternalAntenna = false;
@@ -128,7 +130,7 @@ struct RadioModel {
     uint8_t spreadingFactor = 0;
     uint8_t codingRate = 0;
     int8_t txPowerDbm = 0;
-    uint8_t syncword = 0;
+    uint16_t syncword = 0;
     uint16_t preambleLength = 0;
 };
 
@@ -160,7 +162,22 @@ struct Model {
     RadioModel radio;
     CountersModel counters;
     std::string updateUnavailableReason;
+    struct RadioEndpointModel {
+        uint8_t id = 0;
+        std::string label;
+        uint16_t tcpPort = 0;
+        bool ready = false;
+        bool enabled = true;
+        bool txReady = false;
+        bool busy = false;
+        std::string connectedClientIp;
+        RadioModel radio;
+        CountersModel counters;
+    };
+    std::vector<RadioEndpointModel> radios;
 };
+
+using RadioEndpointModel = Model::RadioEndpointModel;
 
 struct WifiNetwork {
     std::string ssid;
@@ -184,6 +201,7 @@ struct SetupModel {
     std::string dns2;
     std::string hostname;
     uint16_t tcpPort = 5055;
+    bool tcpPortReadOnly = false;
     std::string tcpToken;
 };
 
@@ -194,6 +212,7 @@ std::string renderRootPage(const Model& model);
 std::string renderStatsPage(const Model& model);
 std::string renderSystemJson(const Model& model);
 std::string renderRadioJson(const Model& model);
+std::string renderRadiosJson(const Model& model);
 std::string renderCountersJson(const Model& model);
 std::string renderNetworkJson(const Model& model);
 std::string renderConfigJson(const Model& model);

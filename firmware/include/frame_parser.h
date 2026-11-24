@@ -1,6 +1,6 @@
 // =============================================================
 // frame_parser.h — byte-by-byte protocol frame parser
-// One FrameParser instance per transport (Serial, TCP, ...).
+// One FrameParser instance per transport session (Serial, each TCP client, ...).
 // =============================================================
 #pragma once
 
@@ -40,3 +40,10 @@ typedef void (*FrameErrCb)(uint8_t err_code, TransportSource src);
 // Feed one byte into the parser. Invokes callbacks when a frame completes.
 void frameparser_feed(FrameParser& p, uint8_t b, TransportSource src,
                       FrameOkCb on_ok, FrameErrCb on_err);
+
+// Context-aware seam for independent listeners. The caller owns the context;
+// callbacks are synchronous and the parser retains no pointer after feed.
+using FrameOkContextCb = void (*)(uint8_t, const uint8_t*, uint16_t, TransportSource, void*);
+using FrameErrContextCb = void (*)(uint8_t, TransportSource, void*);
+void frameparser_feed(FrameParser& p, uint8_t b, TransportSource src,
+                      FrameOkContextCb on_ok, FrameErrContextCb on_err, void* context);

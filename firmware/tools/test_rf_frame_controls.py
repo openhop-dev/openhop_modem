@@ -80,35 +80,21 @@ def main() -> int:
     main = (FIRMWARE / "src/main.cpp").read_text()
     assert "bool setFemState(uint8_t apply, uint8_t value, bool persist, FemState& out);" in frontend
     assert "applyFemMask(" in source
-    assert "setAgcResetIntervalSec(sec, false)" in main
-    assert "setFemState(req.apply, req.value, false, fem)" in main
-    assert "RfRequests::Target::Fem,\n                        payload[0], payload[1], src)" in main
-    assert "RfRequests::Target::RxBoost,\n                        0, payload[0], src)" in main
-    assert "setRxBoostedGain(rxBoost.enabled, true, 2)" in main
-    assert "radio.setRxBoostedGainMode(" in main.split("static RxBoostControl::Result setRxBoostedGain(", 1)[1].split("\n}\n", 1)[0]
-    assert main.count("radio.setRxBoostedGainMode(") == 1, "boost writes must go through RxBoostControl::set"
-    assert "rxBoost.fault ? 2 : 0" in main
-    station_agc = main.split("AgcMaintenance::run(", 1)[1].split("#else", 1)[0]
-    assert "RxBoostControl::noteAgcReset(" in station_agc
-    assert station_agc.index("noteAgcReset(") < station_agc.index("if (!result.succeeded(")
-    agc_body = main.split("void maybeResetAgc() {", 1)[1].split("\n}\n", 1)[0]
-    assert "hasAgcResetIntervalControl" not in agc_body
-    assert "hasHeltecV43LnaControl" not in agc_body
-    fem_case = main.split("case CMD_SET_FEM_STATE:", 1)[1].split("case CMD_GET_RX_BOOST:", 1)[0]
-    boost_case = main.split("case CMD_SET_RX_BOOST:", 1)[1].split("case CMD_STATUS_REQ:", 1)[0]
-    assert "ERR_RADIO_BUSY" not in fem_case
-    assert "ERR_RADIO_BUSY" not in boost_case
-    rf_drain = main.split("static void processRfRequests() {", 1)[1].split("static void submitRfRequest(", 1)[0]
-    assert "isReceivingPacket()" in rf_drain
-    loop = main.split("void loop() {", 1)[1]
-    assert "processRfRequests();" in loop
-    agc_reset = main.split("void maybeResetAgc() {", 1)[1].split("radio.standby();", 1)[0]
-    assert "isReceivingPacket()" in agc_reset
-    boost_answer = main.split("static void answerRxBoostRequest(", 1)[1].split("static void answerRfRequest(", 1)[0]
-    assert "RxBoostControl::replyFor(" in boost_answer
-    assert "setRxBoostedGain(req.value != 0, !radioStandby)" in boost_answer
-    assert "RxBoostControl::replyForGet(rxBoost)" in boost_answer
-    assert "sendError(reply.error, req.src.transport)" in boost_answer
+    runtime = (FIRMWARE / "src/radio_runtime.cpp").read_text()
+    assert "setAgcResetIntervalSec(sec, false)" in runtime
+    assert "setFemState(req.apply, req.value, false, fem)" in runtime
+    assert "setBoost(rxBoost_.enabled, true)" in runtime
+    assert runtime.count("chip().setRxBoostedGainMode(") == 1
+    assert "RxBoostControl::noteAgcReset(" in runtime
+    assert "RxBoostControl::replyForGet(rxBoost_)" in runtime
+    assert "if (!current(req.src)) return;" in runtime
+    assert "hooks_.canReply(req.src)" in runtime
+    assert "return !current(req.src);" in runtime
+    assert "serviceRadioIrqs();" in main and "serviceRadioWork();" in main
+    # Exercise the real complete class and complete main graph; source contracts
+    # above supplement, rather than replace, behavioral acceptance.
+    subprocess.run([sys.executable, str(FIRMWARE / 'tools/test_radio_runtime.py')], check=True)
+    subprocess.run([sys.executable, str(FIRMWARE / 'tools/test_radio_main.py')], check=True)
 
     compiler = shutil.which("g++")
     if compiler is None:

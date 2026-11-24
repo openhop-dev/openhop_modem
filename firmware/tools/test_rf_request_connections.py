@@ -9,6 +9,7 @@ import shutil
 import subprocess
 import tempfile
 import unittest
+from tcp_radio_stubs.adapt_wifi_port import socket_source
 
 FIRMWARE = Path(__file__).resolve().parents[1]
 
@@ -25,244 +26,50 @@ def function(source, signature):
 
 def harness(backend):
     main = (FIRMWARE / "src/main.cpp").read_text()
-    queue = main[main.index("// ─── RF requests"):main.index("// ─── Host command dispatch")]
-    cases = main[main.index("    case CMD_GET_FEM_STATE:\n"):main.index("    case CMD_STATUS_REQ: {\n")]
-    code = r'''
-#include "Arduino.h"
-#include "WiFi.h"
-#include "protocol.h"
-#include "rf_request_queue.h"
-#include "rx_boost_control.h"
-#include <cassert>
-#include <iostream>
-#include <vector>
-#include "TCP_BACKEND"
-#include "FRAME_PARSER"
-void noteTransportFrameError(uint8_t) {}
-static bool receiving = false, radioStandby = false;
-static int mutations = 0;
-static std::vector<int> replies;
-static std::vector<TransportSource> destinations;
-static RxBoostControl::State rxBoost;
-void pump() { for (int i = 0; i < 12; ++i) TCPServer::loop(); }
-bool isReceivingPacket() { return receiving; }
-void sendFrame(uint8_t cmd, const uint8_t* payload, uint16_t len, TransportSource src) {
-    replies.push_back(cmd);
-    destinations.push_back(src);
-    if (src == TransportSource::TCP) {
-        uint8_t frame[MAX_FRAME_SIZE];
-        uint16_t size = 0;
-        TCPServer::buildFrame(frame, size, cmd, payload, len);
-        TCPServer::write(frame, size);
-    }
-}
-void sendError(uint8_t err, TransportSource src) { sendFrame(CMD_ERROR, &err, 1, src); }
-namespace RFFrontEnd {
-struct FemState { uint8_t capability = 3, value = 0; };
-bool setFemState(uint8_t, uint8_t, bool, FemState&) { ++mutations; return true; }
-FemState getFemState() { return {}; }
-}
-RxBoostControl::Result setRxBoostedGain(bool value, bool) {
-    ++mutations; rxBoost.enabled = value; return {};
-}
-''' + queue + r'''
-void processHostCommand(uint8_t cmd, const uint8_t* payload, uint16_t len, TransportSource src) {
-    switch (cmd) {
-''' + cases + r'''
-    default: assert(false);
-    }
-}
-std::shared_ptr<SocketStub> acceptClient() {
-    incomingClient.s = std::make_shared<SocketStub>();
-    auto socket = incomingClient.s;
-    TCPServer::loop();
-    return socket;
-}
-void request(const std::shared_ptr<SocketStub>& socket, uint8_t cmd,
-             std::initializer_list<uint8_t> payload) {
-    uint8_t frame[MAX_FRAME_SIZE]; uint16_t size = 0;
-    std::vector<uint8_t> bytes(payload);
-    TCPServer::buildFrame(frame, size, cmd, bytes.data(), bytes.size());
-    socket->input.insert(socket->input.end(), frame, frame + size);
-    TCPServer::loop();
-    pump();
-}
-void authenticate(const std::shared_ptr<SocketStub>& socket) {
-    request(socket, CMD_AUTH, {'t'});
-    assert(TCPServer::isClientReady());
-    socket->output.clear();
-}
-std::vector<int> wireCommands(const std::shared_ptr<SocketStub>& socket) {
-    std::vector<int> commands;
-    const auto& bytes = socket->output;
-    for (size_t offset = 0; offset < bytes.size();) {
-        assert(offset + 6 <= bytes.size() && bytes[offset] == PROTO_SYNC);
-        const size_t length = bytes[offset + 2] | (size_t(bytes[offset + 3]) << 8);
-        assert(offset + length + 6 <= bytes.size());
-        const uint16_t crc = bytes[offset + length + 4] | (uint16_t(bytes[offset + length + 5]) << 8);
-        assert(crc == crc16_ccitt(bytes.data() + offset + 1, length + 3));
-        commands.push_back(bytes[offset + 1]);
-        offset += length + 6;
-    }
-    return commands;
-}
-#define CHECK(x) do { if (!(x)) { std::cerr << __LINE__ << ": " #x "\n"; return 1; } } while (0)
-int main(int argc, char** argv) {
-    assert(argc == 2);
-    const std::string scenario = argv[1];
-    NETWORK_SETUP
-    TCPServer::begin(5055, scenario == "tokenless_reconnect" ? "" : "t");
-    auto original = acceptClient();
-    authenticate(original);
-    receiving = true;
-    if (scenario == "purge_behind_usb")
-        processHostCommand(CMD_SET_FEM_STATE, (const uint8_t*)"\1\1", 2, TransportSource::USB);
-    const bool boost = scenario == "reconnect_boost";
-    if (boost) request(original, CMD_SET_RX_BOOST, {1});
-    else request(original, CMD_SET_FEM_STATE, {1, 1});
-    CHECK(mutations == 0 && replies.empty());
-    if (scenario == "pending_wifi_usb" || scenario == "pending_wifi_uart") {
-        NETWORK_INVALIDATION_SCENARIO
-    } else if (scenario == "normal" || scenario == "other_interface") {
-        if (scenario == "other_interface") TCPServer::invalidateInterface(IPAddress(192,168,8,1));
-        receiving = false;
-        processRfRequests();
-        pump();
-        CHECK(mutations == 1 && replies.size() == 1 && !original->output.empty());
-    } else if (scenario == "multiple_tcp_replies") {
-        request(original, CMD_SET_RX_BOOST, {1});
-        request(original, CMD_GET_RX_BOOST, {});
-        request(original, CMD_SET_RX_BOOST, {2});
-        receiving = false;
-        processRfRequests();
-#ifdef TEST_W5100S
-        // The second setter must not touch RF until the first reply drains.
-        CHECK(mutations == 1 && rfRequests.size() == 3);
-#endif
-        for (int i = 0; i < 12; ++i) { pump(); processRfRequests(); }
-        pump();
-        CHECK(TCPServer::isClientReady());
-        CHECK(mutations == 2 && rfRequests.size() == 0);
-        CHECK((replies == std::vector<int>{CMD_FEM_STATE_RESP, CMD_RX_BOOST_RESP,
-                                         CMD_RX_BOOST_RESP, CMD_ERROR}));
-        CHECK(wireCommands(original) == replies);
-    } else if (scenario == "mixed_fifo") {
-        processHostCommand(CMD_GET_RX_BOOST, nullptr, 0, TransportSource::UART);
-        processHostCommand(CMD_GET_FEM_STATE, nullptr, 0, TransportSource::UART);
-        const uint8_t invalidBoost = 2;
-        processHostCommand(CMD_SET_RX_BOOST, &invalidBoost, 1, TransportSource::UART);
-        CHECK(rfRequests.size() == 4 && replies.empty());
-        receiving = false;
-        processRfRequests();
-        CHECK(mutations == 1);
-        CHECK((replies == std::vector<int>{CMD_FEM_STATE_RESP, CMD_RX_BOOST_RESP,
-                                         CMD_FEM_STATE_RESP, CMD_ERROR}));
-        CHECK(destinations[2] == TransportSource::UART);
-    } else {
-        if (scenario == "full_stale") {
-            request(original, CMD_GET_FEM_STATE, {});
-            request(original, CMD_GET_RX_BOOST, {});
-            request(original, CMD_SET_RX_BOOST, {2});
-            CHECK(rfRequests.size() == 4);
-        }
-        if (scenario == "interface_loss") {
-#ifdef TEST_W5100S
-            usableIP = false; TCPServer::loop(); usableIP = true;
-#else
-            TCPServer::invalidateInterface(IPAddress(192,168,1,20));
-#endif
-        }
-        else if (scenario == "restart") TCPServer::begin(5055, "t");
-        else original->open = false;
-        if (scenario == "disconnect_only") {
-            processRfRequests(); // no transport-loop cleanup yet
-            CHECK(rfRequests.size() == 0 && mutations == 0 && replies.empty());
-        } else {
-            auto replacement = acceptClient();
-            if (scenario != "reconnect_unauthenticated") authenticate(replacement);
-            if (scenario == "purge_behind_usb") {
-                processRfRequests();
-                CHECK(rfRequests.size() == 1); // live USB request still waits
-            } else if (scenario == "full_stale") {
-                request(replacement, CMD_GET_FEM_STATE, {});
-                CHECK(rfRequests.size() == 0);
-                CHECK((replies == std::vector<int>{CMD_FEM_STATE_RESP}));
-            }
-            if (scenario != "full_stale") {
-                receiving = false;
-                processRfRequests();
-                CHECK(mutations == (scenario == "purge_behind_usb" ? 1 : 0));
-                CHECK(replacement->output.empty());
-                if (scenario == "purge_behind_usb") {
-                    CHECK(replies.size() == 1 && destinations[0] == TransportSource::USB);
-                } else CHECK(replies.empty());
-            }
-        }
-    }
-    std::cout << scenario << ": PASS\n";
-}
-'''
+    code = (FIRMWARE / "tests/radio_request_connections_test.cpp").read_text()
+    output = main[main.index("static ResponseRoute primaryRoute("):main.index("// HWCDC (arduino-esp32")]
+    output = output.replace("#ifdef ARDUINO_ARCH_ESP32", "#ifndef TEST_W5100S")
+    code = code.replace("FRAME_OUTPUT", output)
     if backend == "w5100s":
         transport = (FIRMWARE / "src/w5100s_ethernet_transport.cpp").read_text()
         tcp = transport[transport.index("namespace TCPServer {"):transport.rindex("#endif")]
         frame = function(transport, "static void buildFrame(")
         code = code.replace('#include "TCP_BACKEND"',
-                            '#include "w5100s_ethernet_transport.h"\n#include "frame_parser.h"\n'
-                            '#include "net_filter.h"\n#include "w5100.h"\n#define TEST_W5100S 1\n'
-                            '#define OPENHOP_ETH_TCP_PORT 5055\n'
-                            'extern void processHostCommand(uint8_t, const uint8_t*, uint16_t, TransportSource);\n'
-                            'extern void noteTransportFrameError(uint8_t);\n' + frame + '\n' + tcp
-                            + '\nnamespace TCPServer { using ::buildFrame; }')
-        code = code.replace('TCPServer::invalidateInterface(IPAddress(192,168,8,1));', '(void)0;')
-        code = code.replace('NETWORK_SETUP', '').replace('NETWORK_INVALIDATION_SCENARIO', 'assert(false);')
+            '#include "w5100s_ethernet_transport.h"\n#include "net_filter.h"\n#include "w5100.h"\n'
+            '#define TEST_W5100S 1\n#define OPENHOP_ETH_TCP_PORT 5055\n'
+            'extern void processHostCommand(uint8_t,const uint8_t*,uint16_t,TransportSource);\n'
+            'extern void noteTransportFrameError(uint8_t);\n'+frame+'\n'+tcp+
+            '\nnamespace TCPServer {using ::buildFrame;}')
+        code = code.replace('TCPServer::invalidateInterface(IPAddress(192,168,8,1));','(void)0;')
+        code = code.replace('NETWORK_SETUP','').replace('NETWORK_INVALIDATION_SCENARIO','assert(false);')
     else:
         code = code.replace('#include "TCP_BACKEND"',
-                            '#include "config_portal.h"\n'
-                            'namespace ConfigPortal { void begin(){} void end(){} void loop(){} bool isActive(){return false;} }\n'
-                            '#include "' + str(FIRMWARE / 'src/wifi_manager.cpp') + '"\n'
-                            '#include "TCP_BACKEND"')
-        loop = main[main.index('void loop() {'):]
-        start = loop.index('        handleLoRaRx();\n    }\n') + len('        handleLoRaRx();\n    }\n')
-        service = loop[start:loop.index('    if (tcpStarted) TCPServer::loop();')]
-        # Keep the production watchdog call in the extracted service block.
-        # This socket/RF harness has no HWCDC peripheral; its disabled branch
-        # is compiled here, while test_usb_tx_stall_watch.py covers the timer.
-        watchdog = function(main, "static void kickStalledUsbSerialTx()")
-        service = watchdog + '\n' + '''
-FrameParser serialParser, uartParser;
-bool uartEnabled = true;
-struct InputStream {
-    std::deque<uint8_t> input;
-    int available(){return input.size();}
-    int read(){int b=input.front(); input.pop_front(); return b;}
-} PROTO_UART;
-void onSerialFrameOk(uint8_t cmd, const uint8_t* p, uint16_t n, TransportSource src) { processHostCommand(cmd,p,n,src); }
-void onSerialFrameErr(uint8_t,TransportSource) {}
-void serviceHostInputs() {
-''' + service + '\n}\n'
-        code = code.replace('std::shared_ptr<SocketStub> acceptClient()', service + '\nstd::shared_ptr<SocketStub> acceptClient()')
-        code = code.replace('NETWORK_SETUP', '''
-    const bool wifiScenario = scenario == "pending_wifi_usb" || scenario == "pending_wifi_uart";
-    if (wifiScenario) {
-        WifiManager::begin(); WiFi.statusValue = WL_CONNECTED;
-        WiFi.event(ARDUINO_EVENT_WIFI_STA_GOT_IP); WifiManager::loop();
-    }
+            '#include "config_portal.h"\nnamespace ConfigPortal {void begin(){}void end(){}void loop(){}bool isActive(){return false;}}\n'
+            '#include "'+str(FIRMWARE/'src/wifi_manager.cpp')+'"\n#include "'+str(FIRMWARE/'src/tcp_server.cpp')+'"')
+        loop=main[main.index('void loop() {'):]
+        service=loop[loop.index('    // Invalidate stale TCP ownership'):loop.index('    if (tcpStarted) TCPServer::loop();')]
+        watchdog=function(main,'static void kickStalledUsbSerialTx()')
+        protocol=main[main.index('template <typename Stream>'):main.index('// ─── Setup')]
+        service=watchdog+'\nFrameParser serialParser,uartParser;\n'+r'''
+void serviceRadioIrqs(){applyReception();owner->serviceIrq();}
+void onSerialFrameOk(uint8_t c,const uint8_t* p,uint16_t n,TransportSource src){processHostCommand(c,p,n,src);}
+void onSerialFrameErr(uint8_t,TransportSource){}
+'''+protocol+'\nvoid serviceHostInputs(){\n'+service+'\n}\n'
+        code=code.replace('std::shared_ptr<SocketStub> acceptClient()',service+'\nstd::shared_ptr<SocketStub> acceptClient()')
+        code=code.replace('NETWORK_SETUP',r'''
+    const bool wifiScenario=scenario=="pending_wifi_usb"||scenario=="pending_wifi_uart";
+    if(wifiScenario){WifiManager::begin();WiFi.statusValue=WL_CONNECTED;WiFi.event(ARDUINO_EVENT_WIFI_STA_GOT_IP);WifiManager::loop();}
 ''')
-        code = code.replace('NETWORK_INVALIDATION_SCENARIO', '''
-        // Socket remains connected while the real Wi-Fi manager holds a pending down event.
-        WiFi.event(ARDUINO_EVENT_WIFI_STA_DISCONNECTED);
-        receiving = false;
-        uint8_t frame[MAX_FRAME_SIZE]; uint16_t size = 0;
-        TCPServer::buildFrame(frame, size, CMD_GET_FEM_STATE, nullptr, 0);
-        auto& input = scenario == "pending_wifi_usb" ? Serial.input : PROTO_UART.input;
-        input.insert(input.end(), frame, frame + size);
-        serviceHostInputs();
-        CHECK(mutations == 0 && rfRequests.size() == 0);
-        CHECK(replies.size() == 1 && destinations[0] != TransportSource::TCP);
-        CHECK(original->output.empty());
+        code=code.replace('NETWORK_INVALIDATION_SCENARIO',r'''
+    WiFi.event(ARDUINO_EVENT_WIFI_STA_DISCONNECTED);receiving=false;
+    uint8_t frame[MAX_FRAME_SIZE];uint16_t size=0;TCPServer::buildFrame(frame,size,CMD_GET_FEM_STATE,nullptr,0);
+    auto& input=scenario=="pending_wifi_usb"?Serial.rx:PROTO_UART.rx;
+    input.insert(input.end(),frame,frame+size);serviceHostInputs();syncMutations();
+    CHECK(mutations==0&&owner->queuedRequests()==0);
+    CHECK(replies.size()==1&&destinations[0]!=TransportSource::TCP);
+    CHECK(original->output.empty());
 ''')
-    return code.replace('TCP_BACKEND', str(FIRMWARE / 'src/tcp_server.cpp')).replace(
-        'FRAME_PARSER', str(FIRMWARE / 'src/frame_parser.cpp'))
+    return code.replace('FRAME_PARSER',str(FIRMWARE/'src/frame_parser.cpp'))
 
 
 class RequestConnectionTests(unittest.TestCase):
@@ -271,32 +78,26 @@ class RequestConnectionTests(unittest.TestCase):
         cls.temp = tempfile.TemporaryDirectory(prefix="openhop-rf-connections-")
         work = Path(cls.temp.name)
         stubs = work / "stubs"
-        shutil.copytree(FIRMWARE / "tools/wifi_recovery_stubs", stubs)
-        wifi = (stubs / "WiFi.h").read_text()
-        wifi = wifi.replace("std::deque<uint8_t> input;", "std::deque<uint8_t> input; std::vector<uint8_t> output;")
-        wifi = wifi.replace("#include <functional>", "#include <functional>\n#include <vector>")
-        wifi = wifi.replace("void setNoDelay(bool)", "uint8_t getSocketNumber(){return s && s->open ? 0 : 4;} void setNoDelay(bool)", 1)
-        wifi = wifi.replace("size_t write(const uint8_t*,size_t n){return n;}",
-                            "size_t write(const uint8_t* p,size_t n){s->output.insert(s->output.end(),p,p+n);return n;}")
-        (stubs / "WiFi.h").write_text(wifi)
-        arduino = (stubs / "Arduino.h").read_text()
-        arduino = arduino.replace('struct SerialStub {',
-                                 'struct SerialStub { std::deque<uint8_t> input; '
-                                 'int available(){return input.size();} '
-                                 'int read(){int b=input.front(); input.pop_front(); return b;} ')
-        (stubs / "Arduino.h").write_text(arduino)
-        board = (stubs / "board_config.h").read_text()
-        (stubs / "board_config.h").write_text(board.replace('struct BoardStub {', 'struct BoardStub { bool has_wifi = true;'))
+        shutil.copytree(FIRMWARE / "tools/radio_runtime_stubs", stubs)
+        # Real Wi-Fi recovery event producer, recording SDK only; never fake RF.
+        wifi=socket_source((FIRMWARE / 'tools/wifi_recovery_stubs/WiFi.h').read_text())
+        wifi=wifi.replace('void setNoDelay(bool)', 'uint8_t getSocketNumber(){return s && s->open ? 0 : 4;} void setNoDelay(bool)',1)
+        (stubs/'WiFi.h').write_text(wifi)
+        prefs=(stubs/'Preferences.h').read_text().replace('class Preferences {','inline bool savedNetwork=true;\nclass Preferences {')
+        prefs=prefs.replace(' void end(){}', ' String getString(const char* k,const char* d){return strcmp(k,"ssid")==0&&savedNetwork?"test-network":d;}\n uint32_t getUInt(const char*,uint32_t d){return d;}\n template<class T> size_t putString(const char*,T){return 1;}\n template<class T> size_t putUInt(const char*,T){return 1;}\n void clear(){}\n void end(){}')
+        (stubs/'Preferences.h').write_text(prefs)
         cls.binaries = {}
         for backend in ("esp32", "w5100s"):
             source = work / (backend + ".cpp")
             source.write_text(harness(backend))
             binary = source.with_suffix("")
-            flags = ["-DARDUINO_ARCH_ESP32=1"] if backend == "esp32" else []
+            flags = ["-DARDUINO_ARCH_ESP32=1", "-DBOARD_STATION_G3", "-Wno-missing-field-initializers"]
             subprocess.run(["g++", "-std=c++17", "-Wall", "-Wextra", "-Werror", *flags,
                             "-I" + str(stubs), "-I" + str(FIRMWARE / "include"),
                             "-I" + str(FIRMWARE / "tools/rf_request_connection_stubs"),
-                            str(source), "-o", str(binary)], check=True)
+                            str(source), str(FIRMWARE/'src/radio_runtime.cpp'),
+                            str(FIRMWARE/'src/radio_hardware.cpp'),str(FIRMWARE/'src/rf_frontend.cpp'),
+                            "-o", str(binary)], check=True)
             cls.binaries[backend] = binary
 
     @classmethod
@@ -315,7 +116,7 @@ class RequestConnectionTests(unittest.TestCase):
 for name in ("reconnect_authenticated", "reconnect_unauthenticated", "reconnect_boost", "tokenless_reconnect",
              "normal", "other_interface", "mixed_fifo", "interface_loss", "restart",
              "disconnect_only", "purge_behind_usb", "full_stale", "multiple_tcp_replies",
-             "pending_wifi_usb", "pending_wifi_uart"):
+             "pending_wifi_usb", "pending_wifi_uart", "async_capacity", "async_stale_capacity"):
     setattr(RequestConnectionTests, "test_" + name,
             lambda self, name=name: self.scenario(name))
 

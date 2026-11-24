@@ -118,6 +118,10 @@ struct PmuConfig {
     bool   aldo4 = false;  // GNSS rail
 };
 
+// Explicit per-radio descriptors are optional. Legacy board aggregates keep
+// their existing field order and are adapted to one primary radio.
+struct RadioDescriptor;
+
 // ─── Full per-board config ──────────────────────────────────
 struct BoardConfig {
     const char* name;            // Display name on the OLED splash
@@ -294,6 +298,28 @@ struct BoardConfig {
     // Optional extensions must remain trailing for positional nRF52 boards.
     ThermistorConfig thermistor;
     uint16_t pa_ramp_time_us = 0;  // 0 = keep RadioLib's default ramp
+
+    // nullptr + 0 preserves the one-radio legacy board contract. An explicit
+    // list supplies every radio, including primary, in stable endpoint order.
+    const RadioDescriptor* radios = nullptr;
+    uint8_t radio_count = 0;
+
+    // Optional band-specific receive-only boot preset. Zero preserves legacy
+    // startup/default frequencies; this field never grants host TX authority.
+    uint32_t boot_rx_frequency_hz = 0;
+
+    // Optional persistent selection for declared multi-radio carriers on a
+    // supported platform. Legacy boards keep all declared radios enabled and
+    // their existing UI/persistence contract. Keep policy extensions trailing.
+    bool supports_radio_selection = false;
+    uint8_t radio_default_enabled_mask = 0xff;
+};
+
+struct RadioDescriptor {
+    const char* label;
+    const BoardConfig* hardware;
+    uint16_t tcp_port;  // 0 only for a single configurable legacy endpoint
+    int8_t spi_bus;    // -1=board default, ESP32 0=FSPI / 1=HSPI
 };
 
 extern const BoardConfig BOARD;
@@ -317,6 +343,8 @@ extern const BoardConfig BOARD;
 #  include "boards/esp32_p4_nano.h"
 #elif defined(BOARD_ETHERMESH_1W)
 #  include "boards/ethermesh_1w.h"
+#elif defined(BOARD_ETHERMESH_DUO)
+#  include "boards/ethermesh_duo.h"
 #elif defined(BOARD_HELTEC_T114)
 #  include "boards/heltec_t114.h"
 #elif defined(BOARD_HELTEC_TRACKER_V2)

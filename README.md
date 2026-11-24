@@ -8,6 +8,16 @@ openHop application and its access to USB or the modem's network.
 
 See [CHANGELOG.md](CHANGELOG.md) for development and release changes.
 
+The base firmware uses one count-driven radio runtime. Existing boards keep
+their single-radio behavior; suitable ESP32 carriers can declare up to four
+independent SX1262 TCP endpoints without a separate modem implementation.
+See [multi-radio architecture, board policy and limits](docs/multi-radio.md).
+
+Bounded physical qualification of this development baseline passed on
+EtherMesh-Duo, Station G2, legacy-P4 EtherMesh-1W and Heltec V4.2. This is distinct
+from the wider compile matrix and does not qualify overlapping maximum-power TX
+or three/four-radio hardware. See the [validation scope](docs/multi-radio.md#validation-boundaries).
+
 **Supported boards** (one source tree, picked at compile time via
 `-DBOARD_<name>` in `platformio.ini`):
 
@@ -29,6 +39,7 @@ See [CHANGELOG.md](CHANGELOG.md) for development and release changes.
 | **BQ Voyage Station G3**                                                                                     | ESP32-S3 daughterboard       | SX1262 + selectable PA/LNA | Wi-Fi    |
 | **WaveShare ESP32-P4-Nano**                                                                                 | ESP32-P4 (RISC-V) + ESP32-C6 | E22 (off-board, optional)  | **Ethernet *or* Wi-Fi** — runtime auto-select: cable plugged → Ethernet wins, no link → fall back to Wi-Fi via C6 SDIO bridge. Both at once is unstable with the radio attached, see [P4-Nano notes](#porting-to-another-esp32-p4-board) |
 | **MeshSmith EtherMesh-1W**                                                                                   | ESP32-P4 (RISC-V)            | E22P/SX1262 class 1 W      | **Ethernet** |
+| **MeshSmith EtherMesh-Duo** | ESP32-P4 (RISC-V) | Two RAK13302/SX1262 slots; RF1-only default, RF2 optional | **Ethernet**, one fixed TCP port per slot |
 | **Heltec T114**                                                                                             | nRF52840                     | bare SX1262 + TFT 135×240  | **none** — USB-CDC + UART only |
 | **RAK4631 USB**                                                                                             | nRF52840 (RAK4631)           | SX1262 in-module           | **none** — USB-CDC only |
 | **RAK4631 WisMesh Ethernet**                                                                                | nRF52840 (RAK4631) + RAK13800/W5100S | SX1262 in-module     | **Ethernet** (W5100S) — TCP port 5055, USB-CDC fallback |
@@ -56,13 +67,18 @@ Host running openHop Core                         openHop Modem
 
 The host can be any platform supported by the openHop application and
 its USB or network transport. Wi-Fi is available on supported ESP32
-boards; wired Ethernet is available on P4-Nano, EtherMesh-1W, and the
-RAK4631 WisMesh Ethernet target. T114, RAK4631 USB, RAK3401, and XIAO nRF52
-Wio use USB-CDC only.
+boards; wired Ethernet is available on P4-Nano, EtherMesh-1W, EtherMesh-Duo, and
+the RAK4631 WisMesh Ethernet target. T114, RAK4631 USB, RAK3401, and XIAO nRF52
+Wio are USB-CDC targets, with UART available where the board declares it.
+
+The diagram shows the primary connection. Explicit multi-radio ESP32 layouts
+use the same modem IP with one fixed TCP port per owner; Duo uses 5055/5056.
+USB/UART remains bound to the primary radio and does not multiplex secondary
+radios.
 
 - **USB mode** — cable, instant, no provisioning; ideal for single-board setups.
 - **Network TCP mode** — Wi-Fi/TCP on ESP32 boards, or Ethernet/TCP on wired
-  targets (P4-Nano, EtherMesh-1W, RAK4631). Wi-Fi boards are provisioned via AP portal
+  targets (P4-Nano, EtherMesh-1W, EtherMesh-Duo, RAK4631). Wi-Fi boards are provisioned via AP portal
   (`openHop-Modem-XXXX` → `http://192.168.4.1`), USB, or their web UI; the TCP
   token defaults blank/open on fresh firmware and can be set from the web UI on
   web-enabled builds. The RAK4631 Ethernet variant provides a LAN-only,
@@ -75,7 +91,7 @@ Wio use USB-CDC only.
 
 ## Project layout
 
-- **`firmware/`** — PlatformIO tree, twenty environments sharing one source.
+- **`firmware/`** — PlatformIO board environments sharing one radio runtime.
   Each board lives in `include/boards/<env>.h`; `platformio.ini` picks
   one via `-DBOARD_<NAME>`. Prebuilt artifacts (ESP32: combined
   `firmware.factory.bin` plus `bootloader.bin / partitions.bin / firmware.bin`;
@@ -92,6 +108,14 @@ Flash supported boards from the browser at <https://flasher.openhop.dev/>.
 network OTA, Wi-Fi provisioning, and selecting the built-in `modem_usb` or
 `modem_tcp` transport in openHop Repeater. No driver copying, Repeater patching,
 or modem-specific container image is required.
+
+Source profiles can precede published assets or flasher entries. Confirm that
+the selected release contains the exact board/silicon profile, or use the local
+build instructions; a shared backend does not make board binaries interchangeable.
+
+The source version is independent of checked-in prebuilt files. A development
+version bump does not rebuild or relabel those files; use each asset's own
+manifest/version and checksum until matching firmware is generated.
 
 ## Acknowledgements
 
@@ -422,7 +446,7 @@ scheme is gone, the same credential pair now covers every HTTP path.
 
 *(Full command list in `firmware/include/protocol.h`; the section below is
 summarised. Reported firmware version is `<FW_VERSION_BASE>-<BoardConfig.fw_suffix>`,
-e.g. `v1.3.1-heltec-v43`. Hosts should probe `GET_RF_CAPS` for the v0.8 RF
+e.g. `v1.4.5-heltec-v43`. Hosts should probe `GET_RF_CAPS` for the v0.8 RF
 controls rather than compare versions.)*
 
 ### Deferred RF controls

@@ -36,6 +36,25 @@ struct Snapshot {
     bool boardFanEnabled;
 };
 
+// Per-radio state is distinct from shared device telemetry. Existing capture()
+// remains the primary-radio projection for older management clients.
+struct RadioSnapshot {
+    uint8_t id = 0;
+    const char* label = "";
+    uint16_t tcpPort = 0;
+    bool present = false;
+    bool enabled = true;
+    bool ready = false;
+    bool txReady = false;
+    bool standby = false;
+    bool busy = false;
+    bool autoCadEnabled = false;
+    RadioConfig radio = {};
+    StatusResp status = {};
+};
+
 Snapshot capture();
+size_t radioCount();
+bool captureRadio(size_t index, RadioSnapshot& out);
 
 }
