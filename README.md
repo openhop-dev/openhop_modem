@@ -51,6 +51,13 @@ openHop Core connects to the modem through `USBLoRaRadio` or
 logic stay on the host; the modem handles the SX1262 physical layer:
 TX, RX, CAD, and LoRa parameter configuration.
 
+The TCP interface is not restricted to openHop applications. Other software can
+implement a compatible modem adapter; on a Duo, openHop may control RF1 on 5055
+while a different application controls RF2 on 5056. This requires support for the
+modem's binary protocol and exposed LoRa PHY, not just a TCP connection. See the
+[TCP client integration guide](docs/tcp-client-integration.md), including its
+[source map and agent handoff](docs/tcp-client-integration.md#source-map-and-agent-handoff).
+
 ## Architecture
 
 ```

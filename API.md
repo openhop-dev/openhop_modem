@@ -141,7 +141,10 @@ The native Settings form posts to `/radios`. Its client makes one save, then
 bounded authenticated readiness reads; it never automatically repeats a save.
 Software disable skips radio work but does not remove electrical power.
 
-See [multi-radio behavior and platform limits](docs/multi-radio.md).
+See [multi-radio behavior and platform limits](docs/multi-radio.md). Different
+compatible applications can control different endpoints; the
+[TCP client integration guide](docs/tcp-client-integration.md) describes that
+binary radio interface separately from this HTTP API.
 
 ### `GET /api/network`
 

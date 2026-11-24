@@ -19,7 +19,10 @@ not a second modem implementation or a special RF1/RF2 command switch.
   capacity/IRQ/transport/mask/resource change and new acceptance.
 
 Host forwarding, encryption, mesh roles, retransmission and fabric routing stay
-in openHop. The modem never silently forwards between its radios.
+in the consuming application (openHop Core when used). The modem never silently
+forwards between its radios. Non-openHop clients can implement the same binary
+interface; see [TCP clients and independent applications](tcp-client-integration.md)
+for assigning Duo's endpoints to different applications and the adapter contract.
 
 ## Board declarations
 
@@ -78,8 +81,9 @@ does **not** cut electrical power to the module.
 
 ## Transport and ownership
 
-Use the same modem IP with each declared port in separate host `TCPLoRaRadio`
-connections. For example a four-radio carrier may declare 5055,5056,5057,5058;
+Use the same modem IP with each declared port in separate host connections.
+openHop Core's `TCPLoRaRadio` is one compatible client, not a requirement for
+other applications. For example a four-radio carrier may declare 5055,5056,5057,5058;
 these are board choices, not a request to expose four radios on an existing PCB.
 
 Each TCP endpoint has one client, parser, independent authentication and exact

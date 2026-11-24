@@ -38,7 +38,10 @@ This changelog starts with development toward v1.4.1. For earlier releases, see
 - Existing single-radio ESP32 and nRF52 targets use the same backend with one
   owner while preserving their board-specific hardware and transport policies.
   USB/UART stays primary-radio-only; the wire protocol is unchanged and host
-  forwarding/encryption/routing remains in openHop.
+  forwarding/encryption/routing remains in the consuming application.
+- A TCP client integration reference with an agent handoff explains assigning
+  Duo's radios to different applications, including non-openHop host adapters,
+  with the binary protocol, PHY compatibility and shared-device limits explicit.
 - Architecture, API, installation and P4 profile documentation now distinguishes
   the shared backend from board-specific binaries, records the bounded physical
   qualification and separates compile coverage from unqualified hardware/RF
