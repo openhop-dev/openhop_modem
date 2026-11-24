@@ -2,39 +2,45 @@
 
 <a id="openhop-modem--usbtcp-lora-modem-for-openhop-core"></a>
 
-USB and TCP LoRa modem firmware for supported ESP32 and nRF52 boards with SX1262 radios.
+USB and TCP LoRa modem firmware for [openHop Repeater](https://github.com/openhop-dev/openhop_repeater)
+on supported ESP32 and nRF52 boards with SX1262 radios.
 
 [![Latest release](https://img.shields.io/github/v/release/openhop-dev/openhop_modem?label=release)](https://github.com/openhop-dev/openhop_modem/releases/latest)
 [![Firmware asset build](https://img.shields.io/github/actions/workflow/status/openhop-dev/openhop_modem/build-firmware-assets.yml?branch=main&label=firmware)](https://github.com/openhop-dev/openhop_modem/actions/workflows/build-firmware-assets.yml)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 
-[Flash a device](https://flasher.openhop.dev/) · [Installation](INSTALL.md) · [Hardware](docs/hardware.md) · [Integrations](docs/tcp-client-integration.md) · [Changelog](CHANGELOG.md)
+## Acknowledgements
+
+Special thanks to [itk80](https://github.com/itk80) (KeenKJ), whose early
+firmware, modem-driver, integration, and hardware-support work laid the
+groundwork that became openHop Modem. Without his work, this project would
+not exist.
+
+[Flash a device](https://flasher.openhop.dev/) · [Installation](INSTALL.md) · [Hardware](docs/hardware.md) · [Documentation](#documentation) · [Changelog](CHANGELOG.md)
 
 The modem handles packet transmission, reception, CAD and radio configuration.
-Host software handles the network protocol, routing, application encryption and
-retries. Use it with [openHop Core](https://github.com/openhop-dev/openhop_core)
-and [openHop Repeater](https://github.com/openhop-dev/openhop_repeater), or write
-a compatible radio adapter for another application.
+openHop Repeater handles the network protocol, routing, application encryption
+and retries.
 
-> Development source can be ahead of published firmware. Use the exact board
-> and silicon package from [Releases](https://github.com/openhop-dev/openhop_modem/releases)
+> Development source can be ahead of published firmware. Use the matching board
+> package from [Releases](https://github.com/openhop-dev/openhop_modem/releases)
 > or the browser flasher. A source version change does not regenerate or relabel
 > the checked-in binaries.
 
 ## Installation
 
-1. **Identify the hardware.** Match the board, fitted RF module and silicon
-   revision. P4 legacy and production-silicon images are not interchangeable.
-2. **Flash the matching image.** Start with the
-   [browser flasher](https://flasher.openhop.dev/). Use
+1. **Identify the hardware.** Match the board and fitted RF module.
+2. **Flash the board.** Start with the
+   [browser flasher](https://flasher.openhop.dev/). For MeshSmith EtherMesh-1W,
+   the flasher automatically selects the correct firmware. Use
    [manual flashing and recovery](INSTALL.md#1-flash-the-firmware) for local
    builds, unpublished targets or bootloader recovery.
 3. **Connect the host.** Use USB serial, or provision Wi-Fi/connect Ethernet on a
    network-capable board. The normal USB baud rate is `921600`; the primary TCP
    port is `5055`. Your board profile determines which transports exist.
-4. **Configure the radio in the host application.** openHop Repeater uses
-   `modem_usb` or `modem_tcp`. Other applications need a compatible adapter.
-   Check the antenna/load, fitted band, region and legal power before TX.
+4. **Configure openHop Repeater.** Select `modem_usb` or `modem_tcp` and set
+   the radio parameters. Check the antenna/load, fitted band, region and legal
+   power before TX.
 
 The [installation guide](INSTALL.md) includes environment names, bootloader/OTA
 choices, network provisioning and host configuration examples. You do not need
@@ -54,8 +60,7 @@ to copy a driver from this repository or use a modem-specific Repeater image.
 | XIAO ESP32-S3 Wio-SX1262, Ikoka Stick and RAK3112 WisMesh | Wi-Fi | Match the carrier and fitted RF module. |
 | MeshSmith Photon-1W ESP32-C6 | Wi-Fi | Dedicated C6/Photon profile. |
 | Station G2 and Station G3 | Wi-Fi | High-power PA/LNA and board-specific controls. |
-| MeshSmith EtherMesh-1W | Ethernet | P4 legacy and production-silicon profiles. |
-| MeshSmith EtherMesh-Duo | Ethernet | RF1 and optional RF2, each with a fixed port. |
+| MeshSmith EtherMesh-1W | Ethernet | Select MeshSmith EtherMesh-1W in the browser flasher. |
 | Waveshare ESP32-P4-Nano | Ethernet or Wi-Fi | Runtime fallback, not simultaneous ETH/Wi-Fi with the radio. |
 | Heltec T114, RAK4631 USB, RAK3401 and XIAO nRF52840 Wio-SX1262 | No IP transport | USB; UART only where the board declares it. |
 | RAK4631 WisMesh Ethernet | Ethernet | W5100S, no mDNS; USB fallback and Bluetooth DFU update path. |
@@ -63,38 +68,9 @@ to copy a driver from this repository or use a modem-specific Repeater image.
 See the [hardware reference](docs/hardware.md) for the full board list, front-end
 policy, supply/jumper requirements, sensors and display behavior. Exact
 PlatformIO environment names are in [INSTALL.md](INSTALL.md#1-flash-the-firmware).
-For P4 boards, read the [silicon/profile matrix](docs/p4-silicon.md) before flashing.
 
 An external PA's advertised output is not the SX1262 command power. Follow the
 fitted module and board limits rather than treating a 1 W label as a chip setting.
-
-## One modem, separate applications
-
-A Duo with both modules fitted and enabled can serve different host applications:
-
-```text
-openHop Core             TCP 5055 ── RF1
-Another compatible app   TCP 5056 ── RF2
-                        same modem IP
-```
-
-RF1-only is the normal first-use configuration. Enable a fitted RF2 through
-**Settings → Save & Reboot**. Each port has one controlling client and independent
-radio settings, parser/authentication state, RX events and pending RF work.
-Applications may run on the same host or different computers.
-
-The second application must implement the modem's binary protocol and fit its
-supported LoRa PHY. A socket connection alone does not make an existing radio
-driver compatible. The radios still share power, the MCU, networking and reboot/OTA;
-separate ports do not guarantee RF isolation or safe overlapping high-power TX.
-
-Read [TCP clients and independent applications](docs/tcp-client-integration.md)
-for the adapter contract and its
-[agent handoff](docs/tcp-client-integration.md#source-map-and-agent-handoff).
-The shared runtime supports board-declared layouts of one to four radios;
-three/four-radio carriers need their own hardware design and qualification.
-USB/UART remains primary-radio-only. This multi-radio source work targets v1.4.5;
-check release availability before choosing an image.
 
 <a id="network-exposure-lan-only-by-design"></a>
 <a id="dhcp-classless-static-routes-option-121"></a>
@@ -107,7 +83,6 @@ check release availability before choosing an image.
 |---|---|
 | USB serial | Binary modem protocol for the primary radio. |
 | TCP 5055 | Primary radio protocol on network boards. |
-| TCP 5056 | Optional RF2 on Duo; other ports are explicit board declarations. |
 | HTTP port 80 | Authenticated WebUI and management API where supported. |
 
 Fresh Wi-Fi boards expose `openHop-Modem-XXXX` for setup at
@@ -128,11 +103,13 @@ ESP32 network builds support their documented HTTP OTA path. nRF52 targets use
 their board's bootloader flow; the RAK4631 Ethernet gateway supports Bluetooth
 DFU, not HTTP firmware activation. Keep the matching USB recovery path available.
 
+<a id="one-modem-separate-applications"></a>
+
 ## Architecture
 
 ```text
-Host application / radio adapter
-        │ USB or one TCP endpoint per radio
+openHop Repeater
+        │ USB or TCP
         ▼
 Modem transport + shared radio runtime
         │ board-specific hardware / RF front end
@@ -140,15 +117,15 @@ Modem transport + shared radio runtime
 SX1262 radio(s)
 ```
 
-The host owns the application's packet format and network behavior. Firmware
-owns the physical radio and never silently forwards between radio slots. Board
-headers define GPIO, front-end, power, display and network policy; one shared
-backend does not make board binaries interchangeable.
+openHop Repeater owns the network behavior. Firmware owns the physical radio
+and never silently forwards between radio slots. Board profiles define GPIO,
+front-end, power, display and network policy.
 
-Bounded physical acceptance of the shared-runtime development baseline covered
-Duo, Station G2, legacy-P4 EtherMesh-1W and Heltec V4.2. Wider compile coverage is
-not a hardware/RF acceptance claim. See the
-[architecture and validation boundaries](docs/multi-radio.md).
+The shared firmware has general support for multiple radios on one board.
+Each radio maintains its own configuration and status, while the board profile
+defines the available hardware and interfaces. See the
+[architecture reference](docs/multi-radio.md) for runtime details and validation
+boundaries.
 
 <a id="wire-protocol-v08"></a>
 <a id="deferred-rf-controls"></a>
@@ -165,8 +142,8 @@ radio. Hosts should probe capabilities instead of inferring them from versions.
 
 - [Binary protocol reference](docs/protocol.md): frame/command tables, deferred
   controls, payload layouts and default receive policy.
-- [Client integration guide](docs/tcp-client-integration.md): authentication,
-  startup, packet handling, reconnects and third-party adapter requirements.
+- [TCP client reference](docs/tcp-client-integration.md): authentication,
+  startup, packet handling and reconnect behavior.
 
 `firmware/include/protocol.h` defines constants and packed structures. LoRa TX
 payloads are limited to 255 bytes; RX frames also carry six metadata bytes.
@@ -179,7 +156,7 @@ Local TX completion is not acknowledgment from a distant peer.
 ## Development
 
 Firmware, board definitions and native regression runners live under `firmware/`.
-Host modem drivers live in openHop Core or the consuming application, not here.
+Host-side integration is maintained with openHop Repeater.
 
 See [firmware development](docs/development.md) for local builds, generated assets,
 workflow credentials and exact-tag release packaging. Automatic firmware builds
@@ -191,22 +168,14 @@ not need a firmware rebuild, generated manifest update, flash or RF test.
 | Reference | Use it for |
 |---|---|
 | [Installation](INSTALL.md) | Board environments, flashing, provisioning, host setup and recovery. |
-| [Hardware](docs/hardware.md) | Front ends, pins/policy, power, sensors, P4 carrier notes and displays. |
+| [Hardware](docs/hardware.md) | Front ends, pins/policy, power, sensors and displays. |
 | [Networking](docs/networking.md) | LAN admission, DHCP routes, Wi-Fi recovery and HTTP authentication. |
 | [HTTP API](API.md) | Device management endpoints and per-radio status. |
 | [Binary protocol](docs/protocol.md) | Commands, framing and payloads. |
-| [TCP client integration](docs/tcp-client-integration.md) | Independent applications, adapters and an agent/source-map handoff. |
+| [TCP client reference](docs/tcp-client-integration.md) | Framing, session lifecycle and a source-map/agent handoff. |
 | [Multi-radio architecture](docs/multi-radio.md) | Board declaration, ownership and qualification boundaries. |
-| [P4 silicon profiles](docs/p4-silicon.md) | Legacy/production compatibility and artifact contracts. |
 | [Development](docs/development.md) | Build/asset automation and release packaging. |
 | [Changelog](CHANGELOG.md) | Unreleased work and published release changes. |
-
-## Acknowledgements
-
-Special thanks to [itk80](https://github.com/itk80) (KeenKJ), whose early
-firmware, modem-driver, integration, and hardware-support work laid the
-groundwork that became openHop Modem. Without his work, this project would
-not exist.
 
 ## License
 
