@@ -1,128 +1,205 @@
-# openHop Modem — USB/TCP LoRa modem for openHop Core
+# openHop Modem
 
-Firmware that turns a supported ESP32 or nRF52 board with an SX1262
-front end into a dedicated LoRa modem controlled by an openHop Core host
-over USB-CDC, Wi-Fi/TCP, or (on boards with native Ethernet) wired LAN.
-The transport is host-platform agnostic; platform support depends on the
-openHop application and its access to USB or the modem's network.
+<a id="openhop-modem--usbtcp-lora-modem-for-openhop-core"></a>
 
-See [CHANGELOG.md](CHANGELOG.md) for development and release changes.
+USB and TCP LoRa modem firmware for supported ESP32 and nRF52 boards with SX1262 radios.
 
-The base firmware uses one count-driven radio runtime. Existing boards keep
-their single-radio behavior; suitable ESP32 carriers can declare up to four
-independent SX1262 TCP endpoints without a separate modem implementation.
-See [multi-radio architecture, board policy and limits](docs/multi-radio.md).
+[![Latest release](https://img.shields.io/github/v/release/openhop-dev/openhop_modem?label=release)](https://github.com/openhop-dev/openhop_modem/releases/latest)
+[![Firmware asset build](https://img.shields.io/github/actions/workflow/status/openhop-dev/openhop_modem/build-firmware-assets.yml?branch=main&label=firmware)](https://github.com/openhop-dev/openhop_modem/actions/workflows/build-firmware-assets.yml)
+[![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 
-Bounded physical qualification of this development baseline passed on
-EtherMesh-Duo, Station G2, legacy-P4 EtherMesh-1W and Heltec V4.2. This is distinct
-from the wider compile matrix and does not qualify overlapping maximum-power TX
-or three/four-radio hardware. See the [validation scope](docs/multi-radio.md#validation-boundaries).
+[Flash a device](https://flasher.openhop.dev/) · [Installation](INSTALL.md) · [Hardware](docs/hardware.md) · [Integrations](docs/tcp-client-integration.md) · [Changelog](CHANGELOG.md)
 
-**Supported boards** (one source tree, picked at compile time via
-`-DBOARD_<name>` in `platformio.ini`):
+The modem handles packet transmission, reception, CAD and radio configuration.
+Host software handles the network protocol, routing, application encryption and
+retries. Use it with [openHop Core](https://github.com/openhop-dev/openhop_core)
+and [openHop Repeater](https://github.com/openhop-dev/openhop_repeater), or write
+a compatible radio adapter for another application.
 
-| Board                                                                                                       | MCU                          | Front end                  | Networks |
-|-------------------------------------------------------------------------------------------------------------|------------------------------|----------------------------|----------|
-| **Heltec WiFi LoRa 32 V3**                                                                                  | ESP32-S3                     | bare SX1262                | Wi-Fi    |
-| **Heltec WiFi LoRa 32 V4**                                                                                  | ESP32-S3                     | SX1262 + PA/LNA FEM        | Wi-Fi    |
-| **Heltec WiFi LoRa 32 V4.2**                                                                                | ESP32-S3                     | SX1262 + GC1109 FEM        | Wi-Fi    |
-| **Heltec WiFi LoRa 32 V4.3**                                                                                | ESP32-S3                     | SX1262 + KCT8103L FEM      | Wi-Fi    |
-| **Heltec Wireless Tracker V2**                                                                              | ESP32-S3                     | SX1262 + KCT8103L PA/FEM + TFT 160×80 | Wi-Fi |
-| **Ikoka Stick** ([ndoo/ikoka-stick-meshtastic-device](https://github.com/ndoo/ikoka-stick-meshtastic-device))| XIAO ESP32-S3                | Ebyte E22P868M30S, +30 dBm | Wi-Fi   |
-| **Seeed XIAO Wio-SX1262**                                                                                   | XIAO ESP32-S3                | bare SX1262                | Wi-Fi    |
-| **MeshSmith Photon-1W ESP32-C6**                                                                            | XIAO ESP32-C6                | SX1262/E22P class 1 W      | Wi-Fi    |
-| **LilyGO T-LoRa T3-S3** v1.2/v1.3                                                                           | ESP32-S3                     | bare SX1262 + OLED         | Wi-Fi    |
-| **LilyGO T-Beam-S3 Supreme**                                                                                | ESP32-S3                     | bare SX1262 + L76K GNSS + 1.3" OLED, AXP2101 PMU | Wi-Fi |
-| **LilyGO T-Beam 1W**                                                                                        | ESP32-S3                     | SX1262 + external 1 W PA + L76K GNSS + SH1106/NTC fan | Wi-Fi |
-| **RAK3112 WisMesh**                                                                                         | ESP32-S3 (module)            | SX1262 in-module           | Wi-Fi    |
-| **B&Q Consulting Station G2**                                                                                | ESP32-S3                     | SX1262 + 35 dBm PA/LNA     | Wi-Fi    |
-| **BQ Voyage Station G3**                                                                                     | ESP32-S3 daughterboard       | SX1262 + selectable PA/LNA | Wi-Fi    |
-| **WaveShare ESP32-P4-Nano**                                                                                 | ESP32-P4 (RISC-V) + ESP32-C6 | E22 (off-board, optional)  | **Ethernet *or* Wi-Fi** — runtime auto-select: cable plugged → Ethernet wins, no link → fall back to Wi-Fi via C6 SDIO bridge. Both at once is unstable with the radio attached, see [P4-Nano notes](#porting-to-another-esp32-p4-board) |
-| **MeshSmith EtherMesh-1W**                                                                                   | ESP32-P4 (RISC-V)            | E22P/SX1262 class 1 W      | **Ethernet** |
-| **MeshSmith EtherMesh-Duo** | ESP32-P4 (RISC-V) | Two RAK13302/SX1262 slots; RF1-only default, RF2 optional | **Ethernet**, one fixed TCP port per slot |
-| **Heltec T114**                                                                                             | nRF52840                     | bare SX1262 + TFT 135×240  | **none** — USB-CDC + UART only |
-| **RAK4631 USB**                                                                                             | nRF52840 (RAK4631)           | SX1262 in-module           | **none** — USB-CDC only |
-| **RAK4631 WisMesh Ethernet**                                                                                | nRF52840 (RAK4631) + RAK13800/W5100S | SX1262 in-module     | **Ethernet** (W5100S) — TCP port 5055, USB-CDC fallback |
-| **RAK3401**                                                                                                 | nRF52840 (RAK4631 core) + RAK13302   | SX1262 + SKY66122 ~1 W FEM | **none** — USB-CDC only |
-| **Seeed XIAO nRF52840 + Wio-SX1262**                                                                        | XIAO nRF52840                | bare SX1262                | **none** — USB-CDC only |
-
-openHop Core connects to the modem through `USBLoRaRadio` or
-`TCPLoRaRadio`. Routing, encryption, retransmission, and other MeshCore
-logic stay on the host; the modem handles the SX1262 physical layer:
-TX, RX, CAD, and LoRa parameter configuration.
-
-The TCP interface is not restricted to openHop applications. Other software can
-implement a compatible modem adapter; on a Duo, openHop may control RF1 on 5055
-while a different application controls RF2 on 5056. This requires support for the
-modem's binary protocol and exposed LoRa PHY, not just a TCP connection. See the
-[TCP client integration guide](docs/tcp-client-integration.md), including its
-[source map and agent handoff](docs/tcp-client-integration.md#source-map-and-agent-handoff).
-
-## Architecture
-
-```
-                         USB-CDC / Wi-Fi-TCP / Ethernet-TCP
-Host running openHop Core                         openHop Modem
-┌──────────────────────────┐                      ┌─────────────────┐
-│ openHop application      │                      │ Modem firmware  │
-│  └─ openHop Core         │◄ USB 921600 ───────►│  ├─ RadioLib    │
-│     ├─ USBLoRaRadio      │                      │  ├─ SX1262      │
-│     └─ TCPLoRaRadio      │◄ TCP 5055 ─────────►│  ├─ OLED / TFT  │
-│                          │                      │  └─ Wi-Fi / ETH │
-└──────────────────────────┘                      └─────────────────┘
-```
-
-The host can be any platform supported by the openHop application and
-its USB or network transport. Wi-Fi is available on supported ESP32
-boards; wired Ethernet is available on P4-Nano, EtherMesh-1W, EtherMesh-Duo, and
-the RAK4631 WisMesh Ethernet target. T114, RAK4631 USB, RAK3401, and XIAO nRF52
-Wio are USB-CDC targets, with UART available where the board declares it.
-
-The diagram shows the primary connection. Explicit multi-radio ESP32 layouts
-use the same modem IP with one fixed TCP port per owner; Duo uses 5055/5056.
-USB/UART remains bound to the primary radio and does not multiplex secondary
-radios.
-
-- **USB mode** — cable, instant, no provisioning; ideal for single-board setups.
-- **Network TCP mode** — Wi-Fi/TCP on ESP32 boards, or Ethernet/TCP on wired
-  targets (P4-Nano, EtherMesh-1W, EtherMesh-Duo, RAK4631). Wi-Fi boards are provisioned via AP portal
-  (`openHop-Modem-XXXX` → `http://192.168.4.1`), USB, or their web UI; the TCP
-  token defaults blank/open on fresh firmware and can be set from the web UI on
-  web-enabled builds. The RAK4631 Ethernet variant provides a LAN-only,
-  authenticated WebUI and JSON/config API on port 80. It has no mDNS; discover
-  its IP from DHCP or configure a static address. WebUI firmware upload over
-  Ethernet is disabled because safe staged activation and recovery would
-  require a custom openHop Modem bootloader, which is not currently planned.
-  Deployed gateways can still be updated OTA through the working Bluetooth DFU
-  flow using the generated nRF52 `firmware.zip`.
-
-## Project layout
-
-- **`firmware/`** — PlatformIO board environments sharing one radio runtime.
-  Each board lives in `include/boards/<env>.h`; `platformio.ini` picks
-  one via `-DBOARD_<NAME>`. Prebuilt artifacts (ESP32: combined
-  `firmware.factory.bin` plus `bootloader.bin / partitions.bin / firmware.bin`;
-  nRF52: `firmware.hex`, Adafruit DFU `firmware.zip`, and UF2 where supported)
-  live in `firmware/<env>/`.
-- **`.github/workflows/`** — firmware validation, asset staging, and release
-  packaging. Repeater packaging and modem transport drivers live in the
-  openHop Repeater and openHop Core repositories, not here.
+> Development source can be ahead of published firmware. Use the exact board
+> and silicon package from [Releases](https://github.com/openhop-dev/openhop_modem/releases)
+> or the browser flasher. A source version change does not regenerate or relabel
+> the checked-in binaries.
 
 ## Installation
 
-Flash supported boards from the browser at <https://flasher.openhop.dev/>.
-[INSTALL.md](INSTALL.md) also covers local esptool/PlatformIO flashing,
-network OTA, Wi-Fi provisioning, and selecting the built-in `modem_usb` or
-`modem_tcp` transport in openHop Repeater. No driver copying, Repeater patching,
-or modem-specific container image is required.
+1. **Identify the hardware.** Match the board, fitted RF module and silicon
+   revision. P4 legacy and production-silicon images are not interchangeable.
+2. **Flash the matching image.** Start with the
+   [browser flasher](https://flasher.openhop.dev/). Use
+   [manual flashing and recovery](INSTALL.md#1-flash-the-firmware) for local
+   builds, unpublished targets or bootloader recovery.
+3. **Connect the host.** Use USB serial, or provision Wi-Fi/connect Ethernet on a
+   network-capable board. The normal USB baud rate is `921600`; the primary TCP
+   port is `5055`. Your board profile determines which transports exist.
+4. **Configure the radio in the host application.** openHop Repeater uses
+   `modem_usb` or `modem_tcp`. Other applications need a compatible adapter.
+   Check the antenna/load, fitted band, region and legal power before TX.
 
-Source profiles can precede published assets or flasher entries. Confirm that
-the selected release contains the exact board/silicon profile, or use the local
-build instructions; a shared backend does not make board binaries interchangeable.
+The [installation guide](INSTALL.md) includes environment names, bootloader/OTA
+choices, network provisioning and host configuration examples. You do not need
+to copy a driver from this repository or use a modem-specific Repeater image.
 
-The source version is independent of checked-in prebuilt files. A development
-version bump does not rebuild or relabel those files; use each asset's own
-manifest/version and checksum until matching firmware is generated.
+<a id="per-board-pin-map"></a>
+<a id="e22p-rf-switch-ikoka-p4-nano--e22p"></a>
+<a id="porting-to-another-esp32-p4-board"></a>
+<a id="on-device-display"></a>
+
+## Supported hardware
+
+| Family | Network transport | Selection notes |
+|---|---|---|
+| Heltec V3, V4, V4.2, V4.3 and Wireless Tracker V2 | Wi-Fi | Use the exact board/FEM revision. |
+| LilyGO T3-S3, T-Beam-S3 Supreme and T-Beam 1W | Wi-Fi | Separate power, display and PA policies. |
+| XIAO ESP32-S3 Wio-SX1262, Ikoka Stick and RAK3112 WisMesh | Wi-Fi | Match the carrier and fitted RF module. |
+| MeshSmith Photon-1W ESP32-C6 | Wi-Fi | Dedicated C6/Photon profile. |
+| Station G2 and Station G3 | Wi-Fi | High-power PA/LNA and board-specific controls. |
+| MeshSmith EtherMesh-1W | Ethernet | P4 legacy and production-silicon profiles. |
+| MeshSmith EtherMesh-Duo | Ethernet | RF1 and optional RF2, each with a fixed port. |
+| Waveshare ESP32-P4-Nano | Ethernet or Wi-Fi | Runtime fallback, not simultaneous ETH/Wi-Fi with the radio. |
+| Heltec T114, RAK4631 USB, RAK3401 and XIAO nRF52840 Wio-SX1262 | No IP transport | USB; UART only where the board declares it. |
+| RAK4631 WisMesh Ethernet | Ethernet | W5100S, no mDNS; USB fallback and Bluetooth DFU update path. |
+
+See the [hardware reference](docs/hardware.md) for the full board list, front-end
+policy, supply/jumper requirements, sensors and display behavior. Exact
+PlatformIO environment names are in [INSTALL.md](INSTALL.md#1-flash-the-firmware).
+For P4 boards, read the [silicon/profile matrix](docs/p4-silicon.md) before flashing.
+
+An external PA's advertised output is not the SX1262 command power. Follow the
+fitted module and board limits rather than treating a 1 W label as a chip setting.
+
+## One modem, separate applications
+
+A Duo with both modules fitted and enabled can serve different host applications:
+
+```text
+openHop Core             TCP 5055 ── RF1
+Another compatible app   TCP 5056 ── RF2
+                        same modem IP
+```
+
+RF1-only is the normal first-use configuration. Enable a fitted RF2 through
+**Settings → Save & Reboot**. Each port has one controlling client and independent
+radio settings, parser/authentication state, RX events and pending RF work.
+Applications may run on the same host or different computers.
+
+The second application must implement the modem's binary protocol and fit its
+supported LoRa PHY. A socket connection alone does not make an existing radio
+driver compatible. The radios still share power, the MCU, networking and reboot/OTA;
+separate ports do not guarantee RF isolation or safe overlapping high-power TX.
+
+Read [TCP clients and independent applications](docs/tcp-client-integration.md)
+for the adapter contract and its
+[agent handoff](docs/tcp-client-integration.md#source-map-and-agent-handoff).
+The shared runtime supports board-declared layouts of one to four radios;
+three/four-radio carriers need their own hardware design and qualification.
+USB/UART remains primary-radio-only. This multi-radio source work targets v1.4.5;
+check release availability before choosing an image.
+
+<a id="network-exposure-lan-only-by-design"></a>
+<a id="dhcp-classless-static-routes-option-121"></a>
+<a id="wi-fi-outage-recovery"></a>
+<a id="web-ui--ota--json-api-authentication-v08"></a>
+
+## Connection and management
+
+| Interface | Purpose |
+|---|---|
+| USB serial | Binary modem protocol for the primary radio. |
+| TCP 5055 | Primary radio protocol on network boards. |
+| TCP 5056 | Optional RF2 on Duo; other ports are explicit board declarations. |
+| HTTP port 80 | Authenticated WebUI and management API where supported. |
+
+Fresh Wi-Fi boards expose `openHop-Modem-XXXX` for setup at
+`http://192.168.4.1`. Wired targets normally use DHCP. RAK4631 Ethernet has no
+mDNS, so use its DHCP lease/IP.
+
+The normal management login defaults to `admin` / `openhop`. The TCP token is a
+separate credential and starts empty on fresh firmware. Set the HTTP password
+and TCP token before using a shared LAN. The firmware admits only the source
+ranges defined in its LAN filter; framing and authentication do not provide TLS.
+
+The multi-radio Home page shows status. Stats holds per-radio detail, and
+Settings holds network/security and optional-radio selection. See the
+[HTTP API](API.md) and [networking reference](docs/networking.md) for admission,
+DHCP routes, Wi-Fi recovery and authentication behavior.
+
+ESP32 network builds support their documented HTTP OTA path. nRF52 targets use
+their board's bootloader flow; the RAK4631 Ethernet gateway supports Bluetooth
+DFU, not HTTP firmware activation. Keep the matching USB recovery path available.
+
+## Architecture
+
+```text
+Host application / radio adapter
+        │ USB or one TCP endpoint per radio
+        ▼
+Modem transport + shared radio runtime
+        │ board-specific hardware / RF front end
+        ▼
+SX1262 radio(s)
+```
+
+The host owns the application's packet format and network behavior. Firmware
+owns the physical radio and never silently forwards between radio slots. Board
+headers define GPIO, front-end, power, display and network policy; one shared
+backend does not make board binaries interchangeable.
+
+Bounded physical acceptance of the shared-runtime development baseline covered
+Duo, Station G2, legacy-P4 EtherMesh-1W and Heltec V4.2. Wider compile coverage is
+not a hardware/RF acceptance claim. See the
+[architecture and validation boundaries](docs/multi-radio.md).
+
+<a id="wire-protocol-v08"></a>
+<a id="deferred-rf-controls"></a>
+<a id="frame-format"></a>
+<a id="host--modem"></a>
+<a id="modem--host"></a>
+<a id="default-radio-parameters"></a>
+
+## Protocol
+
+The existing framed protocol carries commands, replies and asynchronous packet
+events. TCP selects the owning radio; USB/UART does not multiplex a secondary
+radio. Hosts should probe capabilities instead of inferring them from versions.
+
+- [Binary protocol reference](docs/protocol.md): frame/command tables, deferred
+  controls, payload layouts and default receive policy.
+- [Client integration guide](docs/tcp-client-integration.md): authentication,
+  startup, packet handling, reconnects and third-party adapter requirements.
+
+`firmware/include/protocol.h` defines constants and packed structures. LoRa TX
+payloads are limited to 255 bytes; RX frames also carry six metadata bytes.
+Local TX completion is not acknowledgment from a distant peer.
+
+<a id="project-layout"></a>
+<a id="firmware-asset-builds"></a>
+<a id="asset-update-pr-authentication"></a>
+
+## Development
+
+Firmware, board definitions and native regression runners live under `firmware/`.
+Host modem drivers live in openHop Core or the consuming application, not here.
+
+See [firmware development](docs/development.md) for local builds, generated assets,
+workflow credentials and exact-tag release packaging. Automatic firmware builds
+are tied to relevant `main` pushes, not `dev` pushes. A documentation change does
+not need a firmware rebuild, generated manifest update, flash or RF test.
+
+## Documentation
+
+| Reference | Use it for |
+|---|---|
+| [Installation](INSTALL.md) | Board environments, flashing, provisioning, host setup and recovery. |
+| [Hardware](docs/hardware.md) | Front ends, pins/policy, power, sensors, P4 carrier notes and displays. |
+| [Networking](docs/networking.md) | LAN admission, DHCP routes, Wi-Fi recovery and HTTP authentication. |
+| [HTTP API](API.md) | Device management endpoints and per-radio status. |
+| [Binary protocol](docs/protocol.md) | Commands, framing and payloads. |
+| [TCP client integration](docs/tcp-client-integration.md) | Independent applications, adapters and an agent/source-map handoff. |
+| [Multi-radio architecture](docs/multi-radio.md) | Board declaration, ownership and qualification boundaries. |
+| [P4 silicon profiles](docs/p4-silicon.md) | Legacy/production compatibility and artifact contracts. |
+| [Development](docs/development.md) | Build/asset automation and release packaging. |
+| [Changelog](CHANGELOG.md) | Unreleased work and published release changes. |
 
 ## Acknowledgements
 
@@ -131,468 +208,6 @@ firmware, modem-driver, integration, and hardware-support work laid the
 groundwork that became openHop Modem. Without his work, this project would
 not exist.
 
-## Firmware asset builds
+## License
 
-The `Build Firmware Assets` GitHub workflow uses
-`firmware/tools/build_firmware_assets.py` to build PlatformIO envs and stage
-flasher-ready outputs in `firmware/<env>/`.  Pull requests do not build
-firmware.  Pushes to `main` build affected envs and open an asset-update PR
-containing updated `firmware/<env>/` binaries, manifests, and SHA256 sums
-without uploading Actions artifacts.  Manual dispatch can build `auto`, `all`,
-or specific envs from any branch; manual runs upload Actions artifacts for
-review and only commit generated files when `commit_artifacts=true`.
-
-### Asset-update PR authentication
-
-Before merging firmware changes from `dev` into `main`, configure the repository
-Actions secret `FIRMWARE_PR_TOKEN`. Use a fine-grained personal access token owned
-by the account that should open the PR, restricted to this repository with
-**Contents: read/write** and **Pull requests: read/write** permissions. Complete
-any organization-required token approval before relying on the workflow. Add the
-value through GitHub's repository **Settings → Secrets and variables → Actions**;
-never put the token in source, logs, or issue/PR text. Repository write access is
-sufficient to manage repository secrets; enabling Actions policy or auto-merge is
-not required for this token-based path. Organization PAT restrictions still apply.
-
-Both main-push and manual-on-main asset updates use that token to open or update
-`automation/update-firmware-assets` against `main`. The PR appears under the token
-owner's account; the workflow does **not** approve, merge, or publish a release.
-The existing generated-commit attribution is unchanged. The credential is supplied
-only to its presence check and the PR action, not to firmware compilation steps.
-
-When assets are selected for a main PR update, a missing secret fails in the
-selection job before expensive builds start. This check only verifies presence,
-not token validity or permissions; PR authentication/API failures also fail the
-workflow rather than being hidden behind a successful run. Artifact-only manual
-runs and non-main branch commits do not require this secret. If the token expires,
-replace the repository secret and rerun the failed workflow; do not weaken branch
-protection or push generated files directly to main.
-
-Run the offline workflow regression checks with:
-
-```bash
-python3 firmware/tools/test_firmware_asset_workflow.py -v
-```
-
-## Per-board pin map
-
-All board-specific GPIOs and policies live in
-`firmware/include/boards/<name>.h` — pick the closest existing one
-when adding a new carrier and edit the few fields that differ.
-
-Per-board highlights (full pin numbers in the headers, mDNS prefix is
-`BoardConfig.mdns_prefix`, hostname `<prefix>-<mac3>.local`):
-
-- **Heltec V3** — onboard SSD1306, bare SX1262, max 22 dBm.
-- **Heltec V4** — onboard SSD1306, SX1262 + V4.x PA/LNA front-end, native USB-CDC, max 22 dBm SX1262 command power.
-- **Heltec V4.2** — dedicated GC1109 PA/FEM build with VFEM/CSD enabled and GC1109 CPS driven high for full PA mode.
-- **Heltec V4.3** — dedicated KCT8103L PA/FEM build with SX1262 boosted RX gain enabled and FEM RX LNA bypassed by default for lower noise floor; the device web UI can toggle the external FEM RX LNA and set `agc.reset.interval` for periodic RX AGC resets during long idle periods.
-- **Heltec Wireless Tracker V2** — ESP32-S3 + SX1262 + KCT8103L PA/FEM, ST7735 TFT 160×80, native USB-CDC, max 22 dBm SX1262 command power.
-- **Ikoka Stick** — XIAO ESP32-S3 + E22P868M30S, EN-held + DIO2-as-RF-switch, max 30 dBm chip / +10 dB PA, external OLED.
-- **XIAO Wio-SX1262** — Seeed XIAO ESP32-S3 + bare SX1262, no OLED.
-- **MeshSmith Photon-1W ESP32-C6** — Seeed XIAO ESP32-C6 + Photon 1 W SX1262/E22P class front end, Photon XIAO pinout (D1 DIO1, D2 reset, D3 busy, D4 NSS, D5 RXEN, D8/D9/D10 SPI), Wi-Fi/TCP + AP provisioning + web UI/stats/OTA.
-- **LilyGO T3-S3** — bare SX1262 + onboard SSD1306, native USB-CDC.
-- **LilyGO T-Beam-S3 Supreme** — bare SX1262 + onboard L76K GNSS + 1.3" SH1106 OLED, native USB-CDC. LoRa/GNSS/OLED power rails are gated by an onboard AXP2101 PMU chip (`pmu_manager.cpp` / `BoardConfig.pmu`) on its own I2C bus rather than plain GPIOs — the only board in this fleet wired that way.
-- **LilyGO T-Beam 1W** — ESP32-S3 + SX1262 external PA, L76K GNSS, SH1106 OLED, board NTC on GPIO14, and fan on GPIO41. The SX1262 is capped at 22 dBm chip drive; the external PA produces the antenna-side 1 W output. The fan starts fail-safe ON, turns on at or above 45 C, turns off below 40 C, and holds its previous state between those thresholds. USB-C input (3.9-6 V) is marginal for sustained high-power TX; use a 7.4 V pack capable of 2 A or more discharge. Battery telemetry is calibrated voltage only; no percentage is inferred.
-- **RAK3112 WisMesh** — SX1262 inside the RAK3112 module, no OLED.
-- **Station G2** — SX1262 + high-power PA/LNA, SH1106 display, max SX1262 drive capped at 19 dBm.
-- **Station G3** — BQESP32V1M N16R8 (16 MB flash + 8 MB octal PSRAM) + BQ35LORA900V1M, Station G2-compatible radio/display pins, persistent Station G3-only web/API selection of lower or higher PA PL1 mode on GPIO9 (lower by default), persistent RX-only external LNA enable/bypass on GPIO10, onboard INA219 input-voltage/current/power telemetry with since-boot minimum voltage and maximum current, optional GROVE GPS on IO7/IO15, and max SX1262 drive capped at 19 dBm. The LNA is always bypassed before TX and during periodic AGC maintenance. Remove the PA PL1/LNA P jumpers for software GPIO control; PA PL2 remains a physical jumper.
-
-Station G2 and G3 can experience a reported SX1262 receiver failure mode in
-which the apparent noise floor rises by roughly 20–30 dB and packet reception
-stops until the radio is reinitialized. The optional workaround calls
-RadioLib's `resetAGC()` during idle RX, then resumes continuous receive. Resets
-are deferred during TX, standby, detected packet reception, and for 10 seconds
-after a Station transmits so maintenance cannot interrupt the usual repeater
-forwarding/response window. Each reset still creates a brief listening gap, so
-periodic maintenance is disabled by default. Set `agc_reset_interval_sec` to
-`4` in `/api/config` or use the Station AGC Recovery control in the modem
-WebUI to enable the recommended four-second interval; changes apply
-immediately without rebooting the modem, and `0` disables the workaround.
-
-Station G2 and G3 support an optional Seeed Grove BME280 on the **Grove I2C**
-connector (SDA GPIO5, SCL GPIO6, shared with the OLED and, on G3, the INA219).
-It provides cached temperature, relative humidity, and pressure in
-[`/api/stats` → `environment`](API.md#get-apistats). Both `0x76` (default) and
-`0x77` are supported. The separate Grove GPS/UART connector is not suitable.
-No sensor configuration is required; an absent sensor leaves the modem
-operational and reports unavailable readings. Run the Station G2/G3 host
-regressions with `python3 firmware/tools/test_environment_sensor.py` (requires
-PlatformIO, gcc, and g++; the runner fetches the pinned Bosch library if needed).
-- **WaveShare ESP32-P4-Nano** — RISC-V P4 + C6 + IP101GRI Ethernet PHY + off-board E22, runtime ETH-or-Wi-Fi (never both, see below).
-- **Heltec T114** — nRF52840 + bare SX1262 + ST7789 TFT 135×240, **no Wi-Fi/TCP/network OTA**; USB-CDC + UART transport only, OTA via Adafruit nRF52 DFU (USB) or in-app `CMD_OTA_*` over the protocol transport.
-- **RAK4631 USB** — RAK4631 nRF52840 core on a compatible WisBlock base, using the same proven internal SX1262 pins, DIO2 RF-switch policy, SPIM2 radio bus, and 22 dBm ceiling as the Ethernet build. The `rak4631_usb` environment omits the RAK13800 dependency and all W5100S/TCP/network initialization; native USB-CDC is the only modem transport.
-- **RAK4631 WisMesh Ethernet** — RAK4631 nRF52840 core module + RAK13800 W5100S Ethernet on the WisBlock IO slot. It has its own PlatformIO board JSON and product-specific variant under `firmware/variants/RAK4631_WisMesh_Ethernet/`, separate SPIM instances for Ethernet (SPIM3) and LoRa (SPIM2), no display, and no Wi-Fi. TCP port 5055 is the primary transport; USB-CDC is the fallback. Port 80 serves the authenticated WebUI/config API. WebUI firmware upload over Ethernet is disabled because safe staged activation and recovery would require a custom openHop Modem bootloader, which is not currently planned. Deployed gateways remain OTA-updatable through the working Bluetooth DFU flow using the generated nRF52 `firmware.zip`; generated `firmware.ota` files are non-installable staging artifacts. The WebUI/API persist hostname, DHCP/static network values, TCP port/token, HTTP password, and compile-gated GPS state without echoing secret values. The default HTTP login is `admin` / `openhop`; change both the HTTP password and blank/open TCP token before trusting a shared LAN. The product USB descriptor is `WisMesh-openHop-Ethernet`; reselect any stale by-id serial path after flashing. Hardware validation covers W5100S TCP, the authenticated WebUI/config API, hostname and static-network persistence, automatic reboot and HTTP recovery after saves, and complete browser-initiated BLE DFU uploads.
-- **RAK3401** — RAKwireless nRF52840 WisBlock core + RAK13302 LoRa module (SX1262 driving a Skyworks SKY66122-11 front end, ~1 W). Ported from the MeshCore `rak3401` variant: unlike the RAK4631 targets the SX1262 sits on the WisBlock SPI slot (P0.03 SCK / P0.29 MISO / P0.30 MOSI / P0.26 NSS), not on the core module's internal bus. WB_IO2 (P0.34) gates the 3V3_S rail and the RAK13302's 5 V PA boost, WB_IO3 (P0.21) drives the SKY66122 CSD+CPS pair — both held HIGH for the life of the device — and SX1262 DIO2 drives CTX so TX/RX switching is hardware-timed. SX1262 drive is capped at 22 dBm into the PA, with the 0x08B5 sensitivity patch and boosted RX gain enabled. LiPo voltage is read from P0.05 through a 1.73:1 divider. **No Wi-Fi/TCP/network OTA**, no display; native USB-CDC transport only, with firmware updates through the Adafruit nRF52 USB bootloader using DFU or UF2 assets.
-- **Seeed XIAO nRF52840 + Wio-SX1262** (SKU 102010710) — XIAO nRF52840 + bare SX1262 on the Wio-SX1262 carrier, BLE 5.0 hardware unused, **no Wi-Fi/TCP/network OTA**, no display; native USB-CDC transport only, OTA via Adafruit nRF52 DFU (UF2 disk on double-click reset) or in-app `CMD_OTA_*`.
-
-RAK4631 battery reporting uses the source-backed `WB_A0` mapping
-(P0.05/AIN3), the nRF52 3.0 V internal ADC reference, 12-bit samples, eight
-nonblocking samples per batch, and a 1.73 divider scale. The WebUI reports
-voltage only; it does not infer charging state or state of charge. Real-board
-calibration against a meter is still required.
-The mapping was audited against MeshCore commit
-`2228214ded57c2761312730cdeae14b2b31bc5a3`,
-`variants/rak4631/RAK4631Board.h`, plus the official RAK nRF52 variant.
-
-Optional serial NMEA GPS is compile-gated with
-`PYMC_RAK4631_GPS_SERIAL_ENABLE=1` and uses Serial1 RX15/TX16 at 9600 baud.
-No GPS power/reset GPIO is guessed, and ordinary builds do not poll GPS. The
-RAK12500 I2C/slot-control mappings remain unimplemented until a safe base-board
-slot is physically verified; Ethernet power/reset pins 34/21 are reserved and
-must never be reused by GPS code.
-
-### E22P RF switch (Ikoka, P4-Nano + E22P)
-
-E22P truth table from the datasheet: `EN=1, T/R CTRL=1` → TX,
-`EN=1, T/R CTRL=0` → RX, `EN=0` → off. Firmware drives `EN` LOW for
-5 s at boot (LDO/PA settle), then HIGH for life. `T/R CTRL` is not
-wired to the MCU — the carrier ties it to SX1262 DIO2, and firmware
-enables `setDio2AsRfSwitch(true)` so SX1262 toggles it on TX
-automatically. A board with two MCU-driven enable lines instead just
-sets `rx_pin` / `tx_pin` in `RfSwitchPolicy`.
-
-## Porting to another ESP32-P4 board
-
-ESP32-P4 engineering-sample/pre-v3 and production-silicon binaries are not
-interchangeable. Existing `esp32_p4_nano` / `ethermesh_1w` targets retain their
-legacy SDK; `esp32_p4_nano_v3` / `ethermesh_1w_v3` use the production SDK and
-matching bootloader with the v3.2 compatibility fixes. Stock compiled limits
-are 1–199 and 301–399 respectively, not every revision below/above v3. Read the
-[P4 silicon matrix, artifact contract and remaining flasher/hardware gates](docs/p4-silicon.md)
-before selecting firmware. Source support does not publish a new release or
-enable automatic selection in the public flasher.
-
-The WaveShare ESP32-P4-Nano is the reference; copy
-`firmware/include/boards/esp32_p4_nano.h` and adjust pins. Quirks
-that differ from the ESP32-S3 family:
-
-- **GPIO35 is the boot strap** (not GPIO0). Many P4 boards wire their
-  BOOT button there, but GPIO35 is also RMII TXD1 — when Ethernet is
-  up, the EMAC drives it as a 25 MHz output and the button reads the
-  bitstream. Set `pin_user_button = -1`; firmware then auto-cycles the
-  OLED screens every 4 s instead.
-- **High-numbered GPIOs (49+) sit on a separate LDO domain.** RMII
-  TX_EN/CLK fall there but work on the Nano; if PHY init fails on a
-  different carrier, suspect this first.
-- **Wi-Fi (C6 SDIO) + Ethernet (RMII) + radio together is unstable** —
-  the C6 esp_hosted bridge falls off the SDIO bus every ~25 s and the
-  SoC's RTC watchdog reboots. Fix: leave both `has_wifi = true` and
-  `ethernet.enabled = true` in the board header and let `setup()`
-  pick at runtime — Ethernet is tried first, EMAC is torn down with
-  `EthernetManager::end()` if there's no link, then Wi-Fi takes over.
-  Either alone with the radio is fine; both at once isn't.
-- **Ethernet** is configured via `BoardConfig::EthernetConfig`
-  (MDC, MDIO, RST, addr, clock direction). Static-IP fields are
-  optional — leave `use_static_ip = false` for DHCP. Add new PHY
-  models by extending the `EthernetPhy` enum + the mapping in
-  `ethernet_manager.cpp`.
-- **Debug serial** — keep `ARDUINO_USB_CDC_ON_BOOT=0`; the
-  pioarduino USB-Serial-JTAG path mangles `Serial.printf` output on
-  ESP32-P4. Use the second USB-C port (CH343P → UART0) for printf
-  debug, or rely on TCP / `CMD_GET_DEBUG`.
-- **OLED is optional** — `pin_i2c_sda = -1` short-circuits the entire
-  Wire/SSD1306 path.
-
-## Network exposure: LAN-only by design
-
-On Wi-Fi / Ethernet boards both TCP services — the protocol on 5055
-and management/OTA HTTP on 80 where supported — refuse clients whose source address is outside
-RFC1918 (`10/8`, `172.16/12`, `192.168/16`), link-local (`169.254/16`)
-or loopback (`127/8`). The check runs at `accept()` time before any
-frame parsing or auth. NAT port-forwards / Internet tunnels with a
-public source IP are dropped unconditionally — TCP closes the socket,
-OTA returns 403. Hard firmware policy; lifting it means editing
-`firmware/include/net_filter.h` and re-flashing. Operators who need
-remote access run a VPN whose tunnel address (WireGuard / Tailscale
-in 100.64/10 → Tailscale subnet route, or any `10/8` overlay) is
-inside the LAN range from the modem's point of view.
-
-### DHCP classless static routes (option 121)
-
-The ESP32/ESP-IDF lwIP client does not request or parse DHCP option 121
-(RFC 3442). On routed LANs where a VPN or overlay prefix is reachable
-through a different next hop than the default router, replies from the
-modem leave through the default gateway and router connection tracking
-drops them (asymmetric routing). `firmware/include/dhcp_routes.h` adds
-option 121 to the Parameter Request List and stages option 121 (or the
-Microsoft 249 alias when 121 is absent) while the SDK parses a DHCP reply.
-Routes are published only when the original DHCP client binds an accepted
-lease, including unchanged renewals and delayed address-conflict checking.
-OFFERs and rejected messages never change the active table. A newly accepted
-ACK without classless routes removes the previous lease's table. Malformed
-or oversized route options install no classless table for that new lease;
-they never preserve another lease's routes.
-
-Tables belong to their actual Wi-Fi/Ethernet interface. Link/admin down,
-address loss and interface removal retire that interface's active and pending
-state without erasing another interface's lease. Up to four interface owners
-are tracked, each retaining eight nondefault routes and a separate classless
-default route. Repeated
-121/249 options are concatenated (up to 512 bytes per option code); 121 takes
-precedence. Prefixes are normalized and unsupported zero-router/on-link entries
-are ignored. When 121 is authoritative, option 3 is ignored even if no `/0`
-route was provided. Learned entries are listed on `/stats` and `/api/network`
-(`base_gateway`, `dhcp_routes_active`, `dhcp_routes`). The LAN-only source
-filter above is unchanged and still applies.
-
-The existing per-packet lwIP gateway technique remains: the selected next hop
-is retained until another routed send or lease transition. ICMP echo replies
-are covered explicitly; other explicit-netif output paths can still use the
-last selected gateway. This change does not claim a general-purpose routing
-stack or physical routed-LAN validation.
-
-Host regressions (g++ with AddressSanitizer/UndefinedBehaviorSanitizer):
-
-```bash
-python3 firmware/tools/test_dhcp_routes.py
-python3 firmware/tools/test_wifi_recovery.py
-```
-
-These execute production routing/lifecycle, Wi-Fi/TCP and main-loop consumer
-code at recording SDK boundaries. SDK packet acceptance and network callbacks
-are fixtures, not a running full network stack or a physical DHCP/VPN test.
-
-T114 has no IP stack at all — the only paths in are USB-CDC and the
-secondary UART, and updates are either Adafruit DFU over USB or the
-in-app `OTA_*` commands carried over the same transport.
-
-### Wi-Fi outage recovery
-
-Saved Wi-Fi connects asynchronously: USB/radio/main-loop work does not wait for
-association or DHCP. Each attempt has a 30-second deadline, followed by retry
-backoff of 5, 10, 20, 40 and then at most 60 seconds. Every third failed attempt
-recreates **only the station interface**, with a 250 ms cooperative settling
-interval. Arduino's reason-dependent automatic reconnect is disabled; its initial
-one-time retry can still occur within the firmware deadline. Authentication
-failure and lost-IP events therefore cannot leave the manager passively waiting
-forever. Recovery neither erases credentials nor primarily relies on MCU reboot.
-Driver API calls are still synchronous; this is a cooperative recovery policy,
-not a hard real-time guarantee for the underlying Wi-Fi driver.
-
-If the initial connection fails, the open `openHop-Modem-XXXX` setup AP stays
-available while the saved network is retried in AP+STA mode. The setup HTTP server
-checks each accepted socket's local address against the current nonzero AP IPv4
-address before reading configuration, scanning, or saving changes, and requires
-AP mode to remain enabled. STA, IPv6, and missing/stale local addresses are
-rejected, independently of listener binding (the framework may wildcard-bind).
-On STA success it is stopped/deleted and the AP is removed before normal
-management HTTP/OTA starts. Failed AP startup
-or shutdown is retried at five-second intervals. An empty configuration stays in
-intentional setup mode without attempting STA. After the first successful STA
-connection, later outages retry STA without opening a new unauthenticated portal.
-
-Disconnect/stop/lost-IP events and address changes invalidate the old Wi-Fi TCP
-session, including parser and authentication state, even when an outage completes
-between loop polls. The next client must authenticate again when a token is set.
-Sessions bound to a different interface address (Ethernet) and the wildcard TCP
-and management listeners are not routinely restarted; an unchanged DHCP renewal
-alone does not drop the client. The displayed IP follows the current usable STA
-address (or the setup AP address), rather than retaining an obsolete lease.
-Static/DHCP selection, hostname, antenna selection and the saved/default-on
-Wi-Fi power-save policy are unchanged.
-
-Host regression checks (C++17 compiler required):
-
-```bash
-python3 firmware/tools/test_wifi_recovery.py
-```
-
-These compile the production Wi-Fi manager, TCP server and frame parser with
-recording hardware stubs, plus the complete production portal handlers and
-extracted lifecycle functions. Portal admission tests deliberately use a wildcard
-listener and exercise AP, STA, IPv6, missing/stale address, and disabled AP cases
-on every route, checking rejected requests have no scan/configuration/RF effects.
-They cover deadlines/backoff and timer wrap, failures and station restarts,
-short event outages, address changes, AP setup/retry/teardown, and per-interface
-TCP authentication/parser cleanup. They do **not** simulate the ESP32 driver,
-prove RF/DHCP behavior or establish that a particular router/board's outage is
-fixed. Hardware validation must still exercise multi-minute AP outages, wrong
-credentials, DHCP expiry/address changes, HTTP/OTA and TCP recovery on the exact
-board and firmware build.
-
-### Web UI / OTA / JSON API authentication (v0.8+)
-
-From v0.8 the HTTP surface (web management page, `/api/*` JSON endpoints,
-and OTA `/update` on ESP builds) is gated by HTTP Basic Auth. Defaults on
-first boot:
-
-- **user:** `admin`
-- **password:** `openhop`
-
-Change the password via the **Change HTTP password** form in the web
-UI; it is persisted in NVS under `http_pass`. ArduinoOTA (espota) uses
-the same password as its `--auth` token. Examples:
-
-```bash
-# Open the web UI (browser)         → http://<host>/         (admin / openhop)
-# Pull live stats                   → curl -u admin:openhop http://<host>/api/stats
-# Flash a new firmware over HTTP    → curl -u admin:openhop \
-#       -F firmware=@firmware/<env>/firmware.bin http://<host>/update
-# Flash over espota via PlatformIO  → pio run -e <env> -t upload \
-#       --upload-port <host> --upload-flags="--auth=openhop"
-```
-
-The RAK4631 stores its password in a CRC-protected, power-loss-safe dual-slot
-record in bootloader-preserved nRF52 configuration pages rather than ESP NVS
-or LittleFS. Its authenticated RAK-only **Bluetooth DFU** control hands off to
-the installed Nordic BLE bootloader after the HTTP response is acknowledged and
-the Ethernet socket is closed; a separate Nordic-compatible DFU app uploads the
-nRF52 `firmware.zip`. The bootloader's Bluetooth name is not fixed. Complete BLE
-DFU uploads are validated on the production gateway; keep USB serial DFU
-available for interrupted-transfer recovery. This Bluetooth DFU flow is the
-supported OTA update path for deployed gateways. Ethernet/WebUI `/update` and
-staged activation remain disabled because they would require a custom openHop
-Modem bootloader, which is not currently planned.
-RAK JSON responses expose `tcp_token_set`, never the token.
-
-Pre-v0.8 firmware used `heltec:<tcp_token>` on `/update` only — that
-scheme is gone, the same credential pair now covers every HTTP path.
-
-## Wire protocol v0.8
-
-*(Full command list in `firmware/include/protocol.h`; the section below is
-summarised. Reported firmware version is `<FW_VERSION_BASE>-<BoardConfig.fw_suffix>`,
-e.g. `v1.4.5-heltec-v43`. Hosts should probe `GET_RF_CAPS` for the v0.8 RF
-controls rather than compare versions.)*
-
-### Deferred RF controls
-
-FEM and RX-boost GET/SET requests share a four-entry queue. Setters wait for
-reception to finish; queued replies and validation errors retain arrival order.
-The existing full-queue exception remains: `ERR_RADIO_BUSY` is returned
-immediately when all four slots are occupied.
-Queued TCP requests belong to the connection that submitted them. Disconnect,
-interface invalidation, or server restart cancels pending work from that
-connection without applying it or forwarding its reply to a replacement client.
-Canceled entries are reclaimed even while another request is waiting for RX.
-USB/UART requests are unaffected. Reconnecting hosts must submit their desired
-runtime settings again; no wire-format or NVS behavior changes.
-
-On W5100S, deferred requests also wait until the previous TCP response has
-finished sending before applying the next request. This preserves response
-order without overflowing the transport's single asynchronous frame buffer.
-
-### Frame format
-
-```
-┌──────┬──────┬───────┬──────────┬───────┐
-│ SYNC │ CMD  │  LEN  │ PAYLOAD  │  CRC  │
-│ 0xAA │ 1B   │ 2B LE │  0-255B  │ 2B LE │
-└──────┴──────┴───────┴──────────┴───────┘
-CRC-16/CCITT (poly 0x1021, init 0xFFFF) over CMD+LEN+PAYLOAD.
-```
-
-### Host → Modem
-
-| CMD  | Name              | Payload                               |
-|------|-------------------|---------------------------------------|
-| 0x01 | TX_REQUEST        | Raw LoRa data (1–255 B)               |
-| 0x10 | SET_CONFIG        | `RadioConfig` (14 B)                  |
-| 0x11 | GET_CONFIG        | —                                     |
-| 0x14 | GET_RF_CAPS       | — (v0.8)                              |
-| 0x16 | SET_AGC_INTERVAL  | uint16 LE seconds, 0 disables (v0.8)  |
-| 0x17 | GET_AGC_INTERVAL  | — (v0.8)                              |
-| 0x19 | SET_FEM_STATE     | apply mask + value mask (v0.8)        |
-| 0x1A | GET_FEM_STATE     | — (v0.8)                              |
-| 0x1C | SET_RX_BOOST      | 1 B: 0 = power-saving, 1 = boosted    |
-| 0x1D | GET_RX_BOOST      | — (v0.8)                              |
-| 0x20 | STATUS_REQ        | —                                     |
-| 0x22 | NOISE_REQ         | —                                     |
-| 0x30 | CAD_REQUEST       | — (Listen Before Talk)                |
-| 0x31 | RX_START          | — (restart RX continuous mode)        |
-| 0x34 | SET_CAD_PARAMS    | 4 B: symNum / detPeak / detMin / exit |
-| 0x40 | RADIO_STANDBY     | — (v0.7; chip → standby, frees the bus)|
-| 0x41 | SET_WIFI          | ssid+pass+port+token (variable)       |
-| 0x42 | RADIO_RESUME      | — (v0.7; chip → RX continuous)        |
-| 0x48 | SET_DISPLAY_NAME  | utf-8 bytes (v0.7; persisted to NVS)  |
-| 0x4A | SET_AUTO_CAD      | 1 B (v0.7; T114 auto-CAD before TX)   |
-| 0x50 | AUTH              | token bytes (TCP only)                |
-| 0x60 | WIFI_RESET        | —                                     |
-| 0x61 | GET_WIFI          | —                                     |
-| 0x70 | GET_VERSION       | —                                     |
-| 0x72 | GET_DEBUG         | — (reset reason / heap / max-loop time)|
-| 0x74 | ENTER_BOOTLOADER  | — (v0.7; nRF52 → Adafruit DFU)        |
-| 0x90 | OTA_BEGIN         | size + sha256 (v0.7; in-app OTA)      |
-| 0x92 | OTA_CHUNK         | offset + data (v0.7)                  |
-| 0x94 | OTA_VERIFY        | — (v0.7)                              |
-| 0x96 | OTA_APPLY         | — (v0.7; commit + reboot)             |
-| 0x98 | OTA_ABORT         | — (v0.7)                              |
-| 0xFF | PING              | —                                     |
-
-v0.8 frame commands probe and set the AGC reset interval on every radio board, the FEM RX LNA on Heltec V4.3 and Station G3, the FEM TX PA on Station G3, and SX1262 boosted RX gain on every radio board; other boards report those bits clear, reject the matching set with `ERR_UNSUPPORTED` (`0x0F`), and these frame writes are not stored in NVS.
-
-The RAK4631 staged writer is not connected to `CMD_OTA_*` or HTTP `/update`.
-Those update commands and routes are disabled and unsupported on that target;
-supporting safe staged activation and recovery would require a custom openHop
-Modem bootloader, which is not currently planned. Use the generated
-`firmware.zip` with the supported Bluetooth DFU OTA flow or USB DFU instead.
-
-### Modem → Host
-
-| CMD  | Name              | Payload                               |
-|------|-------------------|---------------------------------------|
-| 0x02 | TX_DONE           | `airtime_us` (4 B LE)                 |
-| 0x03 | TX_FAIL           | —                                     |
-| 0x04 | RX_PACKET         | RSSI(2) + SNR(2) + sigRSSI(2) + data  |
-| 0x12 | CONFIG_RESP       | `RadioConfig` (14 B)                  |
-| 0x15 | RF_CAPS_RESP      | uint32 LE capability bits (v0.8)      |
-| 0x18 | AGC_INTERVAL_RESP | uint16 LE effective seconds (v0.8)    |
-| 0x1B | FEM_STATE_RESP    | capability mask + value mask (v0.8)   |
-| 0x1E | RX_BOOST_RESP     | 1 B: 0 = power-saving, 1 = boosted    |
-| 0x21 | STATUS_RESP       | `StatusResp` (24 B)                   |
-| 0x23 | NOISE_RESP        | int16 LE (dBm × 10)                   |
-| 0x32 | CAD_RESP          | 1 B (0=clear, 1=busy)                 |
-| 0x33 | RX_STARTED        | —                                     |
-| 0x35 | CAD_PARAMS_RESP   | echoes the 4-byte config              |
-| 0x44 | RADIO_STANDBY_RESP| — (v0.7)                              |
-| 0x46 | RADIO_RESUME_RESP | — (v0.7)                              |
-| 0x49 | SET_DISPLAY_NAME_RESP | — (v0.7)                          |
-| 0x4B | SET_AUTO_CAD_RESP | — (v0.7)                              |
-| 0x51 | AUTH_OK           | —                                     |
-| 0x62 | WIFI_STATUS       | mode + ip + port + ssid + hostname    |
-| 0x71 | VERSION_RESP      | ASCII version string                  |
-| 0x73 | DEBUG_RESP        | reset(1) + uptime_ms(4) + heap(4) + min_heap(4) + max_loop_us(4) |
-| 0x80 | LOG_MSG           | async log line (v0.7; level + utf-8)  |
-| 0x91 | OTA_BEGIN_RESP    | — (v0.7)                              |
-| 0x93 | OTA_CHUNK_RESP    | — (v0.7)                              |
-| 0x95 | OTA_VERIFY_RESP   | — (v0.7)                              |
-| 0x97 | OTA_APPLY_RESP    | — (v0.7)                              |
-| 0xFE | ERROR             | error code (1 B; `0x0B` = `ERR_NO_RADIO`, `0x0F` = `ERR_UNSUPPORTED`, `0x10` = `ERR_RADIO_FAULT`) |
-| 0xFF | PONG              | —                                     |
-
-## Default radio parameters
-
-Firmware boots into the MeshCore **EU Narrow / Switzerland** preset; the host
-overrides these via `CMD_SET_CONFIG` at `begin()`:
-
-| Parameter    | Value          |
-|--------------|----------------|
-| Frequency    | 869.618 MHz    |
-| Bandwidth    | 62.5 kHz       |
-| SF           | 8              |
-| CR           | 4/8            |
-| TX Power     | 22 dBm         |
-| Sync Word    | 0x12 (private) |
-| Preamble     | 16 symbols     |
-| Header       | Explicit       |
-| CRC          | CRC-8          |
-| IQ           | Standard       |
-| LDRO         | Auto           |
-
-## On-device display
-
-OLED boards (Heltec V3, Ikoka, LilyGO T3-S3) and the T114 TFT all run
-the same screen state machine: boot splash for ≥5 s while `setup()`
-runs in parallel, then **STATUS** (RX/TX, SSID/IP or USB-tag, state,
-fw version) → **RADIO** (freq/SF/BW/CR/power/sync/preamble) →
-**DIAGNOSTICS** (uptime, TCP client, USB idle, RX/TX/CRC). Short PRG
-tap cycles them; the panel sleeps after 30 s of idle. Boards without
-a usable button (P4-Nano, where BOOT shares GPIO35 with RMII TXD1)
-auto-cycle every 4 s and never sleep.
-
-Long PRG hold (≥3 s at boot) = factory reset (wipes Wi-Fi NVS,
-reboots into AP portal on Wi-Fi boards). Without the button, use
-`CMD_WIFI_RESET` or `esptool erase_flash`. T114 has no Wi-Fi NVS to
-wipe — factory reset just clears the modem's persistent settings
-(display name, auto-CAD flag) via the same flow.
+[MIT](LICENSE).

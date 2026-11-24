@@ -1,11 +1,10 @@
 # Changelog
 
-Notable user-facing changes to openHop Modem are recorded here. Development
-entries describe source changes; a version is not a published release until its
-GitHub release and matching firmware assets are available.
+Notable user-facing changes to openHop Modem are recorded here. Unreleased
+entries describe development source; use a published release and its matching
+firmware assets for installation.
 
-This changelog starts with development toward v1.4.1. For earlier releases, see
-[GitHub Releases](https://github.com/openhop-dev/openhop_modem/releases).
+For earlier releases, see [GitHub Releases](https://github.com/openhop-dev/openhop_modem/releases).
 
 ## v1.4.5 — Unreleased
 
@@ -53,25 +52,13 @@ This changelog starts with development toward v1.4.1. For earlier releases, see
   checked original transactions, valid status/LoRa IRQ data and the owning DIO,
   with bounded deadlines/recovery while preserving valid RX status.
 
-## v1.4.2 — Unreleased
-
-### Fixed
-
-- nRF52 main-loop watchdog recovery so a stalled battery-backed modem can reset
-  instead of remaining unresponsive until a manual reset. The default timeout
-  is 30 seconds, matching ESP32 builds. (#90, #91)
-- nRF52 boot diagnostics now report captured reset flags and the observed
-  watchdog timeout, reload channels and sleep/debug behavior, including settings
-  inherited across a software reset. (#91)
-
-## v1.4.1 — Unreleased
+## [v1.4.2](https://github.com/openhop-dev/openhop_modem/releases/tag/v1.4.2) - 2026-11-16
 
 ### Added
 
 - Separate production-silicon builds for EtherMesh-1W and ESP32-P4 Nano, with
-  matching SDKs/bootloaders and checked board/revision metadata. Existing legacy
-  builds are retained; automatic flasher selection and physical acceptance are
-  separate rollout steps. (#88)
+  matching SDKs/bootloaders and checked board/revision metadata, while retaining
+  the existing legacy builds. (#88)
 - Runtime host-protocol controls and capability queries for AGC, supported RF
   front-end settings, and SX1262 RX boost. Host-protocol changes are not persisted
   across reboot. (#81)
@@ -93,3 +80,9 @@ This changelog starts with development toward v1.4.1. For earlier releases, see
 - Return routing to DHCP-advertised remote subnets without requiring a reverse
   proxy or source NAT. Route tables follow their accepted lease and interface;
   gateway-only renewals do not unnecessarily invalidate the TCP session. (#86)
+- nRF52 main-loop watchdog recovery so a stalled battery-backed modem can reset
+  instead of remaining unresponsive until a manual reset. The default timeout
+  is 30 seconds, matching ESP32 builds. (#90, #91)
+- nRF52 boot diagnostics now report captured reset flags and the observed
+  watchdog timeout, reload channels and sleep/debug behavior, including settings
+  inherited across a software reset. (#91)

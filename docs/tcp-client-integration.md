@@ -77,7 +77,7 @@ Opening a TCP socket alone does not make another application's radio driver
 compatible. [API.md](../API.md) documents the separate HTTP management surface.
 
 The wire authority is [protocol.h](../firmware/include/protocol.h); the
-[README command reference](../README.md#wire-protocol-v08) gives the broader list.
+[binary protocol reference](protocol.md) gives the broader list.
 The existing frame has no radio ID or request ID: the socket selects the radio.
 
 ```text

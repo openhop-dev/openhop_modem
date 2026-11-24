@@ -23,7 +23,7 @@ your board:
 | RAK3112 WisMesh | `rak3112_wismesh` | `rak3112-<mac3>.local` | Wi-Fi |
 | B&Q Consulting Station G2 | `station_g2` | `station-g2-<mac3>.local` | Wi-Fi |
 | BQ Voyage Station G3 | `station_g3` | `station-g3-<mac3>.local` | Wi-Fi |
-| WaveShare ESP32-P4-Nano (+ off-board E22) | `esp32_p4_nano` (legacy), `esp32_p4_nano_v3` (v3.1/v3.2) | `p4nano-<mac3>.local` | **Ethernet or Wi-Fi** (runtime auto-select; cable plugged → ETH, no link → WiFi fallback. Both at once is unstable with radio active — see README "Porting to another ESP32-P4 board") |
+| WaveShare ESP32-P4-Nano (+ off-board E22) | `esp32_p4_nano` (legacy), `esp32_p4_nano_v3` (v3.1/v3.2) | `p4nano-<mac3>.local` | **Ethernet or Wi-Fi** (runtime auto-select; cable plugged → ETH, no link → WiFi fallback. Both at once is unstable with radio active — see [P4 carrier notes](docs/hardware.md#porting-to-another-esp32-p4-board)) |
 | MeshSmith EtherMesh-1W | `ethermesh_1w` (legacy), `ethermesh_1w_v3` (v3.1/v3.2) | `ethermesh-1w-<mac3>.local` | **Ethernet** |
 | MeshSmith EtherMesh-Duo | `ethermesh_duo` (legacy), `ethermesh_duo_v3` (production silicon) | `ethermesh-duo-<mac3>.local` | **Ethernet**, RF1 TCP5055 / RF2 TCP5056 |
 | Heltec T114 | `heltec_t114` | n/a | none — USB-CDC + UART only |
@@ -257,9 +257,8 @@ policy, add `-DBOARD_MY_BOARD` to a new `[env:my_board]` block in
 `platformio.ini`, and a matching `#elif defined(BOARD_MY_BOARD)` arm in
 `board_config.h`. ESP32-P4 carriers have a few quirks (boot strap on
 GPIO35, RMII / Wi-Fi / radio interaction, LDO domain on high GPIOs)
-covered in the README's
-[Porting to another ESP32-P4 board](README.md#porting-to-another-esp32-p4-board)
-section.
+covered in the
+[ESP32-P4 carrier notes](docs/hardware.md#porting-to-another-esp32-p4-board).
 
 ## 2. Connect over USB (`modem_usb`)
 
