@@ -9,6 +9,41 @@ This guide describes the shared multi-radio development backend. Check the
 installed board profile and firmware: source documentation does not make a
 matching binary available or add a second radio to a single-radio board.
 
+## MeshCore companion clients
+
+The modem's TCP interface is **not compatible with the MeshCore companion
+protocol**. The MeshCore app, Remote Terminal and MeshMonitor **cannot connect
+directly to the modem as a companion**. Sharing a TCP transport or receiving
+MeshCore LoRa packets does not make the control protocols interchangeable.
+
+For companion access:
+
+1. Connect the modem to **openHop Repeater** with `modem_tcp` or `modem_usb`.
+2. Configure a **virtual companion** in Repeater.
+3. Connect the client to **Repeater's companion endpoint**, not the modem TCP
+   port. Use the companion host/port configured in Repeater, not the modem's
+   address and radio port.
+
+```text
+MeshCore companion client
+        │ MeshCore companion protocol
+        ▼
+openHop Repeater virtual companion
+        │ openHop modem protocol
+        ▼
+openHop Modem
+```
+
+The virtual companion is provided by Repeater, not by this firmware. Repeater's
+[configuration example](https://github.com/openhop-dev/openhop_repeater/blob/dev/config.yaml.example)
+documents the `companions` section and its `tcp_port`. A client's supported
+transports/features still depend on the client and Repeater versions.
+
+The adapter instructions below describe software that implements the **modem**
+protocol. They are not instructions for connecting an existing MeshCore companion
+client directly, and changing a port or token does not enable a companion server
+on the modem.
+
 ## One Duo, two applications
 
 A Duo with both modules fitted and enabled can be assigned like this:

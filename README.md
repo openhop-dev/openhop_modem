@@ -22,6 +22,15 @@ The modem handles packet transmission, reception, CAD and radio configuration.
 openHop Repeater handles the network protocol, routing, application encryption
 and retries.
 
+<a id="meshcore-companion-compatibility"></a>
+
+> **Not a MeshCore companion:** The modem's TCP interface is **not compatible
+> with the MeshCore companion protocol**. The MeshCore app, Remote Terminal and
+> MeshMonitor **cannot connect directly to the modem as a companion**.
+> For companion access, connect the modem to openHop Repeater and use a
+> **virtual companion** configured in Repeater. The client connects to Repeater's
+> companion endpoint, not the modem TCP port.
+
 > Development source can be ahead of published firmware. Use the matching board
 > package from [Releases](https://github.com/openhop-dev/openhop_modem/releases)
 > or the browser flasher. A source version change does not regenerate or relabel
@@ -82,7 +91,7 @@ fitted module and board limits rather than treating a 1 W label as a chip settin
 | Interface | Purpose |
 |---|---|
 | USB serial | Binary modem protocol for the primary radio. |
-| TCP 5055 | Primary radio protocol on network boards. |
+| TCP 5055 | Modem protocol for openHop Repeater, [not a MeshCore companion connection](#meshcore-companion-compatibility). |
 | HTTP port 80 | Authenticated WebUI and management API where supported. |
 
 Fresh Wi-Fi boards expose `openHop-Modem-XXXX` for setup at

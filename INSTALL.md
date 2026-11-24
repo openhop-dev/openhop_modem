@@ -288,6 +288,13 @@ earlier firmware descriptor.
 
 ## 3. Connect over Wi-Fi or Ethernet (`modem_tcp`)
 
+Modem TCP uses the openHop modem protocol, **not the MeshCore companion
+protocol**. The MeshCore app, Remote Terminal and MeshMonitor **cannot connect
+directly to the modem as a companion**. For companion access, first connect the
+modem to openHop Repeater using `modem_tcp` (or `modem_usb` for USB), then
+configure a **virtual companion** in Repeater. Point the client at Repeater's
+configured companion endpoint, not the modem TCP port.
+
 Fresh Wi-Fi firmware starts the open access point `openHop-Modem-XXXX`.
 Connect a phone or laptop, open `http://192.168.4.1`, select the LAN, enter its
 password, and choose **Save & Restart**. You can also configure Wi-Fi and the TCP
